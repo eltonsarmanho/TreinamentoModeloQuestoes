@@ -1,0 +1,24 @@
+# Fine-tuning Qwen3-1.7B (QLoRA 4-bit) — RTX 3060 Laptop 6GB / CUDA 12.x / Python 3.11
+#
+# Instalação (dentro do venv):
+#   pip install -r requirements.txt
+#
+# Observações:
+# - O torch instalado via pip já embute as bibliotecas CUDA (não depende do nvcc local).
+# - O pacote `unsloth` instala e gerencia as versões compatíveis de transformers,
+#   trl, peft, bitsandbytes, accelerate e xformers. NÃO pinar essas dependências
+#   manualmente aqui — versões desalinhadas entre elas são a causa nº 1 de erro
+#   de treino com QLoRA.
+# - A exportação GGUF (src/export_gguf.py) usa o llama.cpp, que o Unsloth baixa e
+#   compila automaticamente na primeira execução (requer cmake e um compilador C).
+
+torch>=2.4.0
+unsloth>=2025.1.1
+
+# Dados
+datasets>=2.19.0
+pandas>=2.0.0
+
+# Utilidades
+tqdm>=4.66.0
+python-dotenv>=1.0.0   # carrega HF_TOKEN do .env (rate limit/downloads do HF Hub)

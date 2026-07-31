@@ -1,0 +1,16 @@
+# Segredos — nunca commitar
+.env
+
+# Ambiente
+venv/
+__pycache__/
+*.pyc
+
+# Artefatos de treino (pesados / regeneráveis)
+outputs/
+data/
+
+# Cache HF
+.cache/
+DB/questoes.db
+PlanoTreino.md
