@@ -44,3 +44,81 @@ def check_structure(obj):
         values = [str(alts[k]).strip() for k in "ABCD"]
         flags["alternativas_distintas"] = len(set(values)) == 4 and all(values)
     return flags
+
+
+_NUM_PATTERN = re.compile(r"-?\d+(?:[.,]\d+)?")
+# Casa expressões simples "a op b = r" dentro do texto da justificativa,
+# ex.: "35 - 20 = 15", "3x4=12", "10/2 = 5".
+_EXPR_PATTERN = re.compile(
+    r"(-?\d+(?:[.,]\d+)?)\s*([-+xX*÷/])\s*(-?\d+(?:[.,]\d+)?)\s*=\s*(-?\d+(?:[.,]\d+)?)"
+)
+_OPS = {
+    "+": lambda a, b: a + b,
+    "-": lambda a, b: a - b,
+    "x": lambda a, b: a * b,
+    "X": lambda a, b: a * b,
+    "*": lambda a, b: a * b,
+    "/": lambda a, b: a / b if b else None,
+    "÷": lambda a, b: a / b if b else None,
+}
+
+
+def _to_number(text):
+    try:
+        value = float(text.replace(",", "."))
+    except ValueError:
+        return None
+    return int(value) if value.is_integer() else value
+
+
+def _computed_result(text):
+    """Extrai o resultado de uma conta 'a op b = r' no texto, se a conta bater."""
+    match = _EXPR_PATTERN.search(text or "")
+    if not match:
+        return None
+    a_str, op, b_str, r_str = match.groups()
+    a, b, r = _to_number(a_str), _to_number(b_str), _to_number(r_str)
+    if a is None or b is None or r is None:
+        return None
+    computed = _OPS[op](a, b)
+    if computed is None:
+        return None
+    return r if abs(computed - r) < 1e-6 else None
+
+
+def _leading_number(text):
+    match = _NUM_PATTERN.search(str(text or ""))
+    return _to_number(match.group()) if match else None
+
+
+def check_consistency(obj):
+    """Confere se o `gabarito` é a alternativa cujo valor bate com a conta
+    resolvida na justificativa correspondente.
+
+    Retorna (ok, sugestao):
+      ok=True         conta da justificativa do gabarito bate com o valor da alternativa
+      ok=False        não bate — `sugestao` traz a letra da alternativa correta, se achada
+      ok=None         não deu pra verificar (sem uma conta "a op b = r" clara no texto)
+
+    Heurística best-effort para questões de aritmética simples; não substitui
+    a correção humana/curadoria dos dados de treino.
+    """
+    if not obj:
+        return None, None
+    gabarito = obj.get("gabarito")
+    justificativas = obj.get("justificativas")
+    alternativas = obj.get("alternativas")
+    if not isinstance(justificativas, dict) or not isinstance(alternativas, dict):
+        return None, None
+
+    result = _computed_result(justificativas.get(gabarito, ""))
+    if result is None:
+        return None, None
+
+    if _leading_number(alternativas.get(gabarito)) == result:
+        return True, None
+
+    for letra, texto in alternativas.items():
+        if _leading_number(texto) == result:
+            return False, letra
+    return False, None

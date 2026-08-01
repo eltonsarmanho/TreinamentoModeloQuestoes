@@ -14,9 +14,7 @@ Modos:
 
   Direto, uma pergunta específica:
 
-      python src/test_model.py --ano "5º" --habilidade H08 \\
-          --descricao "Resolver problemas de adição ou subtração." \\
-          --dificuldade Fácil
+      python src/test_model.py --ano "5º" --habilidade H08 --descricao "Resolver problemas de adição ou subtração." --dificuldade Fácil
 
   Gerar N variações do mesmo pedido (ver estabilidade/variabilidade):
 
@@ -42,7 +40,7 @@ from collections import Counter
 from pathlib import Path
 
 from extract_data import SYSTEM_PROMPT, USER_TEMPLATE
-from schema_utils import IMAGE_PATTERN, check_structure, parse_json
+from schema_utils import IMAGE_PATTERN, check_consistency, check_structure, parse_json
 
 ROOT = Path(__file__).resolve().parent.parent
 DB_PATH = ROOT / "DB" / "questoes.db"
@@ -168,6 +166,12 @@ def run_one(llama_cli, gguf_path, ano, habilidade, descricao, dificuldade, threa
             f"gabarito_valido={flags['gabarito_valido']} "
             f"alternativas_distintas={flags['alternativas_distintas']}{figura}]"
         )
+        consistente, sugestao = check_consistency(obj)
+        if consistente is False:
+            aviso = f" (conta bate com {sugestao})" if sugestao else ""
+            print(f"  [!] gabarito INCONSISTENTE com a conta da justificativa{aviso}")
+        elif consistente is True:
+            print("  [ok] gabarito consistente com a conta da justificativa")
         gen_str = f"{gen_tps:.1f} tok/s" if gen_tps else "n/d"
         print(f"  Tempo total: {elapsed:.1f}s (inclui carregar o modelo) | Geração: {gen_str}\n")
 
@@ -238,6 +242,7 @@ def batch(llama_cli, gguf_path, threads, num_samples):
 
     results, gen_tps_list, latencies, gabaritos = [], [], [], []
     image_mentions = 0
+    consistencia_ok, consistencia_verificavel = 0, 0
     for i, ex in enumerate(examples, 1):
         user_msg = ex["messages"][1]["content"]
         print(f"[{i}/{len(examples)}] {user_msg[:80]}...")
@@ -253,7 +258,18 @@ def batch(llama_cli, gguf_path, threads, num_samples):
         if gen_tps:
             gen_tps_list.append(gen_tps)
         latencies.append(elapsed)
-        results.append({"codigo_item_ref": ex["meta"]["codigo_item"], **flags})
+
+        consistente, sugestao = check_consistency(obj)
+        if consistente is not None:
+            consistencia_verificavel += 1
+            consistencia_ok += int(consistente)
+
+        results.append({
+            "codigo_item_ref": ex["meta"]["codigo_item"],
+            **flags,
+            "consistencia_gabarito": consistente,
+            "sugestao_gabarito": sugestao,
+        })
 
     n = len(results)
     pct = lambda key: round(100 * sum(r[key] for r in results) / n, 1)
@@ -268,6 +284,11 @@ def batch(llama_cli, gguf_path, threads, num_samples):
             "alternativas_distintas_pct": pct("alternativas_distintas"),
             "distribuicao_gabaritos": dict(Counter(gabaritos)),
             "mencoes_figura_pct": round(100 * image_mentions / n, 1),
+            "consistencia_gabarito_pct": (
+                round(100 * consistencia_ok / consistencia_verificavel, 1)
+                if consistencia_verificavel else None
+            ),
+            "consistencia_verificavel_n": consistencia_verificavel,
         },
         "velocidade_cpu_real": {
             "tokens_por_segundo_geracao": round(statistics.mean(gen_tps_list), 1) if gen_tps_list else None,

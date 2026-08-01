@@ -23,14 +23,38 @@ DB/questoes.db ──▶ extract_data.py ──▶ data/{train,val}.jsonl
 source venv/bin/activate
 pip install -r requirements.txt
 
-python src/extract_data.py    # 1. SQLite -> JSONL (304 questões textuais, split 90/10)
-python src/train.py           # 2. fine-tuning QLoRA na RTX 3060 6GB
-python src/evaluate.py        # 3. métricas de qualidade + tempo de resposta (GPU, dev)
-python src/evaluate.py --baseline   # (opcional) comparação A/B com o modelo base
-python src/export_gguf.py     # 4. GGUF Q4_K_M (~1.1GB) para o app
-python src/test_model.py      # 5. teste real: gera questões com o .gguf via llama.cpp
-python src/test_model.py --batch    # ou valida em lote contra data/val.jsonl
+python src/extract_data.py            # 1. SQLite -> JSONL (304 questões textuais, split 90/10)
+python src/generate_synthetic.py      # 1b. (opcional) aumenta data/train.jsonl com aritmética sintética
+python src/train.py                   # 2. fine-tuning QLoRA na RTX 3060 6GB
+python src/evaluate.py                # 3. métricas de qualidade + tempo de resposta (GPU, dev)
+python src/evaluate.py --baseline     # (opcional) comparação A/B com o modelo base
+python src/export_gguf.py             # 4. GGUF Q4_K_M (~1.1GB) para o app
+python src/test_model.py              # 5. teste real: gera questões com o .gguf via llama.cpp
+python src/test_model.py --batch      # ou valida em lote contra data/val.jsonl
 ```
+
+### Aumentando o dataset com aritmética sintética (`generate_synthetic.py`)
+
+As ~300 questões reais ensinam formato/estilo (ver "Evolução futura" abaixo),
+mas são poucas para o modelo generalizar cálculo. `generate_synthetic.py`
+gera questões de adição, subtração, multiplicação, divisão, porcentagem e
+potenciação com o **gabarito calculado em Python antes de montar a questão**
+— nunca por um LLM, então nunca pode estar errado — usando as mesmas tuplas
+(ano, habilidade, descrição, dificuldade) reais do banco, para o prompt de
+treino continuar idêntico ao que o app manda em produção:
+
+```bash
+python src/generate_synthetic.py --dry-run             # só mostra estatísticas, não escreve nada
+python src/generate_synthetic.py                       # mescla em data/train.jsonl (12 por habilidade/dificuldade)
+python src/generate_synthetic.py --num-per-skill 20     # lote maior
+```
+
+Só mexe em `data/train.jsonl` (é seguro rodar de novo — remove o lote
+sintético anterior antes de gerar um novo). **`data/val.jsonl` nunca é
+tocado**: a validação continua só com questões reais do SAEB, para medir o
+modelo no que ele de fato vai enfrentar em produção. Isso não muda nada no
+deploy — o `.gguf` exportado continua o mesmo formato/tamanho, offline e
+mobile como antes; só a qualidade do fine-tuning tende a melhorar.
 
 ### Testando o modelo de verdade (`test_model.py`)
 
@@ -49,6 +73,36 @@ python src/test_model.py --batch --num-samples 10  # versão rápida
 
 Sem dependência de `torch`/`unsloth` — só precisa do `llama-cli` (gerado por
 `export_gguf.py` em `~/.unsloth/llama.cpp/llama-cli`) e do `.gguf` exportado.
+
+### Gabarito inconsistente com a justificativa
+
+Em alguns testes o cálculo na justificativa está certo, mas a letra do
+`gabarito` não bate com ele. Duas causas somadas:
+
+1. **Ordem das chaves no JSON treinado**: a geração é autorregressiva —
+   antes desta mudança, `gabarito` vinha *antes* de `justificativas` no
+   schema, então o modelo comprometia a letra sem ter "mostrado o trabalho"
+   ainda (o modo non-thinking não tem `<think>` para isso). Corrigido em
+   `extract_data.py`/`SYSTEM_PROMPT`: `justificativas` agora vem antes de
+   `gabarito`, forçando um raciocínio curto antes da resposta final. Só tem
+   efeito treinando de novo (`python src/extract_data.py` já regera os
+   dados; falta rodar `python src/train.py` para o modelo aprender a nova
+   ordem).
+2. **Qwen3-1.7B é pequeno**: aritmética multi-dígito é um ponto fraco
+   conhecido de LLMs nessa faixa sem chain-of-thought, e ~300 exemplos de
+   treino ensinam formato/estilo, não ampliam capacidade de cálculo (ver
+   "Evolução futura" abaixo).
+
+Como rede de segurança independente de retreino, `schema_utils.check_consistency()`
+faz uma checagem determinística: extrai uma expressão "a op b = r" do texto da
+justificativa do gabarito e confere se bate com o valor da alternativa
+apontada. `evaluate.py` e `test_model.py` reportam isso como
+`consistencia_gabarito_pct` (só sobre as amostras onde dá pra verificar —
+é uma heurística best-effort para aritmética simples, não substitui
+curadoria humana). Quando a conta não bate, a função também tenta indicar
+qual alternativa seria a correta (`sugestao_gabarito`), útil tanto para
+auditar o dataset quanto para uma futura correção automática no app antes
+de exibir a questão ao usuário.
 
 ## Por que essa abordagem (literatura atual)
 
@@ -126,7 +180,7 @@ ou `BATCH_SIZE` para 1 (dobrando `GRAD_ACCUMULATION`).
 
 | Grupo | Métrica |
 |---|---|
-| Estrutura | % JSON válido, % schema completo, % gabarito válido, % alternativas distintas, distribuição de gabaritos, % menções a figura |
+| Estrutura | % JSON válido, % schema completo, % gabarito válido, % alternativas distintas, distribuição de gabaritos, % menções a figura, % consistência gabarito↔justificativa (ver seção acima) |
 | Linguagem | perplexity da resposta de referência |
 | Velocidade | latência média/p95 por questão, tokens/s, tokens de saída |
 

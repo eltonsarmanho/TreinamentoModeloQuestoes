@@ -31,9 +31,11 @@ SYSTEM_PROMPT = (
     "ano escolar, a habilidade e a dificuldade pedidos. Responda APENAS com JSON "
     "válido, sem texto extra, no schema: "
     '{"enunciado": str, "comando": str, "alternativas": {"A": str, "B": str, '
-    '"C": str, "D": str}, "gabarito": "A|B|C|D", "justificativas": {"A": str, '
-    '"B": str, "C": str, "D": str}}. A questão deve ser autocontida, sem depender '
-    "de figuras, imagens ou gráficos."
+    '"C": str, "D": str}, "justificativas": {"A": str, "B": str, "C": str, '
+    '"D": str}, "gabarito": "A|B|C|D"}. Resolva e justifique cada alternativa '
+    "antes de decidir o gabarito, para que a letra escolhida seja consistente "
+    "com as contas feitas nas justificativas. A questão deve ser autocontida, "
+    "sem depender de figuras, imagens ou gráficos."
 )
 
 USER_TEMPLATE = (
@@ -93,14 +95,17 @@ def build_example(row):
         justificativas[gabarito] = geral
     justificativas = {k: v for k, v in justificativas.items() if v}
 
+    # Ordem das chaves importa: JSON é gerado token a token, então a
+    # justificativa (raciocínio) precisa vir ANTES do gabarito no schema —
+    # senão o modelo comete a letra sem ter "mostrado o trabalho" ainda.
     answer = {
         "enunciado": enunciado,
         "comando": comando,
         "alternativas": alternativas,
-        "gabarito": gabarito,
     }
     if justificativas:
         answer["justificativas"] = justificativas
+    answer["gabarito"] = gabarito
 
     ano = clean(row["ano"]) or "não informado"
     example = {

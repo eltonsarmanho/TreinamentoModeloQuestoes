@@ -35,7 +35,7 @@ from unsloth import FastLanguageModel  # deve ser o primeiro import (patches)
 import torch
 from tqdm import tqdm
 
-from schema_utils import IMAGE_PATTERN, check_structure, parse_json
+from schema_utils import IMAGE_PATTERN, check_consistency, check_structure, parse_json
 
 ROOT = Path(__file__).resolve().parent.parent
 VAL_PATH = ROOT / "data" / "val.jsonl"
@@ -111,6 +111,7 @@ def main():
 
     results, latencies, tokens_per_sec, output_tokens = [], [], [], []
     gabaritos, image_mentions = [], 0
+    consistencia_ok, consistencia_verificavel = 0, 0
 
     for ex in tqdm(examples, desc="Gerando questões"):
         prompt_ids = tokenizer.apply_chat_template(
@@ -147,10 +148,20 @@ def main():
         if IMAGE_PATTERN.search(blob):
             image_mentions += 1
 
+        consistente, sugestao = check_consistency(obj)
+        if consistente is not None:
+            consistencia_verificavel += 1
+            consistencia_ok += int(consistente)
+
         latencies.append(elapsed)
         tokens_per_sec.append(new_tokens / elapsed)
         output_tokens.append(new_tokens)
-        results.append({"codigo_item_ref": ex["meta"]["codigo_item"], **flags})
+        results.append({
+            "codigo_item_ref": ex["meta"]["codigo_item"],
+            **flags,
+            "consistencia_gabarito": consistente,
+            "sugestao_gabarito": sugestao,
+        })
 
     n = len(results)
     pct = lambda key: 100 * sum(r[key] for r in results) / n
@@ -167,6 +178,16 @@ def main():
             "alternativas_distintas_pct": round(pct("alternativas_distintas"), 1),
             "distribuicao_gabaritos": dict(Counter(gabaritos)),
             "mencoes_figura_pct": round(100 * image_mentions / n, 1),
+            "consistencia_gabarito_pct": (
+                round(100 * consistencia_ok / consistencia_verificavel, 1)
+                if consistencia_verificavel else None
+            ),
+            "consistencia_verificavel_n": consistencia_verificavel,
+            "consistencia_nota": (
+                "% das respostas em que o gabarito bate com a conta resolvida na "
+                "justificativa correspondente; medido só sobre as N amostras com "
+                "uma expressão aritmética 'a op b = r' reconhecível no texto."
+            ),
         },
         "linguagem": {"perplexity_referencia": round(ppl, 3)},
         "velocidade_gpu": {
@@ -190,7 +211,7 @@ def main():
     for section in ("estrutura", "linguagem", "velocidade_gpu"):
         print(f"[{section}]")
         for k, v in report[section].items():
-            if k != "nota":
+            if k not in ("nota", "consistencia_nota"):
                 print(f"  {k}: {v}")
     print(f"\nRelatório completo: {REPORT_PATH}")
 
