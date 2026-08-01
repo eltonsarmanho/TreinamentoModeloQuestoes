@@ -14,6 +14,9 @@ DB/questoes.db ──▶ extract_data.py ──▶ data/{train,val}.jsonl
                                      outputs/lora/ ──▶ evaluate.py ──▶ outputs/eval_report.json
                                             │
                                      export_gguf.py ──▶ outputs/gguf/*.gguf  (deploy mobile)
+                                            │
+                                     test_model.py ──▶ outputs/eval_report_gguf.json
+                                     (testa o .gguf real via llama.cpp, sem torch/unsloth)
 ```
 
 ```bash
@@ -22,10 +25,30 @@ pip install -r requirements.txt
 
 python src/extract_data.py    # 1. SQLite -> JSONL (304 questões textuais, split 90/10)
 python src/train.py           # 2. fine-tuning QLoRA na RTX 3060 6GB
-python src/evaluate.py        # 3. métricas de qualidade + tempo de resposta
+python src/evaluate.py        # 3. métricas de qualidade + tempo de resposta (GPU, dev)
 python src/evaluate.py --baseline   # (opcional) comparação A/B com o modelo base
 python src/export_gguf.py     # 4. GGUF Q4_K_M (~1.1GB) para o app
+python src/test_model.py      # 5. teste real: gera questões com o .gguf via llama.cpp
+python src/test_model.py --batch    # ou valida em lote contra data/val.jsonl
 ```
+
+### Testando o modelo de verdade (`test_model.py`)
+
+`evaluate.py` mede o modelo em 4-bit via `bitsandbytes`/HF na GPU — um caminho
+só de desenvolvimento, que não reflete o app. `test_model.py` chama o mesmo
+binário e o mesmo `.gguf` que rodam no celular (`llama-cli`, CPU, Q4_K_M):
+
+```bash
+python src/test_model.py                          # menu interativo (usa o DB para sugerir habilidades)
+python src/test_model.py --ano "5º" --habilidade H08 \
+    --descricao "Resolver problemas de adição ou subtração." --dificuldade Fácil
+python src/test_model.py --ano "9º" --habilidade H17 --n 5   # 5 variações do mesmo pedido
+python src/test_model.py --batch                   # roda data/val.jsonl inteiro pelo .gguf
+python src/test_model.py --batch --num-samples 10  # versão rápida
+```
+
+Sem dependência de `torch`/`unsloth` — só precisa do `llama-cli` (gerado por
+`export_gguf.py` em `~/.unsloth/llama.cpp/llama-cli`) e do `.gguf` exportado.
 
 ## Por que essa abordagem (literatura atual)
 

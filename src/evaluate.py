@@ -21,7 +21,6 @@ Uso:
 import argparse
 import json
 import math
-import re
 import statistics
 import time
 from pathlib import Path
@@ -36,6 +35,8 @@ from unsloth import FastLanguageModel  # deve ser o primeiro import (patches)
 import torch
 from tqdm import tqdm
 
+from schema_utils import IMAGE_PATTERN, check_structure, parse_json
+
 ROOT = Path(__file__).resolve().parent.parent
 VAL_PATH = ROOT / "data" / "val.jsonl"
 LORA_DIR = ROOT / "outputs" / "lora"
@@ -47,42 +48,6 @@ MAX_NEW_TOKENS = 512
 # Amostragem recomendada pela Qwen para o modo non-thinking.
 TEMPERATURE = 0.7
 TOP_P = 0.8
-
-REQUIRED_KEYS = {"enunciado", "comando", "alternativas", "gabarito"}
-IMAGE_PATTERN = re.compile(r"\b(figura|imagem|gráfico|desenho|ilustração)\b", re.I)
-
-
-def parse_json(text):
-    """Extrai o primeiro objeto JSON do texto gerado (tolera cercas de código)."""
-    text = re.sub(r"<think>.*?</think>", "", text, flags=re.S).strip()
-    start = text.find("{")
-    if start == -1:
-        return None
-    decoder = json.JSONDecoder()
-    try:
-        obj, _ = decoder.raw_decode(text[start:])
-        return obj if isinstance(obj, dict) else None
-    except json.JSONDecodeError:
-        return None
-
-
-def check_structure(obj):
-    """Retorna dict de flags estruturais para um JSON parseado (ou None)."""
-    flags = {
-        "json_valido": obj is not None,
-        "schema_completo": False,
-        "gabarito_valido": False,
-        "alternativas_distintas": False,
-    }
-    if obj is None:
-        return flags
-    flags["schema_completo"] = REQUIRED_KEYS.issubset(obj.keys())
-    flags["gabarito_valido"] = obj.get("gabarito") in {"A", "B", "C", "D"}
-    alts = obj.get("alternativas")
-    if isinstance(alts, dict) and set(alts.keys()) >= {"A", "B", "C", "D"}:
-        values = [str(alts[k]).strip() for k in "ABCD"]
-        flags["alternativas_distintas"] = len(set(values)) == 4 and all(values)
-    return flags
 
 
 def reference_perplexity(model, tokenizer, examples):
