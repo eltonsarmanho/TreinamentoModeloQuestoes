@@ -34,6 +34,7 @@ def check_structure(obj):
         "schema_completo": False,
         "gabarito_valido": False,
         "alternativas_distintas": False,
+        "justificativas_distintas": False,
     }
     if obj is None:
         return flags
@@ -43,6 +44,10 @@ def check_structure(obj):
     if isinstance(alts, dict) and set(alts.keys()) >= {"A", "B", "C", "D"}:
         values = [str(alts[k]).strip() for k in "ABCD"]
         flags["alternativas_distintas"] = len(set(values)) == 4 and all(values)
+    just = obj.get("justificativas")
+    if isinstance(just, dict) and set(just.keys()) >= {"A", "B", "C", "D"}:
+        values = [str(just[k]).strip() for k in "ABCD"]
+        flags["justificativas_distintas"] = len(set(values)) == 4 and all(values)
     return flags
 
 
@@ -122,3 +127,30 @@ def check_consistency(obj):
         if _leading_number(texto) == result:
             return False, letra
     return False, None
+
+
+def fix_gabarito(obj):
+    """Correção determinística pós-geração (para o app e para os scripts de teste).
+
+    Se a conta resolvida na justificativa do gabarito bate com o valor de OUTRA
+    alternativa, troca o gabarito para essa letra. Retorna (obj, status):
+      "ok"              gabarito consistente com a conta — nada a fazer
+      "corrigido"       gabarito trocado para a letra cujo valor bate com a conta
+      "inconsistente"   conta não bate com nenhuma alternativa — regenerar é o
+                        único remédio
+      "nao_verificavel" sem conta "a op b = r" reconhecível — segue como está
+
+    Nota: ao corrigir, apenas a letra do gabarito muda; a justificativa que
+    contém a conta continua na letra original. A letra corrigida é a
+    pedagogicamente correta (valor == resultado da conta).
+    """
+    consistente, sugestao = check_consistency(obj)
+    if consistente is True:
+        return obj, "ok"
+    if consistente is None:
+        return obj, "nao_verificavel"
+    if sugestao:
+        corrigido = dict(obj)
+        corrigido["gabarito"] = sugestao
+        return corrigido, "corrigido"
+    return obj, "inconsistente"

@@ -176,6 +176,7 @@ def main():
             "schema_completo_pct": round(pct("schema_completo"), 1),
             "gabarito_valido_pct": round(pct("gabarito_valido"), 1),
             "alternativas_distintas_pct": round(pct("alternativas_distintas"), 1),
+            "justificativas_distintas_pct": round(pct("justificativas_distintas"), 1),
             "distribuicao_gabaritos": dict(Counter(gabaritos)),
             "mencoes_figura_pct": round(100 * image_mentions / n, 1),
             "consistencia_gabarito_pct": (

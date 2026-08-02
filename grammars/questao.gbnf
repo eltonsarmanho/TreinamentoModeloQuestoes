@@ -1,0 +1,23 @@
+# Grammar GBNF (llama.cpp) que restringe a decodificação ao schema exato da
+# questão treinada — mesma ordem de chaves do treino: enunciado, comando,
+# alternativas, justificativas (ANTES do gabarito, para o modelo "mostrar o
+# trabalho" antes de se comprometer com a letra) e gabarito por último.
+#
+# Garante por construção: JSON válido, todas as chaves presentes, 4
+# alternativas e 4 justificativas (A-D), gabarito em {A,B,C,D}. NÃO garante
+# consistência lógica (letra certa) — isso é papel de check_consistency()/
+# fix_gabarito() no pós-processamento.
+#
+# Uso: llama-cli ... --grammar-file grammars/questao.gbnf
+
+root ::= "{" ws "\"enunciado\"" ws ":" ws string ws "," ws "\"comando\"" ws ":" ws string ws "," ws "\"alternativas\"" ws ":" ws alts ws "," ws "\"justificativas\"" ws ":" ws alts ws "," ws "\"gabarito\"" ws ":" ws letra ws "}"
+
+alts ::= "{" ws "\"A\"" ws ":" ws string ws "," ws "\"B\"" ws ":" ws string ws "," ws "\"C\"" ws ":" ws string ws "," ws "\"D\"" ws ":" ws string ws "}"
+
+letra ::= "\"A\"" | "\"B\"" | "\"C\"" | "\"D\""
+
+string ::= "\"" char* "\""
+
+char ::= [^"\\\x7F\x00-\x1F] | "\\" (["\\/bfnrt] | "u" [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F])
+
+ws ::= [ \t\n]*

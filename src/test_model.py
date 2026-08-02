@@ -40,12 +40,19 @@ from collections import Counter
 from pathlib import Path
 
 from extract_data import SYSTEM_PROMPT, USER_TEMPLATE
-from schema_utils import IMAGE_PATTERN, check_consistency, check_structure, parse_json
+from schema_utils import (
+    IMAGE_PATTERN,
+    check_consistency,
+    check_structure,
+    fix_gabarito,
+    parse_json,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 DB_PATH = ROOT / "DB" / "questoes.db"
 VAL_PATH = ROOT / "data" / "val.jsonl"
 REPORT_PATH = ROOT / "outputs" / "eval_report_gguf.json"
+GRAMMAR_PATH = ROOT / "grammars" / "questao.gbnf"
 
 DEFAULT_LLAMA_CLI = Path.home() / ".unsloth" / "llama.cpp" / "llama-cli"
 # Q4_K_M: melhor tokens/s medido no benchmark (ver README) com poucas threads —
@@ -85,7 +92,8 @@ def find_gguf(explicit=None):
     return candidates[0]
 
 
-def generate(llama_cli, gguf_path, user_prompt, threads, max_new_tokens, seed=None):
+def generate(llama_cli, gguf_path, user_prompt, threads, max_new_tokens, seed=None,
+             grammar=None):
     """Chama llama-cli em modo single-turn e retorna (texto, prompt_tps, gen_tps, latencia_total_s)."""
     cmd = [
         str(llama_cli),
@@ -102,6 +110,8 @@ def generate(llama_cli, gguf_path, user_prompt, threads, max_new_tokens, seed=No
         "-t", str(threads),
         "--log-disable",
     ]
+    if grammar is not None:
+        cmd += ["--grammar-file", str(grammar)]
     if seed is not None:
         cmd += ["-s", str(seed)]
 
@@ -124,6 +134,56 @@ def generate(llama_cli, gguf_path, user_prompt, threads, max_new_tokens, seed=No
     return answer, prompt_tps, gen_tps, elapsed
 
 
+def generate_validated(llama_cli, gguf_path, user_prompt, threads, max_new_tokens,
+                       grammar=None, retries=1):
+    """Pipeline de produção: gerar -> checar -> regenerar -> corrigir.
+
+    1. Gera com grammar GBNF (estrutura garantida por construção, se disponível).
+    2. Valida estrutura (check_structure) e consistência gabarito<->conta
+       (check_consistency).
+    3. Se reprovar, regenera até `retries` vezes com seed diferente.
+    4. Esgotadas as tentativas, aplica fix_gabarito(): se a conta da
+       justificativa bate com outra alternativa, corrige a letra
+       deterministicamente em vez de entregar uma questão errada.
+
+    Retorna dict com: text, obj, flags, status, regeneracoes, gen_tps, elapsed.
+    status: "ok" | "nao_verificavel" | "corrigido" | "falha".
+    """
+    total_elapsed, regeneracoes = 0.0, 0
+    last = None
+    for attempt in range(retries + 1):
+        seed = None if attempt == 0 else 1000 + attempt
+        text, _, gen_tps, elapsed = generate(
+            llama_cli, gguf_path, user_prompt, threads, max_new_tokens,
+            seed=seed, grammar=grammar,
+        )
+        total_elapsed += elapsed
+        obj = parse_json(text)
+        flags = check_structure(obj)
+        consistente, _ = check_consistency(obj)
+        estrutura_ok = (flags["json_valido"] and flags["schema_completo"]
+                        and flags["gabarito_valido"] and flags["alternativas_distintas"])
+        if estrutura_ok and consistente is not False:
+            status = "ok" if consistente else "nao_verificavel"
+            return {"text": text, "obj": obj, "flags": flags, "status": status,
+                    "regeneracoes": regeneracoes, "gen_tps": gen_tps,
+                    "elapsed": total_elapsed}
+        last = (text, obj, flags, gen_tps)
+        if attempt < retries:
+            regeneracoes += 1
+
+    text, obj, flags, gen_tps = last
+    if obj is not None:
+        obj, fix_status = fix_gabarito(obj)
+        flags = check_structure(obj)
+        status = "corrigido" if fix_status == "corrigido" else "falha"
+    else:
+        status = "falha"
+    return {"text": text, "obj": obj, "flags": flags, "status": status,
+            "regeneracoes": regeneracoes, "gen_tps": gen_tps,
+            "elapsed": total_elapsed}
+
+
 def print_question(obj, raw_text):
     if obj is None:
         print("  [FALHA AO PARSEAR JSON] Saída bruta do modelo:")
@@ -144,36 +204,44 @@ def print_question(obj, raw_text):
             print(f"    {letra}: {texto}")
 
 
-def run_one(llama_cli, gguf_path, ano, habilidade, descricao, dificuldade, threads, n):
+STATUS_LABEL = {
+    "ok": "[ok] validado: estrutura e consistência aprovadas",
+    "nao_verificavel": "[ok] estrutura aprovada (consistência não verificável — sem conta explícita)",
+    "corrigido": "[corrigido] gabarito trocado deterministicamente para bater com a conta da justificativa",
+    "falha": "[FALHA] reprovado mesmo após regenerar — descartar esta questão",
+}
+
+
+def run_one(llama_cli, gguf_path, ano, habilidade, descricao, dificuldade, threads, n,
+            grammar=None, retries=1):
     user_prompt = USER_TEMPLATE.format(
         ano=ano, habilidade=habilidade, descricao=descricao, dificuldade=dificuldade
     )
-    print(f"\nPrompt: {user_prompt}\n")
+    print(f"\nPrompt: {user_prompt}")
+    print(f"Grammar: {'sim (' + grammar.name + ')' if grammar else 'não'} | "
+          f"Regenerações máximas: {retries}\n")
 
     for i in range(n):
         if n > 1:
             print(f"--- Variação {i + 1}/{n} ---")
-        text, prompt_tps, gen_tps, elapsed = generate(
-            llama_cli, gguf_path, user_prompt, threads, MAX_NEW_TOKENS
+        r = generate_validated(
+            llama_cli, gguf_path, user_prompt, threads, MAX_NEW_TOKENS,
+            grammar=grammar, retries=retries,
         )
-        obj = parse_json(text)
-        flags = check_structure(obj)
-        print_question(obj, text)
-        figura = " | menciona figura!" if IMAGE_PATTERN.search(text) else ""
+        print_question(r["obj"], r["text"])
+        flags = r["flags"]
+        figura = " | menciona figura!" if IMAGE_PATTERN.search(r["text"]) else ""
         print(
             f"  [json_valido={flags['json_valido']} "
             f"schema_completo={flags['schema_completo']} "
             f"gabarito_valido={flags['gabarito_valido']} "
-            f"alternativas_distintas={flags['alternativas_distintas']}{figura}]"
+            f"alternativas_distintas={flags['alternativas_distintas']} "
+            f"justificativas_distintas={flags['justificativas_distintas']}{figura}]"
         )
-        consistente, sugestao = check_consistency(obj)
-        if consistente is False:
-            aviso = f" (conta bate com {sugestao})" if sugestao else ""
-            print(f"  [!] gabarito INCONSISTENTE com a conta da justificativa{aviso}")
-        elif consistente is True:
-            print("  [ok] gabarito consistente com a conta da justificativa")
-        gen_str = f"{gen_tps:.1f} tok/s" if gen_tps else "n/d"
-        print(f"  Tempo total: {elapsed:.1f}s (inclui carregar o modelo) | Geração: {gen_str}\n")
+        print(f"  {STATUS_LABEL[r['status']]}"
+              + (f" | {r['regeneracoes']} regeneração(ões)" if r["regeneracoes"] else ""))
+        gen_str = f"{r['gen_tps']:.1f} tok/s" if r["gen_tps"] else "n/d"
+        print(f"  Tempo total: {r['elapsed']:.1f}s (inclui carregar o modelo) | Geração: {gen_str}\n")
 
 
 def load_habilidades():
@@ -190,7 +258,7 @@ def load_habilidades():
     return [r for r in rows if r[0] and r[0].lower() != "nan"]
 
 
-def interactive(llama_cli, gguf_path, threads):
+def interactive(llama_cli, gguf_path, threads, grammar=None, retries=1):
     opcoes = load_habilidades()
     print(f"llama-cli: {llama_cli}")
     print(f"modelo:    {gguf_path}\n")
@@ -204,7 +272,8 @@ def interactive(llama_cli, gguf_path, threads):
             habilidade = input("Habilidade (ex: H08): ").strip()
             descricao = input("Descrição da habilidade: ").strip()
             dificuldade = input("Dificuldade (Fácil/Moderado/Difícil): ").strip()
-            run_one(llama_cli, gguf_path, ano, habilidade, descricao, dificuldade, threads, 1)
+            run_one(llama_cli, gguf_path, ano, habilidade, descricao, dificuldade,
+                    threads, 1, grammar=grammar, retries=retries)
         return
 
     anos = sorted({o[0] for o in opcoes})
@@ -231,33 +300,43 @@ def interactive(llama_cli, gguf_path, threads):
         n = input("Quantas variações gerar? [1]: ").strip()
         n = int(n) if n.isdigit() and int(n) > 0 else 1
 
-        run_one(llama_cli, gguf_path, ano, habilidade, descricao, dificuldade, threads, n)
+        run_one(llama_cli, gguf_path, ano, habilidade, descricao, dificuldade,
+                threads, n, grammar=grammar, retries=retries)
         print()
 
 
-def batch(llama_cli, gguf_path, threads, num_samples):
+def batch(llama_cli, gguf_path, threads, num_samples, grammar=None, retries=1, raw=False):
     examples = [json.loads(line) for line in open(VAL_PATH, encoding="utf-8")]
     if num_samples:
         examples = examples[:num_samples]
 
+    if raw:
+        grammar, retries = None, 0
+    modo = ("cru (mede o modelo sozinho, sem grammar/verificação)" if raw
+            else "produção (grammar + gerar->checar->corrigir/regenerar)")
+    print(f"Modo: {modo}\n")
+
     results, gen_tps_list, latencies, gabaritos = [], [], [], []
     image_mentions = 0
     consistencia_ok, consistencia_verificavel = 0, 0
+    status_counter, regeneracoes_total = Counter(), 0
     for i, ex in enumerate(examples, 1):
         user_msg = ex["messages"][1]["content"]
         print(f"[{i}/{len(examples)}] {user_msg[:80]}...")
-        text, _, gen_tps, elapsed = generate(
-            llama_cli, gguf_path, user_msg, threads, MAX_NEW_TOKENS
+        r = generate_validated(
+            llama_cli, gguf_path, user_msg, threads, MAX_NEW_TOKENS,
+            grammar=grammar, retries=retries,
         )
-        obj = parse_json(text)
-        flags = check_structure(obj)
+        obj, flags, text = r["obj"], r["flags"], r["text"]
+        status_counter[r["status"]] += 1
+        regeneracoes_total += r["regeneracoes"]
         if obj:
             gabaritos.append(str(obj.get("gabarito")))
         if IMAGE_PATTERN.search(text):
             image_mentions += 1
-        if gen_tps:
-            gen_tps_list.append(gen_tps)
-        latencies.append(elapsed)
+        if r["gen_tps"]:
+            gen_tps_list.append(r["gen_tps"])
+        latencies.append(r["elapsed"])
 
         consistente, sugestao = check_consistency(obj)
         if consistente is not None:
@@ -267,6 +346,8 @@ def batch(llama_cli, gguf_path, threads, num_samples):
         results.append({
             "codigo_item_ref": ex["meta"]["codigo_item"],
             **flags,
+            "status": r["status"],
+            "regeneracoes": r["regeneracoes"],
             "consistencia_gabarito": consistente,
             "sugestao_gabarito": sugestao,
         })
@@ -276,12 +357,14 @@ def batch(llama_cli, gguf_path, threads, num_samples):
     report = {
         "artefato": str(gguf_path),
         "motor": "llama.cpp (llama-cli)",
+        "modo": modo,
         "num_amostras": n,
         "estrutura": {
             "json_valido_pct": pct("json_valido"),
             "schema_completo_pct": pct("schema_completo"),
             "gabarito_valido_pct": pct("gabarito_valido"),
             "alternativas_distintas_pct": pct("alternativas_distintas"),
+            "justificativas_distintas_pct": pct("justificativas_distintas"),
             "distribuicao_gabaritos": dict(Counter(gabaritos)),
             "mencoes_figura_pct": round(100 * image_mentions / n, 1),
             "consistencia_gabarito_pct": (
@@ -289,6 +372,11 @@ def batch(llama_cli, gguf_path, threads, num_samples):
                 if consistencia_verificavel else None
             ),
             "consistencia_verificavel_n": consistencia_verificavel,
+        },
+        "pos_processamento": {
+            **{k: status_counter.get(k, 0)
+               for k in ("ok", "nao_verificavel", "corrigido", "falha")},
+            "regeneracoes_total": regeneracoes_total,
         },
         "velocidade_cpu_real": {
             "tokens_por_segundo_geracao": round(statistics.mean(gen_tps_list), 1) if gen_tps_list else None,
@@ -307,7 +395,7 @@ def batch(llama_cli, gguf_path, threads, num_samples):
         json.dump(report, f, ensure_ascii=False, indent=2)
 
     print(f"\n===== Teste real (GGUF via llama.cpp) — {n} amostras =====")
-    for section in ("estrutura", "velocidade_cpu_real"):
+    for section in ("estrutura", "pos_processamento", "velocidade_cpu_real"):
         print(f"[{section}]")
         for k, v in report[section].items():
             if k != "nota":
@@ -331,20 +419,37 @@ def main():
 
     parser.add_argument("--batch", action="store_true", help="roda sobre data/val.jsonl")
     parser.add_argument("--num-samples", type=int, default=None)
+
+    parser.add_argument("--no-grammar", action="store_true",
+                        help="não usar a grammar GBNF (estrutura fica por conta do modelo)")
+    parser.add_argument("--retries", type=int, default=1,
+                        help="regenerações máximas quando a validação reprova (padrão: 1)")
+    parser.add_argument("--raw", action="store_true",
+                        help="batch sem grammar nem verificação: mede o modelo cru")
     args = parser.parse_args()
 
     llama_cli = find_llama_cli(args.llama_cli)
     gguf_path = find_gguf(args.model)
 
+    grammar = None
+    if not args.no_grammar and not args.raw:
+        if GRAMMAR_PATH.exists():
+            grammar = GRAMMAR_PATH
+        else:
+            print(f"Aviso: {GRAMMAR_PATH} não encontrado — gerando sem grammar.")
+
     if args.batch:
-        batch(llama_cli, gguf_path, args.threads, args.num_samples)
+        batch(llama_cli, gguf_path, args.threads, args.num_samples,
+              grammar=grammar, retries=args.retries, raw=args.raw)
     elif args.ano and args.habilidade:
         run_one(
             llama_cli, gguf_path, args.ano, args.habilidade,
             args.descricao, args.dificuldade, args.threads, args.n,
+            grammar=grammar, retries=args.retries,
         )
     else:
-        interactive(llama_cli, gguf_path, args.threads)
+        interactive(llama_cli, gguf_path, args.threads, grammar=grammar,
+                    retries=args.retries)
 
 
 if __name__ == "__main__":

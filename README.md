@@ -9,13 +9,17 @@ llama.cpp (GGUF Q4_K_M).
 ```
 DB/questoes.db ──▶ extract_data.py ──▶ data/{train,val}.jsonl
                                             │
+                    generate_synthetic.py ──┤ (aritmética, gabarito calculado em Python)
+                    distill_teacher.py ─────┤ (professor maior + filtro determinístico)
+                                            │
                                         train.py (QLoRA 4-bit, Unsloth)
                                             │
                                      outputs/lora/ ──▶ evaluate.py ──▶ outputs/eval_report.json
                                             │
                                      export_gguf.py ──▶ outputs/gguf/*.gguf  (deploy mobile)
                                             │
-                                     test_model.py ──▶ outputs/eval_report_gguf.json
+                                     test_model.py (grammar GBNF + gerar→checar→corrigir)
+                                     ──▶ outputs/eval_report_gguf.json
                                      (testa o .gguf real via llama.cpp, sem torch/unsloth)
 ```
 
@@ -37,11 +41,21 @@ python src/test_model.py --batch      # ou valida em lote contra data/val.jsonl
 
 As ~300 questões reais ensinam formato/estilo (ver "Evolução futura" abaixo),
 mas são poucas para o modelo generalizar cálculo. `generate_synthetic.py`
-gera questões de adição, subtração, multiplicação, divisão, porcentagem e
-potenciação com o **gabarito calculado em Python antes de montar a questão**
+gera questões de adição, subtração, multiplicação, divisão, porcentagem,
+potenciação e frações (representação pictórica em texto, equivalência e
+conversão fração→porcentagem — H07/H08/H09 do 9º ano) com o **gabarito
+calculado em Python antes de montar a questão**
 — nunca por um LLM, então nunca pode estar errado — usando as mesmas tuplas
 (ano, habilidade, descrição, dificuldade) reais do banco, para o prompt de
-treino continuar idêntico ao que o app manda em produção:
+treino continuar idêntico ao que o app manda em produção.
+
+Cada questão tem as **4 justificativas** (uma por alternativa), no mesmo
+padrão do SAEB real: cada distrator é o resultado de um **erro pedagógico
+específico** (operação trocada, erro de vai-um, erro de casa decimal,
+confundir "valor do desconto" com "valor final"...), e sua justificativa
+explica esse erro citando o valor — não um número aleatório. Isso reforça o
+vínculo letra↔valor↔raciocínio no treino, atacando o problema de gabarito
+inconsistente com a justificativa (ver "Limitações conhecidas" abaixo):
 
 ```bash
 python src/generate_synthetic.py --dry-run             # só mostra estatísticas, não escreve nada
@@ -56,53 +70,96 @@ modelo no que ele de fato vai enfrentar em produção. Isso não muda nada no
 deploy — o `.gguf` exportado continua o mesmo formato/tamanho, offline e
 mobile como antes; só a qualidade do fine-tuning tende a melhorar.
 
-### Testando o modelo de verdade (`test_model.py`)
+### Destilação de um professor maior (`distill_teacher.py`)
 
-`evaluate.py` mede o modelo em 4-bit via `bitsandbytes`/HF na GPU — um caminho
-só de desenvolvimento, que não reflete o app. `test_model.py` chama o mesmo
-binário e o mesmo `.gguf` que rodam no celular (`llama-cli`, CPU, Q4_K_M):
+`generate_synthetic.py` só cobre cálculo puro (as habilidades onde dá para
+computar o gabarito em Python). Para habilidades mais interpretativas
+(leitura de tabela, ordem/comparação, sequências...) e para variar o
+contexto das questões de cálculo, `distill_teacher.py` usa um **modelo
+professor maior** via Hugging Face Inference Providers para gerar questões
+novas — mas **nada entra no treino sem passar pelo filtro determinístico**:
+schema completo, 4 alternativas/justificativas distintas, sem menção a
+figura, tamanho dentro do `max_seq_length`, gabarito não reprovado por
+`check_consistency()` e sem duplicata de enunciado. O professor erra às
+vezes; o filtro é o que garante que só entra dado limpo.
 
 ```bash
-python src/test_model.py                          # menu interativo (usa o DB para sugerir habilidades)
-python src/test_model.py --ano "5º" --habilidade H08 \
-    --descricao "Resolver problemas de adição ou subtração." --dificuldade Fácil
-python src/test_model.py --ano "9º" --habilidade H17 --n 5   # 5 variações do mesmo pedido
-python src/test_model.py --batch                   # roda data/val.jsonl inteiro pelo .gguf
-python src/test_model.py --batch --num-samples 10  # versão rápida
+python src/distill_teacher.py --dry-run --limit-tuples 5   # mostra o plano, sem chamar a API (grátis)
+python src/distill_teacher.py --limit-tuples 5              # teste barato: 5 tuplas x 3 questões
+python src/distill_teacher.py                                # roda para todas as tuplas do banco
+python src/distill_teacher.py --merge                        # mescla data/distill.jsonl em data/train.jsonl
 ```
 
-Sem dependência de `torch`/`unsloth` — só precisa do `llama-cli` (gerado por
-`export_gguf.py` em `~/.unsloth/llama.cpp/llama-cli`) e do `.gguf` exportado.
+Requer um `HF_TOKEN` com acesso a Inference Providers (billing do HF — não é
+o mesmo custo zero de `generate_synthetic.py`). `data/distill.jsonl` é
+append-only (seguro interromper e retomar: duplicatas são descartadas tanto
+na geração quanto na mesclagem). `--merge` é uma etapa separada de propósito
+— dá para revisar amostras de `data/distill.jsonl` manualmente antes de
+decidir incorporar ao treino.
+
+### Verificação em produção: grammar GBNF + gerar→checar→corrigir (`test_model.py`)
+
+Mesmo com o dataset melhor, um modelo de 1.7B ainda erra às vezes. Para não
+depender só de "o modelo aprendeu direito", `test_model.py` roda um pipeline
+de verificação sobre o artefato real (`generate_validated()`):
+
+1. **Grammar GBNF** (`grammars/questao.gbnf`) restringe a decodificação do
+   `llama-cli` ao schema exato — garante por construção JSON válido, todas
+   as chaves, 4 alternativas e 4 justificativas, gabarito em `{A,B,C,D}`.
+   Não garante consistência lógica (isso é papel do passo 2).
+2. **`check_consistency()`** confere se o gabarito bate com a conta
+   resolvida na justificativa correspondente.
+3. Se reprovar, **regenera** (padrão: 1 tentativa extra, `--retries N` para
+   mais) com seed diferente.
+4. Esgotadas as tentativas, **`fix_gabarito()`** corrige a letra
+   deterministicamente quando a conta bate com outra alternativa — só
+   descarta a questão (`status="falha"`) se nem isso resolver.
+
+```bash
+python src/test_model.py --ano "5º" --habilidade H08 --descricao "..." --dificuldade Fácil
+python src/test_model.py --batch                    # pipeline completo (grammar + verificação)
+python src/test_model.py --batch --raw              # mede o modelo cru, sem grammar/verificação (comparação)
+python src/test_model.py --no-grammar               # só o verificador, sem a grammar
+```
+
+`evaluate.py` mede o modelo em 4-bit via `bitsandbytes`/HF na GPU — um caminho
+só de desenvolvimento, que não reflete o app. `test_model.py` (seção acima)
+chama o mesmo binário e o mesmo `.gguf` que rodam no celular (`llama-cli`,
+CPU, Q4_K_M), sem dependência de `torch`/`unsloth` — só precisa do
+`llama-cli` (gerado por `export_gguf.py` em `~/.unsloth/llama.cpp/llama-cli`)
+e do `.gguf` exportado.
 
 ### Gabarito inconsistente com a justificativa
 
 Em alguns testes o cálculo na justificativa está certo, mas a letra do
-`gabarito` não bate com ele. Duas causas somadas:
+`gabarito` não bate com ele (ou as 4 justificativas saem repetidas/genéricas).
+Causas identificadas, e o que ataca cada uma:
 
-1. **Ordem das chaves no JSON treinado**: a geração é autorregressiva —
-   antes desta mudança, `gabarito` vinha *antes* de `justificativas` no
-   schema, então o modelo comprometia a letra sem ter "mostrado o trabalho"
-   ainda (o modo non-thinking não tem `<think>` para isso). Corrigido em
-   `extract_data.py`/`SYSTEM_PROMPT`: `justificativas` agora vem antes de
-   `gabarito`, forçando um raciocínio curto antes da resposta final. Só tem
-   efeito treinando de novo (`python src/extract_data.py` já regera os
-   dados; falta rodar `python src/train.py` para o modelo aprender a nova
-   ordem).
-2. **Qwen3-1.7B é pequeno**: aritmética multi-dígito é um ponto fraco
-   conhecido de LLMs nessa faixa sem chain-of-thought, e ~300 exemplos de
-   treino ensinam formato/estilo, não ampliam capacidade de cálculo (ver
-   "Evolução futura" abaixo).
+1. **Ordem das chaves no JSON treinado**: a geração é autorregressiva — antes
+   desta mudança, `gabarito` vinha *antes* de `justificativas` no schema,
+   então o modelo comprometia a letra sem ter "mostrado o trabalho" ainda (o
+   modo non-thinking não tem `<think>` para isso). Corrigido: `justificativas`
+   agora vem antes de `gabarito` no schema (`extract_data.py`/`SYSTEM_PROMPT`
+   e `grammars/questao.gbnf`).
+2. **Distratores sintéticos sem justificativa própria** (regressão
+   introduzida na primeira versão de `generate_synthetic.py`, identificada em
+   testes reais no app): gerar só a justificativa do gabarito e nada para as
+   outras 3 alternativas ensinava o modelo a tratar "justificativa" como
+   enfeite, e ele passava a repetir a mesma frase nas 4. Corrigido: cada
+   gerador agora produz **4 justificativas distintas**, uma por distrator
+   pedagógico (ver seção do `generate_synthetic.py` acima). Métrica nova:
+   `justificativas_distintas_pct` em `evaluate.py`/`test_model.py`.
+3. **Qwen3-1.7B é pequeno**: aritmética multi-dígito e coerência semântica em
+   contextos incomuns são pontos fracos conhecidos de LLMs nessa faixa sem
+   chain-of-thought — nenhuma correção de schema/dataset elimina isso
+   totalmente. Atacado por dataset maior/mais limpo (1 e 2 acima, mais
+   `distill_teacher.py`) e mitigado em produção pelo verificador abaixo.
 
-Como rede de segurança independente de retreino, `schema_utils.check_consistency()`
-faz uma checagem determinística: extrai uma expressão "a op b = r" do texto da
-justificativa do gabarito e confere se bate com o valor da alternativa
-apontada. `evaluate.py` e `test_model.py` reportam isso como
-`consistencia_gabarito_pct` (só sobre as amostras onde dá pra verificar —
-é uma heurística best-effort para aritmética simples, não substitui
-curadoria humana). Quando a conta não bate, a função também tenta indicar
-qual alternativa seria a correta (`sugestao_gabarito`), útil tanto para
-auditar o dataset quanto para uma futura correção automática no app antes
-de exibir a questão ao usuário.
+Os itens 1–2 só têm efeito **depois de retreinar** (`python src/train.py`
+sobre o `data/train.jsonl` regenerado). Para produção, independente de
+quando/se o retreino aconteceu, `test_model.py` já roda o verificador
+gerar→checar→corrigir (seção "Verificação em produção" acima) — é a garantia
+que não depende do modelo ter aprendido perfeitamente.
 
 ## Por que essa abordagem (literatura atual)
 
@@ -143,12 +200,15 @@ causas independentes, e o pipeline ataca as duas:
 
 ### Evolução futura
 
-Com ~300 exemplos o modelo aprende o formato, mas não amplia conhecimento
-matemático. O caminho da literatura para melhorar small language models é
-**destilação de dados sintéticos**: usar um modelo grande para gerar milhares
-de questões novas por habilidade, filtrá-las (validação automática +
-professor) e re-treinar. O pipeline atual já suporta isso — basta adicionar
-exemplos ao `data/train.jsonl`.
+Com ~300 exemplos reais o modelo aprende o formato, mas não amplia
+conhecimento matemático sozinho — por isso os dois caminhos de aumento de
+dados já implementados (`generate_synthetic.py` para cálculo puro, incluindo
+frações, H07–H09 do 9º ano; `distill_teacher.py` para destilação de um
+professor maior com filtro determinístico). Próximos passos considerados:
+**GRPO/RLVR** (reinforcement learning com recompensa verificável) usando
+`schema_utils.check_consistency()` diretamente como função de recompensa —
+Unsloth já roda GRPO em Qwen3-1.7B com ~5GB de VRAM, dentro da RTX 3060 6GB
+disponível.
 
 ## Formato dos dados
 
@@ -162,10 +222,13 @@ Saída (assistant):
   "enunciado": "...",
   "comando": "...",
   "alternativas": {"A": "...", "B": "...", "C": "...", "D": "..."},
-  "gabarito": "B",
-  "justificativas": {"A": "...", "B": "...", "C": "...", "D": "..."}
+  "justificativas": {"A": "...", "B": "...", "C": "...", "D": "..."},
+  "gabarito": "B"
 }
 ```
+
+Ordem das chaves importa: `justificativas` vem antes de `gabarito` de
+propósito (ver "Gabarito inconsistente com a justificativa" abaixo).
 
 Questões com imagem (230 de 553) são excluídas — o modelo em produção é só
 texto e não deve aprender a citar figuras inexistentes.
@@ -180,7 +243,7 @@ ou `BATCH_SIZE` para 1 (dobrando `GRAD_ACCUMULATION`).
 
 | Grupo | Métrica |
 |---|---|
-| Estrutura | % JSON válido, % schema completo, % gabarito válido, % alternativas distintas, distribuição de gabaritos, % menções a figura, % consistência gabarito↔justificativa (ver seção acima) |
+| Estrutura | % JSON válido, % schema completo, % gabarito válido, % alternativas distintas, % justificativas distintas, distribuição de gabaritos, % menções a figura, % consistência gabarito↔justificativa (ver seção acima) |
 | Linguagem | perplexity da resposta de referência |
 | Velocidade | latência média/p95 por questão, tokens/s, tokens de saída |
 
