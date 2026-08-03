@@ -37,7 +37,7 @@ import random
 from pathlib import Path
 
 from extract_data import SYSTEM_PROMPT, USER_TEMPLATE
-from schema_utils import check_consistency, check_structure
+from schema_utils import _UNICODE_MATH, check_consistency, check_structure
 
 ROOT = Path(__file__).resolve().parent.parent
 TRAIN_PATH = ROOT / "data" / "train.jsonl"
@@ -109,6 +109,7 @@ def montar(rng, enunciado, comando, itens, is_integer=True):
         "comando": comando,
         "alternativas": alternativas,
         "justificativas": justificativas,
+        "resposta": alternativas[gabarito],
         "gabarito": gabarito,
     }
 
@@ -147,6 +148,7 @@ def montar_texto(rng, enunciado, comando, itens):
         "comando": comando,
         "alternativas": alternativas,
         "justificativas": justificativas,
+        "resposta": alternativas[gabarito],
         "gabarito": gabarito,
     }
 
@@ -617,10 +619,19 @@ def gerar_todos(num_per_skill, seed):
 
 
 def validar(exemplos):
-    """Confere schema + 4 justificativas distintas + consistência gabarito/conta."""
-    problemas, verificaveis, ok = 0, 0, 0
+    """Confere schema + 4 justificativas distintas + consistência resposta/gabarito
+    + ausência de operadores Unicode.
+
+    O modelo tende a imitar o que vê no treino: se um operador tipográfico
+    (− × –) entrar nos dados, ele passa a emiti-lo na inferência e quebra
+    qualquer verificação baseada em texto. Esta checagem trava isso na origem.
+    """
+    problemas, verificaveis, ok, unicode_ops = 0, 0, 0, 0
     for ex in exemplos:
-        obj = json.loads(ex["messages"][2]["content"])
+        blob = ex["messages"][2]["content"]
+        if any(ch in _UNICODE_MATH and not ch.isspace() for ch in blob):
+            unicode_ops += 1
+        obj = json.loads(blob)
         flags = check_structure(obj)
         if not (flags["schema_completo"] and flags["gabarito_valido"]
                 and flags["alternativas_distintas"] and flags["justificativas_distintas"]):
@@ -629,7 +640,7 @@ def validar(exemplos):
         if consistente is not None:
             verificaveis += 1
             ok += int(consistente)
-    return problemas, verificaveis, ok
+    return problemas, verificaveis, ok, unicode_ops
 
 
 def write_jsonl(path, examples):
@@ -647,16 +658,17 @@ def main():
     args = parser.parse_args()
 
     sinteticos = gerar_todos(args.num_per_skill, args.seed)
-    problemas, verificaveis, ok = validar(sinteticos)
+    problemas, verificaveis, ok, unicode_ops = validar(sinteticos)
 
     print(f"Gerados: {len(sinteticos)} exemplos sintéticos ({len(SKILLS)} habilidades x "
           f"3 dificuldades x {args.num_per_skill})")
     print("Cada questão tem 4 justificativas: a correta mostra a conta; cada distrator "
           "explica o erro pedagógico que o gerou.")
     print(f"Falhas de schema/gabarito/alternativas/justificativas: {problemas} (esperado: 0)")
-    print(f"Consistência gabarito<->justificativa: {ok}/{verificaveis} verificáveis "
-          f"(o restante usa operações — potência, porcentagem — fora do regex simples do checker, "
-          f"mas o gabarito continua garantido por construção)")
+    print(f"Exemplos com operador Unicode (−, ×, –): {unicode_ops} (esperado: 0)")
+    print(f"Consistência resposta<->gabarito: {ok}/{verificaveis} verificáveis "
+          f"({100 * verificaveis // max(len(sinteticos), 1)}% de cobertura — o campo "
+          f"`resposta` torna a verificação exata, sem depender de regex)")
 
     if args.dry_run:
         print("\n--dry-run: nada escrito. Exemplo:")
@@ -665,6 +677,11 @@ def main():
 
     if problemas:
         raise SystemExit(f"Abortando: {problemas} exemplo(s) sintético(s) com schema inválido.")
+    if unicode_ops:
+        raise SystemExit(
+            f"Abortando: {unicode_ops} exemplo(s) com operador matemático Unicode. "
+            "Use - + x ÷ ASCII nos geradores (ver docstring de validar())."
+        )
 
     real = [json.loads(l) for l in open(TRAIN_PATH, encoding="utf-8")] if TRAIN_PATH.exists() else []
     real_sem_sintetico = [ex for ex in real if not ex.get("meta", {}).get("sintetico")]

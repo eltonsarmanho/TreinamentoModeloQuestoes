@@ -134,23 +134,48 @@ def generate(llama_cli, gguf_path, user_prompt, threads, max_new_tokens, seed=No
     return answer, prompt_tps, gen_tps, elapsed
 
 
+def _score_candidato(flags, consistente):
+    """Ordena candidatos do melhor para o pior (maior é melhor).
+
+    3 = estrutura ok + consistência VERIFICADA correta   (entregar direto)
+    2 = estrutura ok, consistência não verificável        (aceitável)
+    1 = estrutura ok, mas gabarito inconsistente          (corrigível por fix_gabarito)
+    0 = estrutura quebrada                                (descartar se houver melhor)
+    """
+    estrutura_ok = (flags["json_valido"] and flags["schema_completo"]
+                    and flags["gabarito_valido"] and flags["alternativas_distintas"])
+    if not estrutura_ok:
+        return 0
+    if consistente is True:
+        return 3
+    if consistente is None:
+        return 2
+    return 1
+
+
 def generate_validated(llama_cli, gguf_path, user_prompt, threads, max_new_tokens,
                        grammar=None, retries=1):
-    """Pipeline de produção: gerar -> checar -> regenerar -> corrigir.
+    """Pipeline de produção: best-of-N com verificador determinístico.
 
     1. Gera com grammar GBNF (estrutura garantida por construção, se disponível).
-    2. Valida estrutura (check_structure) e consistência gabarito<->conta
-       (check_consistency).
-    3. Se reprovar, regenera até `retries` vezes com seed diferente.
-    4. Esgotadas as tentativas, aplica fix_gabarito(): se a conta da
-       justificativa bate com outra alternativa, corrige a letra
+    2. Valida estrutura (check_structure) e consistência resposta<->gabarito
+       (check_consistency — comparação exata quando o campo `resposta` existe).
+    3. Amostra até `retries`+1 candidatos, **parando assim que um passa** na
+       verificação; entre os que reprovam, guarda o melhor (ver _score_candidato)
+       em vez do último — é a diferença entre best-of-N e retry sequencial.
+    4. Se nenhum passou, aplica fix_gabarito() sobre o melhor candidato: se a
+       resposta declarada bate com outra alternativa, corrige a letra
        deterministicamente em vez de entregar uma questão errada.
+
+    A seleção por verificador (em vez de voto majoritário simples) é o que a
+    literatura reporta como mais eficaz para modelos pequenos — ver
+    arXiv:2410.12608, que mede +5 a +7 pontos em modelos de 0.5B-1B.
 
     Retorna dict com: text, obj, flags, status, regeneracoes, gen_tps, elapsed.
     status: "ok" | "nao_verificavel" | "corrigido" | "falha".
     """
     total_elapsed, regeneracoes = 0.0, 0
-    last = None
+    melhor = None  # (score, text, obj, flags, gen_tps)
     for attempt in range(retries + 1):
         seed = None if attempt == 0 else 1000 + attempt
         text, _, gen_tps, elapsed = generate(
@@ -161,18 +186,20 @@ def generate_validated(llama_cli, gguf_path, user_prompt, threads, max_new_token
         obj = parse_json(text)
         flags = check_structure(obj)
         consistente, _ = check_consistency(obj)
-        estrutura_ok = (flags["json_valido"] and flags["schema_completo"]
-                        and flags["gabarito_valido"] and flags["alternativas_distintas"])
-        if estrutura_ok and consistente is not False:
-            status = "ok" if consistente else "nao_verificavel"
-            return {"text": text, "obj": obj, "flags": flags, "status": status,
+        score = _score_candidato(flags, consistente)
+
+        if melhor is None or score > melhor[0]:
+            melhor = (score, text, obj, flags, gen_tps)
+
+        if score >= 2:  # aprovado: para de gastar tempo/tokens
+            return {"text": text, "obj": obj, "flags": flags,
+                    "status": "ok" if score == 3 else "nao_verificavel",
                     "regeneracoes": regeneracoes, "gen_tps": gen_tps,
                     "elapsed": total_elapsed}
-        last = (text, obj, flags, gen_tps)
         if attempt < retries:
             regeneracoes += 1
 
-    text, obj, flags, gen_tps = last
+    _, text, obj, flags, gen_tps = melhor
     if obj is not None:
         obj, fix_status = fix_gabarito(obj)
         flags = check_structure(obj)
@@ -197,6 +224,8 @@ def print_question(obj, raw_text):
     for letra in "ABCD":
         marca = " <- gabarito" if letra == gabarito else ""
         print(f"    {letra}) {alts.get(letra, '?')}{marca}")
+    if obj.get("resposta") not in (None, ""):
+        print(f"  Resposta:  {obj['resposta']}  (deve bater com a alternativa {gabarito})")
     just = obj.get("justificativas")
     if just:
         print("  Justificativas:")

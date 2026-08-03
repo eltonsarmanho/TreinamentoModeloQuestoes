@@ -27,7 +27,7 @@ DB/questoes.db ──▶ extract_data.py ──▶ data/{train,val}.jsonl
 source venv/bin/activate
 pip install -r requirements.txt
 
-python src/extract_data.py            # 1. SQLite -> JSONL (304 questões textuais, split 90/10)
+python src/extract_data.py            # 1. SQLite -> JSONL (303 questões textuais, split 90/10)
 python src/generate_synthetic.py      # 1b. (opcional) aumenta data/train.jsonl com aritmética sintética
 python src/train.py                   # 2. fine-tuning QLoRA na RTX 3060 6GB
 python src/evaluate.py                # 3. métricas de qualidade + tempo de resposta (GPU, dev)
@@ -105,15 +105,19 @@ de verificação sobre o artefato real (`generate_validated()`):
 
 1. **Grammar GBNF** (`grammars/questao.gbnf`) restringe a decodificação do
    `llama-cli` ao schema exato — garante por construção JSON válido, todas
-   as chaves, 4 alternativas e 4 justificativas, gabarito em `{A,B,C,D}`.
-   Não garante consistência lógica (isso é papel do passo 2).
-2. **`check_consistency()`** confere se o gabarito bate com a conta
-   resolvida na justificativa correspondente.
-3. Se reprovar, **regenera** (padrão: 1 tentativa extra, `--retries N` para
-   mais) com seed diferente.
-4. Esgotadas as tentativas, **`fix_gabarito()`** corrige a letra
-   deterministicamente quando a conta bate com outra alternativa — só
-   descarta a questão (`status="falha"`) se nem isso resolver.
+   as chaves (incluindo `resposta`), 4 alternativas e 4 justificativas,
+   gabarito em `{A,B,C,D}`. Não garante consistência lógica (passo 2).
+2. **`check_consistency()`** compara `alternativas[gabarito]` com `resposta`
+   por **igualdade exata** — sem regex, sem depender de como a justificativa
+   foi escrita, funciona para fração/porcentagem/qualquer tipo. Para
+   artefatos antigos (sem o campo) cai num fallback por regex sobre a conta
+   da justificativa.
+3. Se reprovar, **best-of-N**: amostra até `--retries N`+1 candidatos,
+   parando no primeiro que passa e guardando o **melhor** entre os que
+   reprovam (não o último).
+4. Esgotadas as tentativas, **`fix_gabarito()`** troca a letra do gabarito
+   para a alternativa que contém a `resposta` — só descarta a questão
+   (`status="falha"`) se nem isso resolver.
 
 ```bash
 python src/test_model.py --ano "5º" --habilidade H08 --descricao "..." --dificuldade Fácil
@@ -149,11 +153,20 @@ Causas identificadas, e o que ataca cada uma:
    gerador agora produz **4 justificativas distintas**, uma por distrator
    pedagógico (ver seção do `generate_synthetic.py` acima). Métrica nova:
    `justificativas_distintas_pct` em `evaluate.py`/`test_model.py`.
-3. **Qwen3-1.7B é pequeno**: aritmética multi-dígito e coerência semântica em
+3. **Verificador cego em 70–77% dos casos** (medido em `eval_report.json`:
+   23 de 30 "não verificável"). Duas causas: (a) o modelo emite operadores
+   Unicode (`−` U+2212, `×`, `–`) que o regex ASCII não casava; (b) mais
+   grave, justificativas em texto corrido sem equação ("Subtraindo 5 de 12,
+   obtemos 7") que nenhum regex cobre de forma robusta. Corrigido em duas
+   frentes: normalização Unicode (`normalize_math`) e, sobretudo, o campo
+   **`resposta`** no schema — o valor da resposta num slot dedicado torna a
+   verificação uma comparação exata, levando a cobertura de ~25% para 100%
+   no conjunto sintético.
+4. **Qwen3-1.7B é pequeno**: aritmética multi-dígito e coerência semântica em
    contextos incomuns são pontos fracos conhecidos de LLMs nessa faixa sem
    chain-of-thought — nenhuma correção de schema/dataset elimina isso
    totalmente. Atacado por dataset maior/mais limpo (1 e 2 acima, mais
-   `distill_teacher.py`) e mitigado em produção pelo verificador abaixo.
+   `distill_teacher.py`) e mitigado em produção pelo verificador acima.
 
 Os itens 1–2 só têm efeito **depois de retreinar** (`python src/train.py`
 sobre o `data/train.jsonl` regenerado). Para produção, independente de
@@ -221,14 +234,18 @@ Saída (assistant):
 {
   "enunciado": "...",
   "comando": "...",
-  "alternativas": {"A": "...", "B": "...", "C": "...", "D": "..."},
+  "alternativas": {"A": "...", "B": "12", "C": "...", "D": "..."},
   "justificativas": {"A": "...", "B": "...", "C": "...", "D": "..."},
+  "resposta": "12",
   "gabarito": "B"
 }
 ```
 
-Ordem das chaves importa: `justificativas` vem antes de `gabarito` de
-propósito (ver "Gabarito inconsistente com a justificativa" abaixo).
+Ordem das chaves importa (ver "Gabarito inconsistente com a justificativa"
+abaixo): o modelo primeiro **mostra o trabalho** (`justificativas`), depois
+se compromete com o **valor** (`resposta`) e só então escolhe a **letra**
+(`gabarito`). Isso torna a verificação uma comparação exata
+`alternativas[gabarito] == resposta`, sem depender de interpretar texto.
 
 Questões com imagem (230 de 553) são excluídas — o modelo em produção é só
 texto e não deve aprender a citar figuras inexistentes.

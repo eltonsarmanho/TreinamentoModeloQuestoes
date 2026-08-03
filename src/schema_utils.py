@@ -9,7 +9,12 @@ julguem "resposta válida" da mesma forma.
 import json
 import re
 
-REQUIRED_KEYS = {"enunciado", "comando", "alternativas", "gabarito"}
+# `resposta` (o VALOR da resposta correta, ex.: "5") vem antes de `gabarito`
+# (a LETRA) no schema. Isso transforma a verificação de "extrair a conta do
+# texto livre da justificativa com regex" — que falhava em 70-77% dos casos,
+# seja por operadores Unicode, seja por raciocínio verbal sem equação — em
+# uma comparação exata `alternativas[gabarito] == resposta`.
+REQUIRED_KEYS = {"enunciado", "comando", "alternativas", "resposta", "gabarito"}
 IMAGE_PATTERN = re.compile(r"\b(figura|imagem|gráfico|desenho|ilustração)\b", re.I)
 
 
@@ -52,8 +57,33 @@ def check_structure(obj):
 
 
 _NUM_PATTERN = re.compile(r"-?\d+(?:[.,]\d+)?")
+
+# O modelo emite operadores tipográficos Unicode (−, ×, –) em vez dos ASCII
+# usados no dataset de treino. Sem normalizar, o regex abaixo não casa e o
+# verificador devolve "não verificável" — silenciosamente deixando passar
+# gabaritos errados. Medido: 70-77% das saídas caíam nesse buraco.
+_UNICODE_MATH = {
+    "−": "-",  # MINUS SIGN
+    "–": "-",  # EN DASH
+    "—": "-",  # EM DASH
+    "×": "x",  # MULTIPLICATION SIGN
+    "⋅": "x",  # DOT OPERATOR
+    "∙": "x",  # BULLET OPERATOR
+    "∕": "/",  # DIVISION SLASH
+    "＝": "=",  # FULLWIDTH EQUALS
+    " ": " ",  # NO-BREAK SPACE
+    " ": " ",  # NARROW NO-BREAK SPACE
+}
+_UNICODE_TABLE = str.maketrans(_UNICODE_MATH)
+
+
+def normalize_math(text):
+    """Converte operadores matemáticos Unicode para os equivalentes ASCII."""
+    return str(text or "").translate(_UNICODE_TABLE)
+
+
 # Casa expressões simples "a op b = r" dentro do texto da justificativa,
-# ex.: "35 - 20 = 15", "3x4=12", "10/2 = 5".
+# ex.: "35 - 20 = 15", "3x4=12", "10/2 = 5" (após normalize_math).
 _EXPR_PATTERN = re.compile(
     r"(-?\d+(?:[.,]\d+)?)\s*([-+xX*÷/])\s*(-?\d+(?:[.,]\d+)?)\s*=\s*(-?\d+(?:[.,]\d+)?)"
 )
@@ -78,7 +108,7 @@ def _to_number(text):
 
 def _computed_result(text):
     """Extrai o resultado de uma conta 'a op b = r' no texto, se a conta bater."""
-    match = _EXPR_PATTERN.search(text or "")
+    match = _EXPR_PATTERN.search(normalize_math(text))
     if not match:
         return None
     a_str, op, b_str, r_str = match.groups()
@@ -92,37 +122,89 @@ def _computed_result(text):
 
 
 def _leading_number(text):
-    match = _NUM_PATTERN.search(str(text or ""))
+    match = _NUM_PATTERN.search(normalize_math(text))
     return _to_number(match.group()) if match else None
 
 
+def _canon(text):
+    """Forma canônica para comparar alternativa com `resposta`: minúsculas, sem
+    espaços redundantes, operadores normalizados. Mantém unidades ("5 bolas"),
+    que o casamento textual exato usa e o fallback numérico ignora."""
+    return re.sub(r"\s+", " ", normalize_math(text).strip().lower())
+
+
+def _match_letra(alternativas, valor):
+    """Acha a letra cuja alternativa corresponde a `valor`.
+
+    Duas passadas, da mais estrita para a mais tolerante:
+      1. igualdade textual canônica ("3/4" == "3/4", "20%" == "20%")
+      2. igualdade do primeiro número ("5" ~ "5 bonecos")
+    A segunda só decide se casar com UMA única alternativa — se duas
+    alternativas começam com o mesmo número, é ambíguo e devolvemos None em
+    vez de escolher errado.
+    """
+    alvo = _canon(valor)
+    exatas = [l for l, t in alternativas.items() if _canon(t) == alvo]
+    if len(exatas) == 1:
+        return exatas[0]
+
+    num = _leading_number(valor)
+    if num is None:
+        return None
+    numericas = [l for l, t in alternativas.items() if _leading_number(t) == num]
+    return numericas[0] if len(numericas) == 1 else None
+
+
 def check_consistency(obj):
-    """Confere se o `gabarito` é a alternativa cujo valor bate com a conta
-    resolvida na justificativa correspondente.
+    """Confere se o `gabarito` (a LETRA) aponta para a alternativa que contém a
+    `resposta` (o VALOR).
+
+    Estratégia em duas vias:
+      1. **Exata** — se o JSON traz o campo `resposta`, basta comparar
+         `alternativas[gabarito]` com ele. Não depende de regex, de operador
+         Unicode nem de como a justificativa foi redigida: cobre qualquer tipo
+         de questão (fração, porcentagem, texto).
+      2. **Fallback por regex** — para saídas de modelos antigos, sem o campo
+         `resposta`, extrai uma conta "a op b = r" da justificativa do gabarito.
+         Cobria só ~25% dos casos; é a razão de existir a via 1.
 
     Retorna (ok, sugestao):
-      ok=True         conta da justificativa do gabarito bate com o valor da alternativa
-      ok=False        não bate — `sugestao` traz a letra da alternativa correta, se achada
-      ok=None         não deu pra verificar (sem uma conta "a op b = r" clara no texto)
-
-    Heurística best-effort para questões de aritmética simples; não substitui
-    a correção humana/curadoria dos dados de treino.
+      ok=True         gabarito aponta para a alternativa correta
+      ok=False        não aponta — `sugestao` traz a letra correta, se identificável
+      ok=None         não deu para verificar por nenhuma das duas vias
     """
     if not obj:
         return None, None
     gabarito = obj.get("gabarito")
-    justificativas = obj.get("justificativas")
     alternativas = obj.get("alternativas")
-    if not isinstance(justificativas, dict) or not isinstance(alternativas, dict):
+    if not isinstance(alternativas, dict) or gabarito not in alternativas:
         return None, None
 
+    # Via 1: casamento exato contra o campo `resposta`.
+    resposta = obj.get("resposta")
+    if resposta not in (None, ""):
+        letra = _match_letra(alternativas, resposta)
+        if letra is not None:
+            return (True, None) if letra == gabarito else (False, letra)
+        # `resposta` não casou com nenhuma alternativa. Dois cenários bem
+        # diferentes, e confundi-los gera falso negativo:
+        #   (a) modelo NÃO retreinado ecoa a LETRA ("B") no campo, porque a
+        #       grammar o obriga a preencher algo que ele nunca aprendeu —
+        #       não é erro da questão; caímos para a via 2.
+        #   (b) modelo retreinado declara um VALOR que não existe entre as
+        #       alternativas — aí a questão está de fato malformada.
+        if _canon(resposta) not in {"a", "b", "c", "d"}:
+            return False, None
+
+    # Via 2 (legado / modelo não retreinado): extrai a conta da justificativa.
+    justificativas = obj.get("justificativas")
+    if not isinstance(justificativas, dict):
+        return None, None
     result = _computed_result(justificativas.get(gabarito, ""))
     if result is None:
         return None, None
-
     if _leading_number(alternativas.get(gabarito)) == result:
         return True, None
-
     for letra, texto in alternativas.items():
         if _leading_number(texto) == result:
             return False, letra
@@ -132,17 +214,18 @@ def check_consistency(obj):
 def fix_gabarito(obj):
     """Correção determinística pós-geração (para o app e para os scripts de teste).
 
-    Se a conta resolvida na justificativa do gabarito bate com o valor de OUTRA
-    alternativa, troca o gabarito para essa letra. Retorna (obj, status):
-      "ok"              gabarito consistente com a conta — nada a fazer
-      "corrigido"       gabarito trocado para a letra cujo valor bate com a conta
-      "inconsistente"   conta não bate com nenhuma alternativa — regenerar é o
-                        único remédio
-      "nao_verificavel" sem conta "a op b = r" reconhecível — segue como está
+    Se o gabarito não aponta para a alternativa que contém a `resposta` (ou,
+    no fallback legado, o resultado da conta), troca a letra do gabarito para a
+    correta. Retorna (obj, status):
+      "ok"              gabarito já aponta para a alternativa certa
+      "corrigido"       letra do gabarito trocada para a alternativa certa
+      "inconsistente"   a resposta/conta não corresponde a nenhuma alternativa —
+                        questão malformada, regenerar é o único remédio
+      "nao_verificavel" sem `resposta` nem conta reconhecível — segue como está
 
-    Nota: ao corrigir, apenas a letra do gabarito muda; a justificativa que
-    contém a conta continua na letra original. A letra corrigida é a
-    pedagogicamente correta (valor == resultado da conta).
+    Nota: ao corrigir, apenas a letra do gabarito muda; as justificativas
+    permanecem onde estão. A letra corrigida é a pedagogicamente correta
+    (a alternativa cujo valor é de fato a resposta).
     """
     consistente, sugestao = check_consistency(obj)
     if consistente is True:

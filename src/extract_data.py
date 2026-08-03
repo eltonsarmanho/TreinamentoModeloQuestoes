@@ -19,6 +19,8 @@ import sqlite3
 from collections import Counter, defaultdict
 from pathlib import Path
 
+from schema_utils import normalize_math
+
 ROOT = Path(__file__).resolve().parent.parent
 DB_PATH = ROOT / "DB" / "questoes.db"
 OUT_DIR = ROOT / "data"
@@ -32,10 +34,12 @@ SYSTEM_PROMPT = (
     "válido, sem texto extra, no schema: "
     '{"enunciado": str, "comando": str, "alternativas": {"A": str, "B": str, '
     '"C": str, "D": str}, "justificativas": {"A": str, "B": str, "C": str, '
-    '"D": str}, "gabarito": "A|B|C|D"}. Resolva e justifique cada alternativa '
-    "antes de decidir o gabarito, para que a letra escolhida seja consistente "
-    "com as contas feitas nas justificativas. A questão deve ser autocontida, "
-    "sem depender de figuras, imagens ou gráficos."
+    '"D": str}, "resposta": str, "gabarito": "A|B|C|D"}. Resolva e justifique '
+    "cada alternativa antes de decidir a resposta. O campo \"resposta\" deve "
+    "conter o VALOR da resposta correta, copiado exatamente como aparece na "
+    "alternativa correspondente; o campo \"gabarito\" deve ser a LETRA dessa "
+    "mesma alternativa. Use os sinais - + x ÷ nas contas. A questão deve ser "
+    "autocontida, sem depender de figuras, imagens ou gráficos."
 )
 
 USER_TEMPLATE = (
@@ -45,10 +49,18 @@ USER_TEMPLATE = (
 
 
 def clean(value):
-    """Normaliza campo textual; retorna '' para nulos/'nan'."""
+    """Normaliza campo textual; retorna '' para nulos/'nan'.
+
+    Converte operadores tipográficos Unicode (− × –) para ASCII (- x -).
+    Motivo: 30% dos itens do banco usam a forma tipográfica e 70% a ASCII; um
+    modelo de 1.7B treinado com 670 exemplos aprende essa inconsistência e
+    passa a emitir os dois formatos de modo imprevisível na inferência — o que
+    quebrava a verificação por texto (ver seção 5.4 da DOCUMENTACAO_CIENTIFICA).
+    Padronizar a origem alinha os dados reais com os sintéticos, que já são ASCII.
+    """
     if value is None:
         return ""
-    text = str(value).strip()
+    text = normalize_math(str(value)).strip()
     return "" if text.lower() == "nan" else text
 
 
@@ -85,6 +97,12 @@ def build_example(row):
     if not enunciado or gabarito not in "ABCD" or not all(alternativas.values()):
         return None, "campos"
 
+    # Itens do banco em que duas alternativas têm o mesmo texto (a resposta
+    # correta aparece duplicada) são malformados: treinar neles ensina que
+    # repetir alternativa é aceitável, e tornam o gabarito ambíguo.
+    if len({v.strip() for v in alternativas.values()}) < 4:
+        return None, "alternativas_duplicadas"
+
     justificativas = {
         letra: clean(row[f"justificativa_alternativa_{letra.lower()}"])
         for letra in "ABCD"
@@ -95,9 +113,12 @@ def build_example(row):
         justificativas[gabarito] = geral
     justificativas = {k: v for k, v in justificativas.items() if v}
 
-    # Ordem das chaves importa: JSON é gerado token a token, então a
-    # justificativa (raciocínio) precisa vir ANTES do gabarito no schema —
-    # senão o modelo comete a letra sem ter "mostrado o trabalho" ainda.
+    # Ordem das chaves importa: JSON é gerado token a token, então o raciocínio
+    # precisa vir ANTES da resposta final. A sequência
+    # justificativas -> resposta (VALOR) -> gabarito (LETRA) faz o modelo
+    # primeiro mostrar o trabalho, depois se comprometer com o valor, e só
+    # então escolher a letra — que fica verificável por comparação exata
+    # (ver schema_utils.check_consistency).
     answer = {
         "enunciado": enunciado,
         "comando": comando,
@@ -105,6 +126,7 @@ def build_example(row):
     }
     if justificativas:
         answer["justificativas"] = justificativas
+    answer["resposta"] = alternativas[gabarito]
     answer["gabarito"] = gabarito
 
     ano = clean(row["ano"]) or "não informado"

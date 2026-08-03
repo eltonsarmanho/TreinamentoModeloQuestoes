@@ -1,7 +1,7 @@
 # Fine-tuning de um LLM de 1.7B para Geração Offline de Questões de Matemática no Padrão SAEB: Metodologia, Protocolo e Resultados Preliminares
 
 **Documento de trabalho interno — base para publicação futura.**
-Última atualização: 2026-08-01.
+Última atualização: 2026-08-02.
 Repositório: `TreinamentoModeloQuestoes` (código, dados e artefatos referenciados neste documento).
 
 ---
@@ -114,7 +114,8 @@ descrição do descritor e grau de dificuldade (Fácil/Moderado/Difícil).
   produção é puramente textual; treinar sobre itens com imagem ensinaria o
   modelo a referenciar figuras inexistentes): **230 itens** descartados.
 
-Resultado: **304 itens válidos**, cobrindo os 3 anos escolares, as 3
+Resultado: **303 itens válidos** (304 antes do filtro de alternativas
+duplicadas descrito na Seção 5.4), cobrindo os 3 anos escolares, as 3
 dificuldades e 27 habilidades distintas.
 
 ### 3.2 Formato do exemplo de treino
@@ -130,24 +131,37 @@ Cada item vira um exemplo de conversa (formato *chat*) com três mensagens:
   produção.
 - `assistant`: JSON compacto com as chaves, **nesta ordem**: `enunciado`,
   `comando`, `alternativas` (dict A–D), `justificativas` (dict A–D),
-  `gabarito` (letra).
+  `resposta` (o **valor** da alternativa correta) e `gabarito` (a **letra**).
 
 **Decisão de protocolo relevante**: a ordem das chaves no JSON de saída não é
 arbitrária. Como a geração é autorregressiva (token a token, esquerda para
 direita), a posição de uma chave determina se o modelo já "viu" (gerou) o
 raciocínio associado antes de se comprometer com outra chave. Na primeira
 versão do pipeline, `gabarito` precedia `justificativas`; isto foi
-identificado como uma causa provável do modo de falha descrito na Seção 6, e
+identificado como uma causa provável do modo de falha descrito na Seção 5.2, e
 corrigido — `justificativas` passou a preceder `gabarito`, forçando o modelo
 a "mostrar o trabalho" antes de emitir a letra final. Como o modelo roda em
 modo *non-thinking* (Seção 3.6, sem bloco `<think>`), a ordem das chaves do
 JSON é o único mecanismo disponível para induzir esse tipo de sequenciamento
 de raciocínio.
 
+**Campo `resposta` (introduzido após a análise da Seção 5.4)**: separar o
+*valor* da resposta (`resposta`) da *letra* que a identifica (`gabarito`)
+tem duas funções. (i) **Sequenciamento de raciocínio**: o modelo se
+compromete primeiro com o resultado numérico, e só então escolhe a letra —
+decompondo em dois passos o que antes era uma decisão única que acoplava
+cálculo e mapeamento posicional. (ii) **Verificabilidade por construção**: a
+checagem de corretude passa a ser a comparação exata
+`alternativas[gabarito] == resposta`, eliminando a necessidade de interpretar
+texto livre. O custo é de aproximadamente 6 tokens (~2% da saída média),
+irrelevante para a latência mobile. Esta é a mesma ideia geral de tornar a
+saída *machine-checkable* que fundamenta a decodificação restrita
+(Seção 3.9), aplicada ao nível do schema em vez do nível do token.
+
 ### 3.3 Divisão treino/validação
 
 Split 90/10 estratificado por (ano escolar, dificuldade), com seed fixa (42):
-**274 exemplos de treino / 30 de validação** (`data/train.jsonl`,
+**273 exemplos de treino / 30 de validação** (`data/train.jsonl`,
 `data/val.jsonl`). O conjunto de validação contém **exclusivamente itens
 reais** do banco SAEB em todas as fases do projeto — nenhum dado sintético
 ou destilado é inserido em `data/val.jsonl` em nenhuma etapa, para que a
@@ -155,7 +169,7 @@ métrica de avaliação sempre reflita o cenário de produção.
 
 ### 3.4 Aumento de dados I: síntese aritmética determinística
 
-Motivação: seguindo LIMA (Zhou et al., 2023), tratamos os 304 itens reais
+Motivação: seguindo LIMA (Zhou et al., 2023), tratamos os ~300 itens reais
 como suficientes para ensinar formato/estilo, mas não como suficientes para
 generalizar capacidade aritmética — hipótese corroborada empiricamente pelos
 modos de falha da Seção 6. `src/generate_synthetic.py` gera questões de
@@ -189,8 +203,8 @@ testes reais, sugerindo que a ausência de justificativas para distratores no
 treino ensinava o modelo a tratar esse campo como acessório.
 
 No momento da escrita: **396 exemplos sintéticos** gerados (11 combinações de
-habilidade × 3 dificuldades × 12 exemplos), somando **670 exemplos de treino
-total** (274 reais + 396 sintéticos) em `data/train.jsonl`. Validação
+habilidade × 3 dificuldades × 12 exemplos), somando **669 exemplos de treino
+total** (273 reais + 396 sintéticos) em `data/train.jsonl`. Validação
 determinística interna (`schema_utils.check_structure` +
 `check_consistency`, rodada sobre a geração antes de qualquer treino): 0
 falhas de schema/gabarito/alternativas/justificativas em 396 exemplos; 100%
@@ -286,34 +300,61 @@ O adaptador LoRA é mesclado ao modelo base em fp16 e exportado via
 
 Independente da qualidade aprendida durante o fine-tuning, o pipeline de
 inferência de teste (`src/test_model.py`, função `generate_validated()`)
-implementa uma camada de verificação determinística em três estágios:
+implementa uma camada de verificação determinística em quatro estágios:
 
 1. **Decodificação restrita por gramática GBNF** (`grammars/questao.gbnf`):
    restringe a decodificação do `llama-cli` ao schema JSON exato (mesma
    ordem de chaves da Seção 3.2), garantindo por construção JSON válido,
    presença de todas as chaves, exatamente 4 alternativas e 4 justificativas,
-   e gabarito em `{A,B,C,D}`. Não garante corretude semântica.
-2. **Checagem de consistência gabarito↔justificativa**
-   (`schema_utils.check_consistency`): extrai, via expressão regular, uma
-   equação do tipo "a op b = r" do texto da justificativa correspondente ao
-   gabarito, recalcula o lado esquerdo e compara com o valor numérico
-   apresentado na alternativa apontada como correta. Retorna um entre três
-   estados — consistente, inconsistente (com sugestão de letra correta, se
-   encontrada), ou não verificável (quando o texto não contém uma equação
-   simples reconhecível — limitação conhecida: casos com raciocínio verbal
-   sem equação explícita, ou com múltiplas operações encadeadas, não são
-   cobertos por esta heurística).
-3. **Regenerar → corrigir**: se a checagem reprova, o pipeline regenera com
-   uma seed diferente (número de tentativas configurável). Esgotadas as
-   tentativas, `fix_gabarito()` aplica correção determinística — se a conta
-   da justificativa aponta para o valor de outra alternativa, a letra do
-   gabarito é trocada para essa alternativa; só quando isso também falha a
-   questão é marcada para descarte (`status="falha"`).
+   campo `resposta` e gabarito em `{A,B,C,D}`. Não garante corretude
+   semântica.
+2. **Checagem de consistência** (`schema_utils.check_consistency`), com duas
+   vias em ordem de preferência:
+   - **Via exata** (padrão após a introdução do campo `resposta`): compara
+     `alternativas[gabarito]` com `resposta` por igualdade textual canônica,
+     com desempate por igualdade do primeiro número (tolerando unidades, como
+     `"5"` ≈ `"5 bonecos"`). O desempate numérico só decide quando casa com
+     uma **única** alternativa; havendo ambiguidade, o resultado é
+     "não verificável" em vez de um palpite. Esta via independe de como a
+     justificativa foi redigida e cobre qualquer tipo de questão — frações,
+     porcentagens, respostas não numéricas.
+   - **Via por expressão regular** (fallback, para artefatos anteriores à
+     mudança de schema): extrai uma equação "a op b = r" da justificativa do
+     gabarito, recalcula o lado esquerdo e compara com o valor da alternativa.
+     Precede a normalização de operadores tipográficos Unicode (ver
+     Seção 5.4). Cobertura empírica medida: ~25% (Seção 5.4).
+3. **Best-of-N com seleção por verificador**: são amostrados até *N*
+   candidatos, **parando assim que um passa** na verificação. Entre os que
+   reprovam, o pipeline retém o **melhor** segundo uma ordem parcial
+   (verificado correto > não verificável > corrigível > estrutura quebrada),
+   e não o último gerado — é o que distingue best-of-N de repetição
+   sequencial. A seleção por verificador programático, em vez de voto
+   majoritário simples, é a variante que a literatura reporta como mais
+   eficaz em modelos pequenos: +4,9 pontos em Qwen2-0.5B e +7,4 em
+   Llama-3.2-1B no GSM8K (arXiv:2410.12608), sobre a linha de base de
+   *self-consistency* (Wang et al., arXiv:2203.11171). Ressalva metodológica
+   registrada na mesma literatura: a técnica só ajuda quando a probabilidade
+   de acerto por amostra já é superior a 0,5 — condição satisfeita aqui
+   (≈0,9 observado empiricamente).
+4. **Correção determinística**: esgotadas as tentativas, `fix_gabarito()`
+   troca a letra do gabarito para a alternativa que contém a `resposta`
+   declarada; só quando nem isso é possível a questão é marcada para
+   descarte (`status="falha"`).
 
 Esta camada não substitui a melhoria do modelo (Seções 3.4–3.5): ela é a
 garantia de produção que continua valendo **independentemente** de quão bem
 o retreino corrigiu o comportamento do modelo, e seu custo é limitado à
 latência das regenerações nos casos que reprovam na primeira tentativa.
+
+**Nota sobre o período de transição**: um artefato treinado *antes* da
+introdução do campo `resposta` não sabe o que colocar nele; forçado pela
+gramática, tende a ecoar a própria letra do gabarito (`"resposta": "B"`).
+Tratar isso como inconsistência produziria falsos negativos, então
+`check_consistency()` distingue explicitamente os dois casos: um valor que
+não casa com nenhuma alternativa **e** é uma letra isolada A–D é interpretado
+como esse artefato e delega à via 2; um valor que não casa e não é letra
+indica questão genuinamente malformada. A verificação exata só entra em
+regime pleno após o retreino.
 
 ## 4. Protocolo de avaliação
 
@@ -368,7 +409,7 @@ intervalos de confiança sobre um n maior.
 treinado com **562** exemplos (274 reais + 288 sintéticos, cobrindo apenas
 aritmética inteira/decimal). Desde então, `generate_synthetic.py` passou a
 cobrir também frações (H07–H09, Seção 3.4), elevando o dataset de treino
-para **670** exemplos (274 + 396). Os números desta seção **antecedem** essa
+para **669** exemplos (273 + 396). Os números desta seção **antecedem** essa
 expansão e precisam ser remedidos após o próximo retreino.
 
 ### 5.1 Modelo treinado sobre 562 exemplos (274 reais + 288 sintéticos, geração de distratores v1)
@@ -439,15 +480,110 @@ correto) mesmo quando o modelo subjacente ainda apresenta o modo de falha
 nº 1 (justificativas repetidas, não corrigido pelo verificador, que atua
 apenas sobre a letra do gabarito).
 
+### 5.4 Análise de cobertura do verificador: a rede de segurança tinha um buraco
+
+Testes de uso continuado reportaram uma taxa de acerto de aproximadamente 90%,
+com casos residuais de gabarito incorreto **atravessando o verificador sem
+serem sinalizados**. A investigação desses casos revelou que o problema não
+estava apenas no modelo, mas na própria camada de verificação.
+
+**Medição de cobertura.** Recontando os relatórios de avaliação já existentes
+pelo estado retornado por `check_consistency()`:
+
+| Relatório | n | verificado correto | verificado incorreto | **não verificável** |
+|---|---|---|---|---|
+| `eval_report.json` (GPU) | 30 | 4 | 3 | **23 (77%)** |
+| `eval_report_gguf.json` (CPU) | 10 | 2 | 1 | **7 (70%)** |
+
+Ou seja: em 70–77% das gerações o verificador **não emitia julgamento algum**,
+e uma questão não julgada é indistinguível, do ponto de vista do sistema, de
+uma questão aprovada. A garantia de produção declarada na Seção 3.9 valia,
+na prática, para cerca de um quarto dos casos.
+
+**Causa 1 — operadores tipográficos Unicode.** Um caso reportado trazia a
+justificativa `"12 − 7 = 5."` associada a uma alternativa de valor `4`,
+enquanto o valor `5` estava em outra alternativa: gabarito objetivamente
+errado, e ainda assim classificado como "não verificável". A inspeção do
+código de ponto revelou que o caractere emitido era U+2212 (MINUS SIGN),
+enquanto a expressão regular aceitava apenas U+002D (HYPHEN-MINUS). O modelo
+emite a forma tipográfica de maneira **intermitente** (uma amostragem
+independente de cinco gerações não a produziu nenhuma vez), o que explica por
+que a falha era esporádica e difícil de reproduzir.
+
+A origem dessa intermitência foi localizada nos **próprios dados de treino**:
+auditando o corpus real extraído do banco, **30% dos itens (84 de 273)**
+contêm operadores tipográficos (143 ocorrências de `×`, 50 de `–`, 41 de `−`),
+enquanto os 70% restantes — e a totalidade do corpus sintético — usam ASCII.
+O modelo não estava introduzindo um artefato próprio: estava reproduzindo
+fielmente uma inconsistência de notação presente na sua supervisão. Para um
+modelo de 1,7B ajustado sobre poucas centenas de exemplos, uma convenção
+dividida em 30/70 é aprendida como variação livre, e emitida de forma
+imprevisível na inferência.
+
+Corrigido em dois pontos: (i) `normalize_math()`, aplicada antes de qualquer
+casamento textual na verificação, mapeando `− – — × ⋅ ∙ ∕` e espaços não
+separáveis para os equivalentes ASCII; e (ii) a mesma normalização aplicada
+na **extração** (`extract_data.py`), padronizando o corpus real para ASCII e
+alinhando-o ao sintético. A segunda correção ataca a causa, a primeira
+protege contra o efeito residual.
+
+A mesma auditoria identificou um item do banco com duas alternativas de texto
+idêntico (a resposta correta duplicada em A e D), que tornava o gabarito
+ambíguo; passou a ser descartado na extração pelo filtro
+`alternativas_duplicadas`. Corpus final: 273 itens reais (de 304) + 396
+sintéticos = 669 exemplos de treino, 0 com operador Unicode, 0 com schema
+inválido, 100% verificáveis.
+
+**Causa 2 — raciocínio verbal sem equação explícita (dominante).** A mesma
+amostragem de cinco gerações produziu justificativas como
+`"Subtraindo 5 de 12, obtemos 7."` — aritmeticamente correta, mas sem nenhuma
+equação no formato `a op b = r`. Nenhuma normalização de caracteres resolve
+este caso: extrair a operação exigiria interpretar linguagem natural, uma
+corrida armamentista contra a variedade de formulações possíveis. Esta é a
+causa majoritária dos 70–77%.
+
+**Consequência metodológica.** A Causa 2 estabelece que aumentar a
+sofisticação do extrator é uma estratégia sem teto de garantia: qualquer
+heurística sobre texto livre terá cobertura parcial e desconhecida *a priori*.
+A alternativa adotada foi mudar o **contrato de saída** em vez do extrator —
+o campo `resposta` (Seção 3.2) coloca o valor da resposta em um slot
+dedicado, tornando a verificação uma comparação exata. A cobertura sobre o
+conjunto sintético, onde o campo é gerado por construção, passa de 76% (fração
+com equação explícita reconhecível) para **100%** (396/396 exemplos
+verificáveis). A cobertura sobre gerações reais do modelo só poderá ser medida
+integralmente após o retreino, e é a métrica a reportar na próxima iteração
+deste documento.
+
+**Medição intermediária** (artefato ainda **não** retreinado, 8 amostras, com
+gramática e verificador novos ativos): a cobertura sobe de ~25–30% para
+**50%** (4 de 8 verificáveis) apenas com a normalização Unicode, com 100% de
+consistência entre os casos julgados, nenhuma questão descartada e nenhuma
+correção de letra necessária. O ganho residual até 100% depende do modelo
+aprender a preencher `resposta` com o valor — isto é, do retreino. Este é o
+comportamento esperado e não deve ser lido como resultado final.
+
+**Nota sobre hiperparâmetros.** Foi considerada e descartada a hipótese de
+que o modo de falha fosse mitigável por ajuste de hiperparâmetros de treino.
+A configuração atual (r=16, α=32, lr 2e-4) já corresponde ao ótimo relatado
+para datasets pequenos — desempenho reportado com pico em r=16, sem ganho em
+r=32 e subajuste em r=8 (documentação técnica do Unsloth) — de modo que o
+espaço de melhoria está no contrato de saída e na verificação, não na
+parametrização do ajuste fino.
+
 ## 6. Limitações
 
 - **Amostra de validação pequena** (n=30, e n≤8 para a métrica de
   consistência) — ver aviso metodológico da Seção 5.
-- **Heurística de consistência é sintaticamente limitada**: cobre apenas
-  equações simples de uma operação ("a op b = r"); raciocínio verbal sem
-  equação explícita, ou problemas de porcentagem/potenciação com múltiplas
-  operações encadeadas, não são verificados por ela — o gabarito nesses
-  casos pode estar correto ou incorreto sem que o sistema saiba dizer.
+- **A verificação exata depende do modelo preencher `resposta` com o valor
+  correto**: ela confere a *coerência interna* entre o valor declarado e a
+  letra escolhida, não a corretude do valor em si. Um modelo que calcule
+  errado e declare consistentemente esse valor errado em ambos os campos
+  passa pela verificação. Mitigar isso exige um solucionador independente
+  (viável apenas para os subtipos de questão gerados deterministicamente) ou
+  RLVR (Seção 8).
+- **A via de fallback por expressão regular permanece sintaticamente
+  limitada** (Seção 5.4, Causa 2): relevante apenas para artefatos anteriores
+  à mudança de schema, mas é o caminho ativo até o próximo retreino.
 - **Resultados da Seção 5 antecedem o retreino com os dados sintéticos
   corrigidos (Seção 3.4) e a destilação (Seção 3.5)** — no momento da
   escrita, a correção mais recente foi validada apenas estruturalmente
@@ -486,9 +622,13 @@ sobre `data/train.jsonl`).
 
 ## 8. Trabalhos futuros
 
-1. **Retreinar e reavaliar** com o gerador sintético corrigido (Seção 3.4) e
-   quantificar o impacto isolado sobre a métrica de consistência e sobre
-   `justificativas_distintas_pct` (comparação direta com a Seção 5.1).
+1. **Retreinar e reavaliar** com o schema contendo `resposta` (Seção 3.2) e o
+   gerador sintético corrigido (Seção 3.4), quantificando: (a) a cobertura
+   real do verificador — hipótese a testar: ~100%, contra os 50% medidos no
+   artefato não retreinado (Seção 5.4); (b) a taxa de correções acionadas por
+   `fix_gabarito()`, que mede quantos erros de vínculo valor→letra o modelo
+   ainda comete; (c) `justificativas_distintas_pct` (comparação direta com a
+   Seção 5.1).
 2. **Executar a destilação em escala** (Seção 3.5) e reportar taxas de
    aceitação/rejeição por motivo de filtro — dado ainda inexistente.
 3. **RLVR/GRPO** (Shao et al., 2024; DeepSeek-AI, 2025): usar
@@ -550,9 +690,11 @@ sobre `data/train.jsonl`).
 ---
 
 **Nota de manutenção deste documento**: as Seções 5 e 6 devem ser
-atualizadas assim que (a) o modelo for retreinado sobre os 670 exemplos
-atuais (274 reais + 396 sintéticos, já incluindo frações H07–H09), e (b) a
-destilação (Seção 3.5) for executada em escala. Os itens marcados "verificar
-autoria completa" na lista de referências foram localizados via busca
-automatizada e precisam de conferência manual do preprint antes de qualquer
-submissão formal.
+atualizadas assim que (a) o modelo for retreinado sobre os 669 exemplos
+atuais (273 reais + 396 sintéticos, já incluindo frações H07–H09 e o campo
+`resposta`), e (b) a destilação (Seção 3.5) for executada em escala. Os
+resultados da Seção 5.1 e a medição intermediária da Seção 5.4 referem-se a
+artefatos anteriores a esse retreino e são explicitamente provisórios. Os
+itens marcados "verificar autoria completa" na lista de referências foram
+localizados via busca automatizada e precisam de conferência manual do
+preprint antes de qualquer submissão formal.
