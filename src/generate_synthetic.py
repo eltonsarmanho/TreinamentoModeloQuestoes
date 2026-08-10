@@ -5,17 +5,19 @@ mas são poucas para o modelo generalizar cálculo; aqui cada resposta correta �
 calculada antes de montar a questão, então serve de reforço "limpo" de
 aritmética, complementando (não substituindo) o dataset real.
 
-Cada questão tem as 4 justificativas (uma por alternativa), no mesmo formato
-das questões reais do SAEB: o distrator não é um número aleatório, é o
-resultado de um ERRO PEDAGÓGICO específico (operação trocada, erro de vai-um,
-erro de vírgula, confundir desconto com valor final...), e a justificativa da
-alternativa explica exatamente esse erro citando o valor. Isso reforça no
-treino o vínculo letra <-> valor <-> raciocínio, atacando o problema de
-gabarito inconsistente com a justificativa.
+Cada questão tem 5 alternativas (A-E), no contrato exigido pelo app mobile: o
+distrator não é um número aleatório, é o resultado de um ERRO PEDAGÓGICO
+específico (operação trocada, erro de vai-um, erro de vírgula, confundir
+desconto com valor final...) — só a justificativa da alternativa CORRETA vira
+`resolucao_passo_a_passo` (o contrato não tem mais um campo de justificativa
+por alternativa).
 
 As tuplas (ano, habilidade, descricao_item, dificuldade) usadas são as mesmas
 que existem de verdade em DB/questoes.db, para o prompt de treino continuar
-idêntico ao que o app manda em produção (USER_TEMPLATE).
+idêntico ao que o app manda em produção (USER_TEMPLATE). Uma fração dos
+exemplos agrupa várias questões num único `{"questoes": [...]}` (ver
+TAMANHOS_LOTE), ensinando o modelo a devolver lotes quando o usuário pedir N
+questões de uma vez.
 
 Escopo: adição, subtração, multiplicação, divisão (exata), porcentagem,
 potenciação e frações (representação pictórica em texto, equivalência e
@@ -36,12 +38,23 @@ import math
 import random
 from pathlib import Path
 
-from extract_data import SYSTEM_PROMPT, USER_TEMPLATE
-from schema_utils import _UNICODE_MATH, check_consistency, check_structure
+from extract_data import ALTERNATIVA_E_PADRAO, SYSTEM_PROMPT, USER_TEMPLATE
+from schema_utils import (
+    ALTERNATIVE_LETTERS,
+    DIFFICULTY_MAP,
+    _UNICODE_MATH,
+    check_consistency,
+    check_structure,
+    extract_questoes,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 TRAIN_PATH = ROOT / "data" / "train.jsonl"
 DEFAULT_NUM_PER_SKILL = 12
+# Distribuição de tamanho de lote por exemplo de treino: a maioria pede 1
+# questão (uso mais comum), mas uma fração pede várias — ensina o modelo a
+# preencher "questoes" com N itens quando o usuário pedir um lote.
+TAMANHOS_LOTE = [1, 1, 1, 1, 1, 1, 2, 3, 5]
 
 NOMES = ["Ana", "Bruno", "Carla", "Diego", "Elisa", "Felipe",
          "Gabriela", "Hugo", "Isabela", "João"]
@@ -62,13 +75,29 @@ def _norm(v, is_integer):
     return int(round(v)) if is_integer else round(v, 1)
 
 
-def montar(rng, enunciado, comando, itens, is_integer=True):
+def _montar_questao(enunciado, comando, alternativas, gabarito, resolucao, dificuldade):
+    """Monta o dict de questão no contrato do app (enunciado+comando fundidos,
+    5 alternativas, resposta_correta = LETRA, resolucao_passo_a_passo = texto
+    único, difficulty em inglês)."""
+    enunciado_completo = f"{enunciado} {comando}".strip() if comando else enunciado
+    return {
+        "enunciado": enunciado_completo,
+        "alternativas": alternativas,
+        "resolucao_passo_a_passo": resolucao,
+        "resposta_correta": gabarito,
+        "difficulty": DIFFICULTY_MAP.get(dificuldade, "MEDIUM"),
+    }
+
+
+def montar(rng, enunciado, comando, itens, dificuldade, is_integer=True):
     """Monta a questão a partir de `itens`: lista de (valor, justificativa),
     onde o PRIMEIRO item é o correto e os demais são distratores pedagógicos.
+    A justificativa do correto vira `resolucao_passo_a_passo`; as dos
+    distratores só servem para gerar valores plausíveis e distintos (o
+    contrato não tem mais um campo de justificativa por alternativa).
 
-    Deduplica valores, completa até 4 alternativas se algum distrator colidir,
-    embaralha as posições e devolve o dict no schema de treino (justificativas
-    ANTES do gabarito).
+    Deduplica valores, completa até 5 alternativas (A-E) se algum distrator
+    colidir, embaralha as posições.
     """
     correto, justificativa_correta = itens[0]
     correto = _norm(correto, is_integer)
@@ -80,15 +109,15 @@ def montar(rng, enunciado, comando, itens, is_integer=True):
         if valor not in vistos and valor >= 0:
             finais.append((valor, justificativa))
             vistos.add(valor)
-        if len(finais) == 4:
+        if len(finais) == len(ALTERNATIVE_LETTERS):
             break
 
     # Completa com erros de estimativa caso algum distrator tenha colidido.
     step, i = (3 if is_integer else 0.5), 1
-    while len(finais) < 4:
+    while len(finais) < len(ALTERNATIVE_LETTERS):
         for candidato in (correto + i * step, correto - i * step):
             candidato = _norm(candidato, is_integer)
-            if candidato not in vistos and candidato >= 0 and len(finais) < 4:
+            if candidato not in vistos and candidato >= 0 and len(finais) < len(ALTERNATIVE_LETTERS):
                 finais.append((
                     candidato,
                     f"Erro de estimativa: {fmt(candidato)} não é o resultado "
@@ -97,31 +126,23 @@ def montar(rng, enunciado, comando, itens, is_integer=True):
                 vistos.add(candidato)
         i += 1
 
-    ordem = list(range(4))
+    ordem = list(range(len(ALTERNATIVE_LETTERS)))
     rng.shuffle(ordem)
-    letras = "ABCD"
-    alternativas = {letras[pos]: fmt(finais[idx][0]) for pos, idx in enumerate(ordem)}
-    justificativas = {letras[pos]: finais[idx][1] for pos, idx in enumerate(ordem)}
-    gabarito = letras[ordem.index(0)]
+    alternativas = {ALTERNATIVE_LETTERS[pos]: fmt(finais[idx][0]) for pos, idx in enumerate(ordem)}
+    gabarito = ALTERNATIVE_LETTERS[ordem.index(0)]
 
-    return {
-        "enunciado": enunciado,
-        "comando": comando,
-        "alternativas": alternativas,
-        "justificativas": justificativas,
-        "resposta": alternativas[gabarito],
-        "gabarito": gabarito,
-    }
+    return _montar_questao(enunciado, comando, alternativas, gabarito, justificativa_correta, dificuldade)
 
 
-def montar_texto(rng, enunciado, comando, itens):
+def montar_texto(rng, enunciado, comando, itens, dificuldade):
     """Como `montar()`, mas para alternativas que já são texto pronto (frações
     como "3/8", porcentagens como "6%") — sem a normalização/estimativa
     numérica de `montar()`, que assume valores escalares.
 
     `itens`: lista de (texto, justificativa) com o item [0] sempre correto.
-    Cada gerador que usa esta função é responsável por produzir pelo menos 3
-    distratores textualmente distintos do correto e entre si.
+    Cada gerador que usa esta função é responsável por produzir pelo menos 4
+    distratores textualmente distintos do correto e entre si (5 alternativas
+    no total).
     """
     correto, justificativa_correta = itens[0]
     finais, vistos = [(correto, justificativa_correta)], {correto}
@@ -129,35 +150,27 @@ def montar_texto(rng, enunciado, comando, itens):
         if texto not in vistos:
             finais.append((texto, justificativa))
             vistos.add(texto)
-        if len(finais) == 4:
+        if len(finais) == len(ALTERNATIVE_LETTERS):
             break
-    if len(finais) < 4:
+    if len(finais) < len(ALTERNATIVE_LETTERS):
         raise ValueError(
-            f"gerador não produziu 4 alternativas textuais distintas: {[f[0] for f in finais]}"
+            f"gerador não produziu {len(ALTERNATIVE_LETTERS)} alternativas "
+            f"textuais distintas: {[f[0] for f in finais]}"
         )
 
-    ordem = list(range(4))
+    ordem = list(range(len(ALTERNATIVE_LETTERS)))
     rng.shuffle(ordem)
-    letras = "ABCD"
-    alternativas = {letras[pos]: finais[idx][0] for pos, idx in enumerate(ordem)}
-    justificativas = {letras[pos]: finais[idx][1] for pos, idx in enumerate(ordem)}
-    gabarito = letras[ordem.index(0)]
+    alternativas = {ALTERNATIVE_LETTERS[pos]: finais[idx][0] for pos, idx in enumerate(ordem)}
+    gabarito = ALTERNATIVE_LETTERS[ordem.index(0)]
 
-    return {
-        "enunciado": enunciado,
-        "comando": comando,
-        "alternativas": alternativas,
-        "justificativas": justificativas,
-        "resposta": alternativas[gabarito],
-        "gabarito": gabarito,
-    }
+    return _montar_questao(enunciado, comando, alternativas, gabarito, justificativa_correta, dificuldade)
 
 
 # ---- Geradores de questão ----------------------------------------------------
 # Cada gerador devolve o dict da questão. O primeiro item da lista é sempre o
 # correto; os demais são distratores derivados de erros pedagógicos reais.
 
-def gen_calc_soma_subtracao(rng, faixa):
+def gen_calc_soma_subtracao(rng, faixa, dificuldade):
     a, b = rng.randint(*faixa), rng.randint(*faixa)
     op = rng.choice(["+", "-"])
     if op == "-" and b > a:
@@ -181,10 +194,11 @@ def gen_calc_soma_subtracao(rng, faixa):
         f"Calcule o resultado da operação: {a} {op} {b}.",
         "Qual é o resultado?",
         itens,
+        dificuldade,
     )
 
 
-def gen_problema_soma_subtracao(rng, faixa):
+def gen_problema_soma_subtracao(rng, faixa, dificuldade):
     a, b = rng.randint(*faixa), rng.randint(*faixa)
     nome, contexto = rng.choice(NOMES), rng.choice(CONTEXTOS)
     if rng.random() < 0.5:
@@ -207,10 +221,10 @@ def gen_problema_soma_subtracao(rng, faixa):
         (correto + rng.choice([-10, 10]), "Erro de reagrupamento (vai-um) no cálculo."),
         (correto + rng.choice([-1, 1]), "Erro de contagem de uma unidade."),
     ]
-    return montar(rng, enunciado, f"Quantos {contexto} {nome} tem agora?", itens)
+    return montar(rng, enunciado, f"Quantos {contexto} {nome} tem agora?", itens, dificuldade)
 
 
-def gen_calc_mult_div(rng, faixas):
+def gen_calc_mult_div(rng, faixas, dificuldade):
     faixa_fator1, faixa_fator2 = faixas
     if rng.random() < 0.5:
         a, b = rng.randint(*faixa_fator1), rng.randint(*faixa_fator2)
@@ -236,10 +250,10 @@ def gen_calc_mult_div(rng, faixas):
             (a - b, f"Erro de operação: subtrai em vez de dividir ({a} - {b} = {a - b})."),
         ]
         enunciado = f"Calcule o resultado da operação: {a} ÷ {b}."
-    return montar(rng, enunciado, "Qual é o resultado?", itens)
+    return montar(rng, enunciado, "Qual é o resultado?", itens, dificuldade)
 
 
-def gen_problema_mult_div(rng, faixas):
+def gen_problema_mult_div(rng, faixas, dificuldade):
     faixa_grupos, faixa_itens = faixas
     nome, contexto = rng.choice(NOMES), rng.choice(CONTEXTOS)
     grupos, itens_por_grupo = rng.randint(*faixa_grupos), rng.randint(*faixa_itens)
@@ -267,10 +281,10 @@ def gen_problema_mult_div(rng, faixas):
                           f"{grupos * (correto + 1)} {contexto}, mais do que {total}."),
             (correto - 1, f"Erro na divisão: com {correto - 1} em cada grupo sobrariam {contexto} sem grupo."),
         ]
-    return montar(rng, enunciado, comando, itens)
+    return montar(rng, enunciado, comando, itens, dificuldade)
 
 
-def gen_porcentagem(rng, faixas):
+def gen_porcentagem(rng, faixas, dificuldade):
     base_mult_faixa, percentuais = faixas
     base = rng.randint(*base_mult_faixa) * 20  # múltiplo de 20 -> % múltiplo de 5 é exato
     percentual = rng.choice(percentuais)
@@ -288,10 +302,11 @@ def gen_porcentagem(rng, faixas):
         f"Uma loja vende um produto de R$ {base} com {percentual}% de desconto.",
         "Qual é o valor, em reais, do desconto?",
         itens,
+        dificuldade,
     )
 
 
-def gen_potenciacao(rng, faixas):
+def gen_potenciacao(rng, faixas, dificuldade):
     faixa_base, faixa_exp = faixas
     base, exp = rng.randint(*faixa_base), rng.randint(*faixa_exp)
     correto = base ** exp
@@ -310,10 +325,11 @@ def gen_potenciacao(rng, faixas):
         f"Calcule o resultado da potência {base}^{exp} ({base} elevado ao expoente {exp}).",
         "Qual é o resultado?",
         itens,
+        dificuldade,
     )
 
 
-def gen_calc_real_decimal(rng, faixa):
+def gen_calc_real_decimal(rng, faixa, dificuldade):
     a, b = round(rng.uniform(*faixa), 1), round(rng.uniform(*faixa), 1)
     op = rng.choice(["+", "-", "x"])
     if op == "-" and b > a:
@@ -339,6 +355,7 @@ def gen_calc_real_decimal(rng, faixa):
         f"Calcule o resultado da operação: {fmt(a)} {op} {fmt(b)}.",
         "Qual é o resultado?",
         itens,
+        dificuldade,
         is_integer=False,
     )
 
@@ -349,7 +366,7 @@ CONTEXTOS_INTEIROS = [("Uma pizza", "dividida"), ("Uma barra de chocolate", "div
 ACOES_FRACAO = [("comida", "comeu"), ("pintada", "pintou"), ("usada", "usou")]
 
 
-def gen_fracao_pictorica(rng, faixa):
+def gen_fracao_pictorica(rng, faixa, dificuldade):
     """H07: representação de frações — texto no lugar da figura (um todo
     dividido em N partes iguais, M delas destacadas; sem imagem real, só a
     descrição verbal da mesma informação que uma figura mostraria)."""
@@ -372,23 +389,24 @@ def gen_fracao_pictorica(rng, faixa):
     add(min(num + 1, den - 1), den, "Erro de contagem: conta uma parte a mais.")
     add(max(num - 1, 0), den, "Erro de contagem: conta uma parte a menos.")
     k = 2
-    while len(candidatos) < 3:
+    while len(candidatos) < 4:
         add(num, den + k, f"Erro ao contar o total de partes: usa {den + k} em vez de {den}.")
         k += 1
 
     itens = [
         (correto, f"{num} partes de um total de {den} partes iguais correspondem à fração {num}/{den}."),
-        *candidatos[:3],
+        *candidatos[:4],
     ]
     return montar_texto(
         rng,
         f"{contexto} foi {particio} em {den} partes iguais. {nome} {verbo} {num} dessas partes.",
         f"Qual fração representa a parte {acao}?",
         itens,
+        dificuldade,
     )
 
 
-def gen_fracoes_equivalentes(rng, faixas):
+def gen_fracoes_equivalentes(rng, faixas, dificuldade):
     """H08: identificar frações equivalentes (multiplicar numerador e
     denominador pelo mesmo fator vs. distratores que quebram a proporção)."""
     den_faixa, k_faixa = faixas
@@ -410,27 +428,28 @@ def gen_fracoes_equivalentes(rng, faixas):
     add(num * k, den * k + 1, "Erro: soma 1 ao denominador em vez de manter a proporção.")
     add(num + k, den + k, f"Erro: soma {k} ao numerador e ao denominador em vez de multiplicar por {k}.")
     j = k + 1
-    while len(candidatos) < 3 and j <= k + 20:
+    while len(candidatos) < 4 and j <= k + 20:
         add(num * j, den * j + 1,
             f"Erro: {num * j}/{den * j + 1} não é equivalente a {num}/{den}, a proporção não se mantém.")
         j += 1
-    if len(candidatos) < 3:
-        raise ValueError(f"gen_fracoes_equivalentes: não achou 3 distratores para {correto}")
+    if len(candidatos) < 4:
+        raise ValueError(f"gen_fracoes_equivalentes: não achou 4 distratores para {correto}")
 
     itens = [
         (correto, f"Multiplicando numerador e denominador de {num}/{den} por {k}: "
                   f"{num} x {k} = {num * k} e {den} x {k} = {den * k}, logo {correto}."),
-        *candidatos[:3],
+        *candidatos[:4],
     ]
     return montar_texto(
         rng,
         f"Considere a fração {num}/{den}.",
         "Qual das alternativas é uma fração equivalente a ela?",
         itens,
+        dificuldade,
     )
 
 
-def gen_fracao_porcentagem(rng, denominadores):
+def gen_fracao_porcentagem(rng, denominadores, dificuldade):
     """H09: converter fração -> porcentagem. Denominadores escolhidos de
     forma que 100 é sempre divisível por eles, garantindo conversão exata."""
     den = rng.choice(denominadores)
@@ -456,27 +475,28 @@ def gen_fracao_porcentagem(rng, denominadores):
     # dos dois lados sempre satura e para de gerar valores novos; sem o outro
     # lado o laço giraria para sempre.
     m = 1
-    while len(candidatos) < 3 and m <= 20:
+    while len(candidatos) < 4 and m <= 20:
         for delta in (15 * m, -15 * m):
             vm = correto_valor + delta
             if 0 <= vm <= 100:
                 add(vm, f"Erro de cálculo: obtém {vm}% em vez de {correto_valor}% ao converter a fração.")
-            if len(candidatos) == 3:
+            if len(candidatos) == 4:
                 break
         m += 1
-    if len(candidatos) < 3:
-        raise ValueError(f"gen_fracao_porcentagem: não achou 3 distratores para {correto}")
+    if len(candidatos) < 4:
+        raise ValueError(f"gen_fracao_porcentagem: não achou 4 distratores para {correto}")
 
     itens = [
         (correto, f"{num} x {fator} = {correto_valor}%. (Cada {den}-ésimo equivale a {fator}%, "
                   f"pois 100 ÷ {den} = {fator}.)"),
-        *candidatos[:3],
+        *candidatos[:4],
     ]
     return montar_texto(
         rng,
         f"Em uma turma, {num} de cada {den} alunos gostam de matemática.",
         "Isso representa quantos por cento dos alunos?",
         itens,
+        dificuldade,
     )
 
 
@@ -582,17 +602,21 @@ SKILLS = [
 ]
 
 
-def build_example(ano, habilidade, descricao, dificuldade, answer, idx):
+def build_example(ano, habilidade, descricao, dificuldade, questoes, idx):
+    """`questoes`: lista de 1+ dicts de questão — vira o wrapper {"questoes": [...]}
+    exigido pelo contrato do app. quantidade no prompt bate com len(questoes),
+    ensinando o modelo a devolver lotes quando o usuário pede N questões."""
     return {
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
             {
                 "role": "user",
                 "content": USER_TEMPLATE.format(
-                    ano=ano, habilidade=habilidade, descricao=descricao, dificuldade=dificuldade
+                    quantidade=len(questoes), ano=ano, habilidade=habilidade,
+                    descricao=descricao, dificuldade=dificuldade,
                 ),
             },
-            {"role": "assistant", "content": json.dumps(answer, ensure_ascii=False)},
+            {"role": "assistant", "content": json.dumps({"questoes": questoes}, ensure_ascii=False)},
         ],
         "meta": {
             "codigo_item": f"SINT-{habilidade}-{dificuldade}-{idx:04d}",
@@ -604,23 +628,35 @@ def build_example(ano, habilidade, descricao, dificuldade, answer, idx):
     }
 
 
+def _agrupar(rng, pool):
+    """Particiona `pool` em lotes de tamanho aleatório (ver TAMANHOS_LOTE)."""
+    grupos = []
+    i = 0
+    while i < len(pool):
+        tamanho = min(rng.choice(TAMANHOS_LOTE), len(pool) - i)
+        grupos.append(pool[i:i + tamanho])
+        i += tamanho
+    return grupos
+
+
 def gerar_todos(num_per_skill, seed):
     rng = random.Random(seed)
     exemplos, idx = [], 0
     for skill in SKILLS:
         for dificuldade, faixa in skill["faixas"].items():
-            for _ in range(num_per_skill):
+            pool = [skill["gerador"](rng, faixa, dificuldade) for _ in range(num_per_skill)]
+            for grupo in _agrupar(rng, pool):
                 idx += 1
-                answer = skill["gerador"](rng, faixa)
                 exemplos.append(
-                    build_example(skill["ano"], skill["habilidade"], skill["descricao"], dificuldade, answer, idx)
+                    build_example(skill["ano"], skill["habilidade"], skill["descricao"], dificuldade, grupo, idx)
                 )
     return exemplos
 
 
 def validar(exemplos):
-    """Confere schema + 4 justificativas distintas + consistência resposta/gabarito
-    + ausência de operadores Unicode.
+    """Confere schema (5 alternativas, resposta_correta, difficulty) +
+    consistência resposta_correta<->resolucao_passo_a_passo + ausência de
+    operadores Unicode.
 
     O modelo tende a imitar o que vê no treino: se um operador tipográfico
     (− × –) entrar nos dados, ele passa a emiti-lo na inferência e quebra
@@ -633,13 +669,14 @@ def validar(exemplos):
             unicode_ops += 1
         obj = json.loads(blob)
         flags = check_structure(obj)
-        if not (flags["schema_completo"] and flags["gabarito_valido"]
-                and flags["alternativas_distintas"] and flags["justificativas_distintas"]):
+        if not (flags["schema_completo"] and flags["resposta_valida"]
+                and flags["alternativas_distintas"] and flags["difficulty_valida"]):
             problemas += 1
-        consistente, _ = check_consistency(obj)
-        if consistente is not None:
-            verificaveis += 1
-            ok += int(consistente)
+        for questao in extract_questoes(obj):
+            consistente, _ = check_consistency(questao)
+            if consistente is not None:
+                verificaveis += 1
+                ok += int(consistente)
     return problemas, verificaveis, ok, unicode_ops
 
 
@@ -660,15 +697,17 @@ def main():
     sinteticos = gerar_todos(args.num_per_skill, args.seed)
     problemas, verificaveis, ok, unicode_ops = validar(sinteticos)
 
-    print(f"Gerados: {len(sinteticos)} exemplos sintéticos ({len(SKILLS)} habilidades x "
-          f"3 dificuldades x {args.num_per_skill})")
-    print("Cada questão tem 4 justificativas: a correta mostra a conta; cada distrator "
-          "explica o erro pedagógico que o gerou.")
-    print(f"Falhas de schema/gabarito/alternativas/justificativas: {problemas} (esperado: 0)")
+    total_questoes = sum(len(json.loads(ex["messages"][2]["content"])["questoes"]) for ex in sinteticos)
+    print(f"Gerados: {len(sinteticos)} exemplos de treino / {total_questoes} questões "
+          f"({len(SKILLS)} habilidades x 3 dificuldades x {args.num_per_skill})")
+    print("Cada questão tem 5 alternativas (A-E); resolucao_passo_a_passo mostra a "
+          "conta que leva à resposta correta.")
+    print(f"Falhas de schema/resposta_correta/alternativas/difficulty: {problemas} (esperado: 0)")
     print(f"Exemplos com operador Unicode (−, ×, –): {unicode_ops} (esperado: 0)")
-    print(f"Consistência resposta<->gabarito: {ok}/{verificaveis} verificáveis "
-          f"({100 * verificaveis // max(len(sinteticos), 1)}% de cobertura — o campo "
-          f"`resposta` torna a verificação exata, sem depender de regex)")
+    print(f"Consistência resposta_correta<->resolucao_passo_a_passo: {ok}/{verificaveis} "
+          f"verificáveis ({100 * verificaveis // max(total_questoes, 1)}% de cobertura — "
+          "sem um campo dedicado ao VALOR da resposta, a verificação depende de regex "
+          "sobre a equação do texto, cobertura menor do que com o campo `resposta`)")
 
     if args.dry_run:
         print("\n--dry-run: nada escrito. Exemplo:")

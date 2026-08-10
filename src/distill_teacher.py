@@ -3,12 +3,12 @@
 determinísticos — o caminho da literatura para ampliar a capacidade de um
 modelo pequeno além do que os ~300 exemplos reais ensinam.
 
-Diferente de generate_synthetic.py (aritmética pura com gabarito calculado em
-Python), aqui o professor gera questões CONTEXTUALIZADAS no estilo SAEB para
-qualquer habilidade do banco — inclusive as que não são só cálculo. O preço é
-que o professor também erra; por isso NADA entra no treino sem passar pelo
-filtro: schema completo, 4 alternativas e 4 justificativas distintas, sem
-menção a figura, consistência gabarito<->conta não reprovada e sem duplicata.
+Diferente de generate_synthetic.py (aritmética pura com resposta_correta
+calculada em Python), aqui o professor gera questões CONTEXTUALIZADAS no
+estilo SAEB para qualquer habilidade do banco — inclusive as que não são só
+cálculo. O preço é que o professor também erra; por isso NADA entra no treino
+sem passar pelo filtro: schema completo, 5 alternativas distintas, sem menção
+a figura, consistência resposta_correta<->conta não reprovada e sem duplicata.
 
 Requer HF_TOKEN no .env com acesso a Inference Providers (billing do HF).
 O professor padrão pode ser trocado com --teacher (qualquer modelo de chat
@@ -46,6 +46,7 @@ from schema_utils import (  # noqa: E402
     IMAGE_PATTERN,
     check_consistency,
     check_structure,
+    extract_questao,
     parse_json,
 )
 
@@ -61,11 +62,10 @@ MAX_ANSWER_CHARS = 900  # mantém a resposta dentro do max_seq_length=1024 do tr
 TEACHER_ADDENDUM = (
     " Regras adicionais para esta tarefa: a questão deve ser INÉDITA e "
     "contextualizada (situação do cotidiano brasileiro); os números devem ser "
-    "escolhidos para que a conta seja exata; a justificativa do gabarito deve "
+    "escolhidos para que a conta seja exata; resolucao_passo_a_passo deve "
     "mostrar a conta completa e o resultado deve bater EXATAMENTE com o valor "
-    "da alternativa correta; cada distrator deve vir de um erro específico que "
-    "um aluno cometeria, e sua justificativa deve explicar esse erro citando o "
-    "valor; escreva o JSON em uma única linha."
+    "da alternativa de resposta_correta; cada distrator deve vir de um erro "
+    "específico que um aluno cometeria; escreva o JSON em uma única linha."
 )
 
 TEMAS = [
@@ -97,41 +97,46 @@ def load_tuples(limit=None):
 
 
 def filtrar(obj, raw_text, vistos, strict=False):
-    """Aplica os filtros determinísticos. Retorna None se aprovado, ou o motivo."""
+    """Aplica os filtros determinísticos. Retorna None se aprovado, ou o motivo.
+
+    `obj` é o wrapper `{"questoes": [...]}` bruto devolvido pelo professor;
+    só a primeira questão é considerada (o pedido é sempre quantidade=1)."""
     if obj is None:
         return "json_invalido"
-    flags = check_structure(obj)
-    if not (flags["schema_completo"] and flags["gabarito_valido"]
-            and flags["alternativas_distintas"] and flags["justificativas_distintas"]):
+    flags = check_structure(obj, quantidade_esperada=1)
+    if not (flags["wrapper_valido"] and flags["schema_completo"] and flags["resposta_valida"]
+            and flags["alternativas_distintas"] and flags["difficulty_valida"]):
         return "estrutura"
-    blob = json.dumps(obj, ensure_ascii=False)
+    questao = extract_questao(obj, 0)
+    blob = json.dumps(questao, ensure_ascii=False)
     if IMAGE_PATTERN.search(blob):
         return "menciona_figura"
     if len(blob) > MAX_ANSWER_CHARS:
         return "muito_longa"
-    consistente, _ = check_consistency(obj)
+    consistente, _ = check_consistency(questao)
     if consistente is False:
-        return "gabarito_inconsistente"
+        return "resposta_inconsistente"
     if strict and consistente is not True:
         return "consistencia_nao_verificavel"
-    chave = normalizar(obj.get("enunciado", ""))
+    chave = normalizar(questao.get("enunciado", ""))
     if not chave or chave in vistos:
         return "duplicata"
     vistos.add(chave)
     return None
 
 
-def build_example(ano, habilidade, descricao, dificuldade, answer, idx, teacher):
+def build_example(ano, habilidade, descricao, dificuldade, questao, idx, teacher):
     return {
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
             {
                 "role": "user",
                 "content": USER_TEMPLATE.format(
-                    ano=ano, habilidade=habilidade, descricao=descricao, dificuldade=dificuldade
+                    quantidade=1, ano=ano, habilidade=habilidade,
+                    descricao=descricao, dificuldade=dificuldade,
                 ),
             },
-            {"role": "assistant", "content": json.dumps(answer, ensure_ascii=False)},
+            {"role": "assistant", "content": json.dumps({"questoes": [questao]}, ensure_ascii=False)},
         ],
         "meta": {
             "codigo_item": f"DIST-{habilidade}-{dificuldade}-{idx:05d}",
@@ -157,7 +162,8 @@ def gerar(args):
         for line in open(DISTILL_PATH, encoding="utf-8"):
             ex = json.loads(line)
             obj = json.loads(ex["messages"][2]["content"])
-            vistos.add(normalizar(obj.get("enunciado", "")))
+            questao = extract_questao(obj, 0)
+            vistos.add(normalizar((questao or {}).get("enunciado", "")))
             aceitos_previos += 1
         print(f"Retomando: {aceitos_previos} questões já aceitas em {DISTILL_PATH} "
               "(duplicatas serão descartadas).")
@@ -174,7 +180,7 @@ def gerar(args):
             for _ in range(args.per_tuple):
                 tema = rng.choice(TEMAS)
                 user = USER_TEMPLATE.format(
-                    ano=ano, habilidade=habilidade, descricao=descricao,
+                    quantidade=1, ano=ano, habilidade=habilidade, descricao=descricao,
                     dificuldade=dificuldade,
                 ) + f" Tema sugerido para o contexto: {tema}."
                 try:
@@ -205,7 +211,8 @@ def gerar(args):
                     continue
 
                 idx += 1
-                ex = build_example(ano, habilidade, descricao, dificuldade, obj, idx, args.teacher)
+                questao = extract_questao(obj, 0)
+                ex = build_example(ano, habilidade, descricao, dificuldade, questao, idx, args.teacher)
                 saida.write(json.dumps(ex, ensure_ascii=False) + "\n")
                 saida.flush()
                 aceitos += 1
@@ -228,7 +235,8 @@ def merge():
     vistos, unicos = set(), []
     for ex in destilados:
         obj = json.loads(ex["messages"][2]["content"])
-        chave = normalizar(obj.get("enunciado", ""))
+        questao = extract_questao(obj, 0)
+        chave = normalizar((questao or {}).get("enunciado", ""))
         if chave not in vistos:
             vistos.add(chave)
             unicos.append(ex)
@@ -284,13 +292,16 @@ def main():
         print(f"Professor: {args.teacher} (provider: {args.provider})")
         print(f"Tuplas no banco: {len(tuples)} | questões por tupla: {args.per_tuple} "
               f"| chamadas planejadas: {len(tuples) * args.per_tuple}")
-        print("Filtros: schema completo + 4 alternativas/justificativas distintas + "
+        print("Filtros: schema completo + 5 alternativas distintas + "
               "sem figura + consistência não reprovada + sem duplicata"
               + (" + consistência VERIFICADA (--strict)" if args.strict else ""))
         ano, habilidade, descricao, dificuldade = tuples[0]
         print("\nExemplo de prompt que será enviado ao professor:")
         print(f"  [system] {SYSTEM_PROMPT[:120]}... (+ addendum de destilação)")
-        print(f"  [user]   {USER_TEMPLATE.format(ano=ano, habilidade=habilidade, descricao=descricao, dificuldade=dificuldade)} Tema sugerido para o contexto: feira livre.")
+        prompt_exemplo = USER_TEMPLATE.format(
+            quantidade=1, ano=ano, habilidade=habilidade, descricao=descricao, dificuldade=dificuldade,
+        )
+        print(f"  [user]   {prompt_exemplo} Tema sugerido para o contexto: feira livre.")
         return
 
     gerar(args)

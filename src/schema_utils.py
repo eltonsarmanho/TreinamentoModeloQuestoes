@@ -4,18 +4,44 @@ Compartilhado por evaluate.py (avalia o modelo em 4-bit via HF/bitsandbytes,
 usado em desenvolvimento) e test_model.py (testa o .gguf real via llama.cpp,
 o mesmo artefato que roda no app mobile), garantindo que os dois caminhos
 julguem "resposta válida" da mesma forma.
+
+Schema (contrato fixo definido pelos envolvidos, sem exceção):
+    {"questoes": [
+        {"enunciado": str,
+         "alternativas": {"A": str, "B": str, "C": str, "D": str, "E": str},
+         "resolucao_passo_a_passo": str,
+         "resposta_correta": "A|B|C|D|E",
+         "difficulty": "EASY|MEDIUM|HARD"},
+        ...
+    ]}
+
+Nota sobre a ordem das chaves dentro de cada questão: o modelo é TREINADO a
+emitir `resolucao_passo_a_passo` ANTES de `resposta_correta` (mostra o
+trabalho antes de se comprometer com a letra), embora o exemplo do contrato
+liste `resposta_correta` primeiro. JSON não garante ordem de chaves para
+quem consome por nome — todo consumidor padrão (`json.loads`, `JSON.parse`)
+lê por chave, não por posição — então o contrato (mesmas chaves, mesma
+estrutura) é respeitado. A ordem de emissão evita reintroduzir o problema
+descrito no README ("Gabarito inconsistente com a justificativa", causa 1):
+comprometer a letra antes de mostrar o raciocínio.
 """
 
 import json
 import re
 
-# `resposta` (o VALOR da resposta correta, ex.: "5") vem antes de `gabarito`
-# (a LETRA) no schema. Isso transforma a verificação de "extrair a conta do
-# texto livre da justificativa com regex" — que falhava em 70-77% dos casos,
-# seja por operadores Unicode, seja por raciocínio verbal sem equação — em
-# uma comparação exata `alternativas[gabarito] == resposta`.
-REQUIRED_KEYS = {"enunciado", "comando", "alternativas", "resposta", "gabarito"}
 IMAGE_PATTERN = re.compile(r"\b(figura|imagem|gráfico|desenho|ilustração)\b", re.I)
+
+QUESTOES_KEY = "questoes"
+ALTERNATIVE_LETTERS = "ABCDE"
+REQUIRED_KEYS = {
+    "enunciado",
+    "alternativas",
+    "resolucao_passo_a_passo",
+    "resposta_correta",
+    "difficulty",
+}
+DIFFICULTY_VALUES = {"EASY", "MEDIUM", "HARD"}
+DIFFICULTY_MAP = {"Fácil": "EASY", "Moderado": "MEDIUM", "Difícil": "HARD"}
 
 
 def parse_json(text):
@@ -32,27 +58,66 @@ def parse_json(text):
         return None
 
 
-def check_structure(obj):
-    """Retorna dict de flags estruturais para um JSON parseado (ou None)."""
+def extract_questoes(obj):
+    """Retorna a lista de questões do wrapper {"questoes": [...]}, ou [] se inválido."""
+    if not isinstance(obj, dict):
+        return []
+    questoes = obj.get(QUESTOES_KEY)
+    return questoes if isinstance(questoes, list) else []
+
+
+def extract_questao(obj, index=0):
+    """Atalho para uma questão específica do wrapper, ou None se não existir."""
+    questoes = extract_questoes(obj)
+    if index < len(questoes) and isinstance(questoes[index], dict):
+        return questoes[index]
+    return None
+
+
+def check_structure(obj, quantidade_esperada=None):
+    """Retorna dict de flags estruturais para o wrapper `{"questoes": [...]}` já parseado.
+
+    As flags de schema (`schema_completo`, `resposta_valida`,
+    `alternativas_distintas`, `difficulty_valida`) exigem que TODAS as
+    questões da lista as satisfaçam — uma só quebrada já reprova o lote.
+    """
     flags = {
         "json_valido": obj is not None,
+        "wrapper_valido": False,
+        "quantidade_correta": False,
         "schema_completo": False,
-        "gabarito_valido": False,
+        "resposta_valida": False,
         "alternativas_distintas": False,
-        "justificativas_distintas": False,
+        "difficulty_valida": False,
     }
-    if obj is None:
+    questoes = extract_questoes(obj)
+    flags["wrapper_valido"] = len(questoes) > 0
+    if not flags["wrapper_valido"]:
         return flags
-    flags["schema_completo"] = REQUIRED_KEYS.issubset(obj.keys())
-    flags["gabarito_valido"] = obj.get("gabarito") in {"A", "B", "C", "D"}
-    alts = obj.get("alternativas")
-    if isinstance(alts, dict) and set(alts.keys()) >= {"A", "B", "C", "D"}:
-        values = [str(alts[k]).strip() for k in "ABCD"]
-        flags["alternativas_distintas"] = len(set(values)) == 4 and all(values)
-    just = obj.get("justificativas")
-    if isinstance(just, dict) and set(just.keys()) >= {"A", "B", "C", "D"}:
-        values = [str(just[k]).strip() for k in "ABCD"]
-        flags["justificativas_distintas"] = len(set(values)) == 4 and all(values)
+    flags["quantidade_correta"] = (
+        quantidade_esperada is None or len(questoes) == quantidade_esperada
+    )
+
+    flags["schema_completo"] = all(
+        isinstance(q, dict) and REQUIRED_KEYS.issubset(q.keys()) for q in questoes
+    )
+    flags["resposta_valida"] = all(
+        isinstance(q, dict) and q.get("resposta_correta") in ALTERNATIVE_LETTERS
+        for q in questoes
+    )
+    flags["difficulty_valida"] = all(
+        isinstance(q, dict) and q.get("difficulty") in DIFFICULTY_VALUES
+        for q in questoes
+    )
+
+    def _alts_ok(q):
+        alts = q.get("alternativas") if isinstance(q, dict) else None
+        if not isinstance(alts, dict) or set(alts.keys()) < set(ALTERNATIVE_LETTERS):
+            return False
+        values = [str(alts[k]).strip() for k in ALTERNATIVE_LETTERS]
+        return len(set(values)) == len(ALTERNATIVE_LETTERS) and all(values)
+
+    flags["alternativas_distintas"] = all(_alts_ok(q) for q in questoes)
     return flags
 
 
@@ -61,7 +126,7 @@ _NUM_PATTERN = re.compile(r"-?\d+(?:[.,]\d+)?")
 # O modelo emite operadores tipográficos Unicode (−, ×, –) em vez dos ASCII
 # usados no dataset de treino. Sem normalizar, o regex abaixo não casa e o
 # verificador devolve "não verificável" — silenciosamente deixando passar
-# gabaritos errados. Medido: 70-77% das saídas caíam nesse buraco.
+# gabaritos errados.
 _UNICODE_MATH = {
     "−": "-",  # MINUS SIGN
     "–": "-",  # EN DASH
@@ -71,8 +136,8 @@ _UNICODE_MATH = {
     "∙": "x",  # BULLET OPERATOR
     "∕": "/",  # DIVISION SLASH
     "＝": "=",  # FULLWIDTH EQUALS
-    " ": " ",  # NO-BREAK SPACE
-    " ": " ",  # NARROW NO-BREAK SPACE
+    " ": " ",  # NO-BREAK SPACE
+    " ": " ",  # NARROW NO-BREAK SPACE
 }
 _UNICODE_TABLE = str.maketrans(_UNICODE_MATH)
 
@@ -82,8 +147,8 @@ def normalize_math(text):
     return str(text or "").translate(_UNICODE_TABLE)
 
 
-# Casa expressões simples "a op b = r" dentro do texto da justificativa,
-# ex.: "35 - 20 = 15", "3x4=12", "10/2 = 5" (após normalize_math).
+# Casa expressões simples "a op b = r" dentro do texto de resolução, ex.:
+# "35 - 20 = 15", "3x4=12", "10/2 = 5" (após normalize_math).
 _EXPR_PATTERN = re.compile(
     r"(-?\d+(?:[.,]\d+)?)\s*([-+xX*÷/])\s*(-?\d+(?:[.,]\d+)?)\s*=\s*(-?\d+(?:[.,]\d+)?)"
 )
@@ -126,114 +191,62 @@ def _leading_number(text):
     return _to_number(match.group()) if match else None
 
 
-def _canon(text):
-    """Forma canônica para comparar alternativa com `resposta`: minúsculas, sem
-    espaços redundantes, operadores normalizados. Mantém unidades ("5 bolas"),
-    que o casamento textual exato usa e o fallback numérico ignora."""
-    return re.sub(r"\s+", " ", normalize_math(text).strip().lower())
+def check_consistency(questao):
+    """Confere se `resposta_correta` (a LETRA) aponta para a alternativa cujo
+    valor bate com a conta extraída de `resolucao_passo_a_passo`.
 
-
-def _match_letra(alternativas, valor):
-    """Acha a letra cuja alternativa corresponde a `valor`.
-
-    Duas passadas, da mais estrita para a mais tolerante:
-      1. igualdade textual canônica ("3/4" == "3/4", "20%" == "20%")
-      2. igualdade do primeiro número ("5" ~ "5 bonecos")
-    A segunda só decide se casar com UMA única alternativa — se duas
-    alternativas começam com o mesmo número, é ambíguo e devolvemos None em
-    vez de escolher errado.
-    """
-    alvo = _canon(valor)
-    exatas = [l for l, t in alternativas.items() if _canon(t) == alvo]
-    if len(exatas) == 1:
-        return exatas[0]
-
-    num = _leading_number(valor)
-    if num is None:
-        return None
-    numericas = [l for l, t in alternativas.items() if _leading_number(t) == num]
-    return numericas[0] if len(numericas) == 1 else None
-
-
-def check_consistency(obj):
-    """Confere se o `gabarito` (a LETRA) aponta para a alternativa que contém a
-    `resposta` (o VALOR).
-
-    Estratégia em duas vias:
-      1. **Exata** — se o JSON traz o campo `resposta`, basta comparar
-         `alternativas[gabarito]` com ele. Não depende de regex, de operador
-         Unicode nem de como a justificativa foi redigida: cobre qualquer tipo
-         de questão (fração, porcentagem, texto).
-      2. **Fallback por regex** — para saídas de modelos antigos, sem o campo
-         `resposta`, extrai uma conta "a op b = r" da justificativa do gabarito.
-         Cobria só ~25% dos casos; é a razão de existir a via 1.
+    Único caminho de verificação possível neste schema: não existe mais um
+    campo dedicado ao VALOR da resposta (o antigo campo `resposta`, removido
+    para seguir o contrato exigido pelos envolvidos). Por isso a cobertura
+    volta a depender de regex sobre texto livre — cobre bem contas simples
+    ("a op b = r"), mas não pega raciocínio verbal sem equação nem frações/
+    porcentagens textuais. Ver seção "Limitações" da documentação científica.
 
     Retorna (ok, sugestao):
-      ok=True         gabarito aponta para a alternativa correta
+      ok=True         resposta_correta aponta para a alternativa certa
       ok=False        não aponta — `sugestao` traz a letra correta, se identificável
-      ok=None         não deu para verificar por nenhuma das duas vias
+      ok=None         não deu para verificar (sem equação reconhecível no texto)
     """
-    if not obj:
+    if not isinstance(questao, dict):
         return None, None
-    gabarito = obj.get("gabarito")
-    alternativas = obj.get("alternativas")
+    gabarito = questao.get("resposta_correta")
+    alternativas = questao.get("alternativas")
     if not isinstance(alternativas, dict) or gabarito not in alternativas:
         return None, None
 
-    # Via 1: casamento exato contra o campo `resposta`.
-    resposta = obj.get("resposta")
-    if resposta not in (None, ""):
-        letra = _match_letra(alternativas, resposta)
-        if letra is not None:
-            return (True, None) if letra == gabarito else (False, letra)
-        # `resposta` não casou com nenhuma alternativa. Dois cenários bem
-        # diferentes, e confundi-los gera falso negativo:
-        #   (a) modelo NÃO retreinado ecoa a LETRA ("B") no campo, porque a
-        #       grammar o obriga a preencher algo que ele nunca aprendeu —
-        #       não é erro da questão; caímos para a via 2.
-        #   (b) modelo retreinado declara um VALOR que não existe entre as
-        #       alternativas — aí a questão está de fato malformada.
-        if _canon(resposta) not in {"a", "b", "c", "d"}:
-            return False, None
-
-    # Via 2 (legado / modelo não retreinado): extrai a conta da justificativa.
-    justificativas = obj.get("justificativas")
-    if not isinstance(justificativas, dict):
+    resultado = _computed_result(questao.get("resolucao_passo_a_passo", ""))
+    if resultado is None:
         return None, None
-    result = _computed_result(justificativas.get(gabarito, ""))
-    if result is None:
-        return None, None
-    if _leading_number(alternativas.get(gabarito)) == result:
+    if _leading_number(alternativas.get(gabarito)) == resultado:
         return True, None
     for letra, texto in alternativas.items():
-        if _leading_number(texto) == result:
+        if _leading_number(texto) == resultado:
             return False, letra
     return False, None
 
 
-def fix_gabarito(obj):
+def fix_gabarito(questao):
     """Correção determinística pós-geração (para o app e para os scripts de teste).
 
-    Se o gabarito não aponta para a alternativa que contém a `resposta` (ou,
-    no fallback legado, o resultado da conta), troca a letra do gabarito para a
-    correta. Retorna (obj, status):
-      "ok"              gabarito já aponta para a alternativa certa
-      "corrigido"       letra do gabarito trocada para a alternativa certa
-      "inconsistente"   a resposta/conta não corresponde a nenhuma alternativa —
+    Se `resposta_correta` não aponta para a alternativa que bate com a conta
+    de `resolucao_passo_a_passo`, troca a letra pela correta. Retorna
+    (questao, status):
+      "ok"              resposta_correta já aponta para a alternativa certa
+      "corrigido"       letra trocada para a alternativa certa
+      "inconsistente"   a conta não corresponde a nenhuma alternativa —
                         questão malformada, regenerar é o único remédio
-      "nao_verificavel" sem `resposta` nem conta reconhecível — segue como está
+      "nao_verificavel" sem conta reconhecível em resolucao_passo_a_passo
 
-    Nota: ao corrigir, apenas a letra do gabarito muda; as justificativas
-    permanecem onde estão. A letra corrigida é a pedagogicamente correta
-    (a alternativa cujo valor é de fato a resposta).
+    Nota: só a letra de `resposta_correta` muda; `resolucao_passo_a_passo`
+    permanece como está.
     """
-    consistente, sugestao = check_consistency(obj)
+    consistente, sugestao = check_consistency(questao)
     if consistente is True:
-        return obj, "ok"
+        return questao, "ok"
     if consistente is None:
-        return obj, "nao_verificavel"
+        return questao, "nao_verificavel"
     if sugestao:
-        corrigido = dict(obj)
-        corrigido["gabarito"] = sugestao
+        corrigido = dict(questao)
+        corrigido["resposta_correta"] = sugestao
         return corrigido, "corrigido"
-    return obj, "inconsistente"
+    return questao, "inconsistente"

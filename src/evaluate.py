@@ -2,10 +2,10 @@
 
 Métricas:
   Estruturais (sobre gerações reais):
-    - % de saídas com JSON válido
-    - % com schema completo (enunciado, comando, alternativas A-D, gabarito)
-    - % com gabarito em {A,B,C,D} e 4 alternativas distintas
-    - distribuição dos gabaritos gerados (detecta viés)
+    - % de saídas com JSON válido e wrapper {"questoes": [...]} válido
+    - % com schema completo (enunciado, alternativas A-E, resposta_correta, difficulty)
+    - % com resposta_correta em {A,B,C,D,E} e 5 alternativas distintas
+    - distribuição das respostas corretas geradas (detecta viés)
     - % de saídas citando figura/imagem/gráfico (indesejado: modelo é só texto)
   Linguagem:
     - perplexity da resposta de referência (loss só nos tokens do assistant)
@@ -35,7 +35,13 @@ from unsloth import FastLanguageModel  # deve ser o primeiro import (patches)
 import torch
 from tqdm import tqdm
 
-from schema_utils import IMAGE_PATTERN, check_consistency, check_structure, parse_json
+from schema_utils import (
+    IMAGE_PATTERN,
+    check_consistency,
+    check_structure,
+    extract_questao,
+    parse_json,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 VAL_PATH = ROOT / "data" / "val.jsonl"
@@ -110,7 +116,7 @@ def main():
         examples = examples[: args.num_samples]
 
     results, latencies, tokens_per_sec, output_tokens = [], [], [], []
-    gabaritos, image_mentions = [], 0
+    respostas_corretas, image_mentions = [], 0
     consistencia_ok, consistencia_verificavel = 0, 0
 
     for ex in tqdm(examples, desc="Gerando questões"):
@@ -139,16 +145,17 @@ def main():
         text = tokenizer.decode(out[0, prompt_ids.shape[1]:], skip_special_tokens=True)
 
         obj = parse_json(text)
-        flags = check_structure(obj)
-        if obj:
-            gabaritos.append(str(obj.get("gabarito")))
+        flags = check_structure(obj, quantidade_esperada=1)
+        questao = extract_questao(obj, 0)
+        if questao:
+            respostas_corretas.append(str(questao.get("resposta_correta")))
             blob = json.dumps(obj, ensure_ascii=False)
         else:
             blob = text
         if IMAGE_PATTERN.search(blob):
             image_mentions += 1
 
-        consistente, sugestao = check_consistency(obj)
+        consistente, sugestao = check_consistency(questao)
         if consistente is not None:
             consistencia_verificavel += 1
             consistencia_ok += int(consistente)
@@ -159,8 +166,8 @@ def main():
         results.append({
             "codigo_item_ref": ex["meta"]["codigo_item"],
             **flags,
-            "consistencia_gabarito": consistente,
-            "sugestao_gabarito": sugestao,
+            "consistencia_resposta_correta": consistente,
+            "sugestao_resposta_correta": sugestao,
         })
 
     n = len(results)
@@ -173,21 +180,22 @@ def main():
         "num_amostras": n,
         "estrutura": {
             "json_valido_pct": round(pct("json_valido"), 1),
+            "wrapper_valido_pct": round(pct("wrapper_valido"), 1),
             "schema_completo_pct": round(pct("schema_completo"), 1),
-            "gabarito_valido_pct": round(pct("gabarito_valido"), 1),
+            "resposta_valida_pct": round(pct("resposta_valida"), 1),
             "alternativas_distintas_pct": round(pct("alternativas_distintas"), 1),
-            "justificativas_distintas_pct": round(pct("justificativas_distintas"), 1),
-            "distribuicao_gabaritos": dict(Counter(gabaritos)),
+            "difficulty_valida_pct": round(pct("difficulty_valida"), 1),
+            "distribuicao_respostas_corretas": dict(Counter(respostas_corretas)),
             "mencoes_figura_pct": round(100 * image_mentions / n, 1),
-            "consistencia_gabarito_pct": (
+            "consistencia_resposta_correta_pct": (
                 round(100 * consistencia_ok / consistencia_verificavel, 1)
                 if consistencia_verificavel else None
             ),
             "consistencia_verificavel_n": consistencia_verificavel,
             "consistencia_nota": (
-                "% das respostas em que o gabarito bate com a conta resolvida na "
-                "justificativa correspondente; medido só sobre as N amostras com "
-                "uma expressão aritmética 'a op b = r' reconhecível no texto."
+                "% das respostas em que resposta_correta bate com a conta resolvida "
+                "em resolucao_passo_a_passo; medido só sobre as N amostras com uma "
+                "expressão aritmética 'a op b = r' reconhecível no texto."
             ),
         },
         "linguagem": {"perplexity_referencia": round(ppl, 3)},

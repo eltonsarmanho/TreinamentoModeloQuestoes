@@ -19,7 +19,7 @@ import sqlite3
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from schema_utils import normalize_math
+from schema_utils import DIFFICULTY_MAP, normalize_math
 
 ROOT = Path(__file__).resolve().parent.parent
 DB_PATH = ROOT / "DB" / "questoes.db"
@@ -27,25 +27,37 @@ OUT_DIR = ROOT / "data"
 VAL_FRACTION = 0.10
 SEED = 42
 
+# Contrato fixo exigido pelo app mobile (schema definido pelos envolvidos, sem
+# exceção): wrapper {"questoes": [...]}, 5 alternativas (A-E), resposta_correta
+# (LETRA) e resolucao_passo_a_passo (texto único, sem justificativa por
+# alternativa) e difficulty em inglês (EASY/MEDIUM/HARD). Não existe mais um
+# campo dedicado ao VALOR da resposta — ver nota em schema_utils.check_consistency
+# sobre o impacto disso na cobertura de verificação.
 SYSTEM_PROMPT = (
     "Você é um gerador de questões de matemática no padrão SAEB para a educação "
-    "básica brasileira. Gere exatamente UMA questão de múltipla escolha conforme o "
-    "ano escolar, a habilidade e a dificuldade pedidos. Responda APENAS com JSON "
+    "básica brasileira. Gere EXATAMENTE a quantidade de questões de múltipla "
+    "escolha pedida, cada uma com 5 alternativas (A a E), conforme o ano "
+    "escolar, a habilidade e a dificuldade pedidos. Responda APENAS com JSON "
     "válido, sem texto extra, no schema: "
-    '{"enunciado": str, "comando": str, "alternativas": {"A": str, "B": str, '
-    '"C": str, "D": str}, "justificativas": {"A": str, "B": str, "C": str, '
-    '"D": str}, "resposta": str, "gabarito": "A|B|C|D"}. Resolva e justifique '
-    "cada alternativa antes de decidir a resposta. O campo \"resposta\" deve "
-    "conter o VALOR da resposta correta, copiado exatamente como aparece na "
-    "alternativa correspondente; o campo \"gabarito\" deve ser a LETRA dessa "
-    "mesma alternativa. Use os sinais - + x ÷ nas contas. A questão deve ser "
+    '{"questoes": [{"enunciado": str, "alternativas": {"A": str, "B": str, '
+    '"C": str, "D": str, "E": str}, "resolucao_passo_a_passo": str, '
+    '"resposta_correta": "A|B|C|D|E", "difficulty": "EASY|MEDIUM|HARD"}, ...]}. '
+    "Resolva passo a passo antes de decidir a resposta. O campo "
+    "\"resposta_correta\" deve ser a LETRA da alternativa correta. O campo "
+    "\"difficulty\" reflete a dificuldade pedida (Fácil=EASY, Moderado=MEDIUM, "
+    "Difícil=HARD). Use os sinais - + x ÷ nas contas. A questão deve ser "
     "autocontida, sem depender de figuras, imagens ou gráficos."
 )
 
 USER_TEMPLATE = (
-    "Gere uma questão de matemática. Ano: {ano} ano. "
+    "Gere {quantidade} questão(ões) de matemática. Ano: {ano} ano. "
     "Habilidade: {habilidade} — {descricao}. Dificuldade: {dificuldade}."
 )
+
+# Alternativa E sintética para dados reais do banco (que só têm A-D). Nunca é
+# a correta — o gabarito do banco permanece em A-D — só existe para cumprir o
+# contrato de 5 alternativas exigido pelo app.
+ALTERNATIVA_E_PADRAO = "Nenhuma das alternativas anteriores"
 
 
 def clean(value):
@@ -111,23 +123,29 @@ def build_example(row):
     # Alternativa correta muitas vezes só tem a justificativa geral.
     if not justificativas[gabarito] and geral:
         justificativas[gabarito] = geral
-    justificativas = {k: v for k, v in justificativas.items() if v}
 
-    # Ordem das chaves importa: JSON é gerado token a token, então o raciocínio
-    # precisa vir ANTES da resposta final. A sequência
-    # justificativas -> resposta (VALOR) -> gabarito (LETRA) faz o modelo
-    # primeiro mostrar o trabalho, depois se comprometer com o valor, e só
-    # então escolher a letra — que fica verificável por comparação exata
-    # (ver schema_utils.check_consistency).
-    answer = {
-        "enunciado": enunciado,
-        "comando": comando,
+    # 5ª alternativa (E) sintética — o banco só tem A-D, mas o contrato do app
+    # exige 5. Nunca é a correta.
+    alternativas["E"] = ALTERNATIVA_E_PADRAO
+
+    dificuldade = clean(row["grau_resolucao"]) or "Moderado"
+    # enunciado + comando fundidos: o novo contrato não tem campo separado
+    # para a instrução complementar do SAEB.
+    enunciado_completo = f"{enunciado} {comando}".strip() if comando else enunciado
+
+    # A ordem de emissão treinada é enunciado -> alternativas ->
+    # resolucao_passo_a_passo -> resposta_correta -> difficulty: o modelo
+    # mostra o raciocínio ANTES de se comprometer com a letra (ver nota em
+    # schema_utils.py). O contrato exige só as chaves abaixo, mesmo conjunto,
+    # independente da ordem de serialização.
+    questao = {
+        "enunciado": enunciado_completo,
         "alternativas": alternativas,
+        "resolucao_passo_a_passo": justificativas.get(gabarito, ""),
+        "resposta_correta": gabarito,
+        "difficulty": DIFFICULTY_MAP.get(dificuldade, "MEDIUM"),
     }
-    if justificativas:
-        answer["justificativas"] = justificativas
-    answer["resposta"] = alternativas[gabarito]
-    answer["gabarito"] = gabarito
+    answer = {"questoes": [questao]}
 
     ano = clean(row["ano"]) or "não informado"
     example = {
@@ -136,10 +154,11 @@ def build_example(row):
             {
                 "role": "user",
                 "content": USER_TEMPLATE.format(
+                    quantidade=1,
                     ano=ano,
                     habilidade=clean(row["habilidade"]) or "geral",
                     descricao=clean(row["descricao_item"]) or "não especificada",
-                    dificuldade=clean(row["grau_resolucao"]) or "Moderado",
+                    dificuldade=dificuldade,
                 ),
             },
             {

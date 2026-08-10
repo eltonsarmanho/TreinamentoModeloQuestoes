@@ -41,9 +41,11 @@ from pathlib import Path
 
 from extract_data import SYSTEM_PROMPT, USER_TEMPLATE
 from schema_utils import (
+    ALTERNATIVE_LETTERS,
     IMAGE_PATTERN,
     check_consistency,
     check_structure,
+    extract_questao,
     fix_gabarito,
     parse_json,
 )
@@ -139,11 +141,12 @@ def _score_candidato(flags, consistente):
 
     3 = estrutura ok + consistência VERIFICADA correta   (entregar direto)
     2 = estrutura ok, consistência não verificável        (aceitável)
-    1 = estrutura ok, mas gabarito inconsistente          (corrigível por fix_gabarito)
+    1 = estrutura ok, mas resposta_correta inconsistente  (corrigível por fix_gabarito)
     0 = estrutura quebrada                                (descartar se houver melhor)
     """
-    estrutura_ok = (flags["json_valido"] and flags["schema_completo"]
-                    and flags["gabarito_valido"] and flags["alternativas_distintas"])
+    estrutura_ok = (flags["json_valido"] and flags["wrapper_valido"] and flags["quantidade_correta"]
+                    and flags["schema_completo"] and flags["resposta_valida"]
+                    and flags["alternativas_distintas"] and flags["difficulty_valida"])
     if not estrutura_ok:
         return 0
     if consistente is True:
@@ -154,28 +157,30 @@ def _score_candidato(flags, consistente):
 
 
 def generate_validated(llama_cli, gguf_path, user_prompt, threads, max_new_tokens,
-                       grammar=None, retries=1):
+                       grammar=None, retries=1, quantidade=1):
     """Pipeline de produção: best-of-N com verificador determinístico.
 
     1. Gera com grammar GBNF (estrutura garantida por construção, se disponível).
-    2. Valida estrutura (check_structure) e consistência resposta<->gabarito
-       (check_consistency — comparação exata quando o campo `resposta` existe).
+    2. Valida estrutura (check_structure, no wrapper {"questoes": [...]}) e
+       consistência resposta_correta<->resolucao_passo_a_passo da primeira
+       questão (check_consistency).
     3. Amostra até `retries`+1 candidatos, **parando assim que um passa** na
        verificação; entre os que reprovam, guarda o melhor (ver _score_candidato)
        em vez do último — é a diferença entre best-of-N e retry sequencial.
-    4. Se nenhum passou, aplica fix_gabarito() sobre o melhor candidato: se a
-       resposta declarada bate com outra alternativa, corrige a letra
-       deterministicamente em vez de entregar uma questão errada.
+    4. Se nenhum passou, aplica fix_gabarito() sobre a primeira questão do
+       melhor candidato: se a conta da resolução bate com outra alternativa,
+       corrige a letra deterministicamente em vez de entregar uma questão errada.
 
     A seleção por verificador (em vez de voto majoritário simples) é o que a
     literatura reporta como mais eficaz para modelos pequenos — ver
     arXiv:2410.12608, que mede +5 a +7 pontos em modelos de 0.5B-1B.
 
-    Retorna dict com: text, obj, flags, status, regeneracoes, gen_tps, elapsed.
+    Retorna dict com: text, obj (a PRIMEIRA questão do wrapper, para exibição/
+    métricas), flags, status, regeneracoes, gen_tps, elapsed.
     status: "ok" | "nao_verificavel" | "corrigido" | "falha".
     """
     total_elapsed, regeneracoes = 0.0, 0
-    melhor = None  # (score, text, obj, flags, gen_tps)
+    melhor = None  # (score, text, top_obj, questao, flags, gen_tps)
     for attempt in range(retries + 1):
         seed = None if attempt == 0 else 1000 + attempt
         text, _, gen_tps, elapsed = generate(
@@ -183,30 +188,30 @@ def generate_validated(llama_cli, gguf_path, user_prompt, threads, max_new_token
             seed=seed, grammar=grammar,
         )
         total_elapsed += elapsed
-        obj = parse_json(text)
-        flags = check_structure(obj)
-        consistente, _ = check_consistency(obj)
+        top_obj = parse_json(text)
+        flags = check_structure(top_obj, quantidade_esperada=quantidade)
+        questao = extract_questao(top_obj, 0)
+        consistente, _ = check_consistency(questao)
         score = _score_candidato(flags, consistente)
 
         if melhor is None or score > melhor[0]:
-            melhor = (score, text, obj, flags, gen_tps)
+            melhor = (score, text, top_obj, questao, flags, gen_tps)
 
         if score >= 2:  # aprovado: para de gastar tempo/tokens
-            return {"text": text, "obj": obj, "flags": flags,
+            return {"text": text, "obj": questao, "flags": flags,
                     "status": "ok" if score == 3 else "nao_verificavel",
                     "regeneracoes": regeneracoes, "gen_tps": gen_tps,
                     "elapsed": total_elapsed}
         if attempt < retries:
             regeneracoes += 1
 
-    _, text, obj, flags, gen_tps = melhor
-    if obj is not None:
-        obj, fix_status = fix_gabarito(obj)
-        flags = check_structure(obj)
+    _, text, top_obj, questao, flags, gen_tps = melhor
+    if questao is not None:
+        questao, fix_status = fix_gabarito(questao)
         status = "corrigido" if fix_status == "corrigido" else "falha"
     else:
         status = "falha"
-    return {"text": text, "obj": obj, "flags": flags, "status": status,
+    return {"text": text, "obj": questao, "flags": flags, "status": status,
             "regeneracoes": regeneracoes, "gen_tps": gen_tps,
             "elapsed": total_elapsed}
 
@@ -217,34 +222,29 @@ def print_question(obj, raw_text):
         print(f"  {raw_text[:600]}")
         return
     print(f"  Enunciado: {obj.get('enunciado', '?')}")
-    if obj.get("comando"):
-        print(f"  Comando:   {obj['comando']}")
     alts = obj.get("alternativas", {})
-    gabarito = obj.get("gabarito", "?")
-    for letra in "ABCD":
-        marca = " <- gabarito" if letra == gabarito else ""
+    gabarito = obj.get("resposta_correta", "?")
+    for letra in ALTERNATIVE_LETTERS:
+        marca = " <- resposta_correta" if letra == gabarito else ""
         print(f"    {letra}) {alts.get(letra, '?')}{marca}")
-    if obj.get("resposta") not in (None, ""):
-        print(f"  Resposta:  {obj['resposta']}  (deve bater com a alternativa {gabarito})")
-    just = obj.get("justificativas")
-    if just:
-        print("  Justificativas:")
-        for letra, texto in just.items():
-            print(f"    {letra}: {texto}")
+    print(f"  Difficulty: {obj.get('difficulty', '?')}")
+    if obj.get("resolucao_passo_a_passo"):
+        print(f"  Resolução: {obj['resolucao_passo_a_passo']}")
 
 
 STATUS_LABEL = {
     "ok": "[ok] validado: estrutura e consistência aprovadas",
     "nao_verificavel": "[ok] estrutura aprovada (consistência não verificável — sem conta explícita)",
-    "corrigido": "[corrigido] gabarito trocado deterministicamente para bater com a conta da justificativa",
+    "corrigido": "[corrigido] resposta_correta trocada deterministicamente para bater com a conta da resolução",
     "falha": "[FALHA] reprovado mesmo após regenerar — descartar esta questão",
 }
 
 
 def run_one(llama_cli, gguf_path, ano, habilidade, descricao, dificuldade, threads, n,
-            grammar=None, retries=1):
+            grammar=None, retries=1, quantidade=1):
     user_prompt = USER_TEMPLATE.format(
-        ano=ano, habilidade=habilidade, descricao=descricao, dificuldade=dificuldade
+        quantidade=quantidade, ano=ano, habilidade=habilidade, descricao=descricao,
+        dificuldade=dificuldade,
     )
     print(f"\nPrompt: {user_prompt}")
     print(f"Grammar: {'sim (' + grammar.name + ')' if grammar else 'não'} | "
@@ -255,17 +255,19 @@ def run_one(llama_cli, gguf_path, ano, habilidade, descricao, dificuldade, threa
             print(f"--- Variação {i + 1}/{n} ---")
         r = generate_validated(
             llama_cli, gguf_path, user_prompt, threads, MAX_NEW_TOKENS,
-            grammar=grammar, retries=retries,
+            grammar=grammar, retries=retries, quantidade=quantidade,
         )
         print_question(r["obj"], r["text"])
         flags = r["flags"]
         figura = " | menciona figura!" if IMAGE_PATTERN.search(r["text"]) else ""
         print(
             f"  [json_valido={flags['json_valido']} "
+            f"wrapper_valido={flags['wrapper_valido']} "
+            f"quantidade_correta={flags['quantidade_correta']} "
             f"schema_completo={flags['schema_completo']} "
-            f"gabarito_valido={flags['gabarito_valido']} "
+            f"resposta_valida={flags['resposta_valida']} "
             f"alternativas_distintas={flags['alternativas_distintas']} "
-            f"justificativas_distintas={flags['justificativas_distintas']}{figura}]"
+            f"difficulty_valida={flags['difficulty_valida']}{figura}]"
         )
         print(f"  {STATUS_LABEL[r['status']]}"
               + (f" | {r['regeneracoes']} regeneração(ões)" if r["regeneracoes"] else ""))
@@ -345,7 +347,7 @@ def batch(llama_cli, gguf_path, threads, num_samples, grammar=None, retries=1, r
             else "produção (grammar + gerar->checar->corrigir/regenerar)")
     print(f"Modo: {modo}\n")
 
-    results, gen_tps_list, latencies, gabaritos = [], [], [], []
+    results, gen_tps_list, latencies, respostas_corretas = [], [], [], []
     image_mentions = 0
     consistencia_ok, consistencia_verificavel = 0, 0
     status_counter, regeneracoes_total = Counter(), 0
@@ -360,7 +362,7 @@ def batch(llama_cli, gguf_path, threads, num_samples, grammar=None, retries=1, r
         status_counter[r["status"]] += 1
         regeneracoes_total += r["regeneracoes"]
         if obj:
-            gabaritos.append(str(obj.get("gabarito")))
+            respostas_corretas.append(str(obj.get("resposta_correta")))
         if IMAGE_PATTERN.search(text):
             image_mentions += 1
         if r["gen_tps"]:
@@ -377,8 +379,8 @@ def batch(llama_cli, gguf_path, threads, num_samples, grammar=None, retries=1, r
             **flags,
             "status": r["status"],
             "regeneracoes": r["regeneracoes"],
-            "consistencia_gabarito": consistente,
-            "sugestao_gabarito": sugestao,
+            "consistencia_resposta_correta": consistente,
+            "sugestao_resposta_correta": sugestao,
         })
 
     n = len(results)
@@ -390,13 +392,15 @@ def batch(llama_cli, gguf_path, threads, num_samples, grammar=None, retries=1, r
         "num_amostras": n,
         "estrutura": {
             "json_valido_pct": pct("json_valido"),
+            "wrapper_valido_pct": pct("wrapper_valido"),
+            "quantidade_correta_pct": pct("quantidade_correta"),
             "schema_completo_pct": pct("schema_completo"),
-            "gabarito_valido_pct": pct("gabarito_valido"),
+            "resposta_valida_pct": pct("resposta_valida"),
             "alternativas_distintas_pct": pct("alternativas_distintas"),
-            "justificativas_distintas_pct": pct("justificativas_distintas"),
-            "distribuicao_gabaritos": dict(Counter(gabaritos)),
+            "difficulty_valida_pct": pct("difficulty_valida"),
+            "distribuicao_respostas_corretas": dict(Counter(respostas_corretas)),
             "mencoes_figura_pct": round(100 * image_mentions / n, 1),
-            "consistencia_gabarito_pct": (
+            "consistencia_resposta_correta_pct": (
                 round(100 * consistencia_ok / consistencia_verificavel, 1)
                 if consistencia_verificavel else None
             ),
@@ -445,6 +449,8 @@ def main():
     parser.add_argument("--descricao", default="", help="descrição da habilidade")
     parser.add_argument("--dificuldade", default="Moderado")
     parser.add_argument("--n", type=int, default=1, help="variações a gerar")
+    parser.add_argument("--quantidade", type=int, default=1,
+                        help="quantas questões pedir por chamada (testa o lote 'questoes': [...])")
 
     parser.add_argument("--batch", action="store_true", help="roda sobre data/val.jsonl")
     parser.add_argument("--num-samples", type=int, default=None)
@@ -474,7 +480,7 @@ def main():
         run_one(
             llama_cli, gguf_path, args.ano, args.habilidade,
             args.descricao, args.dificuldade, args.threads, args.n,
-            grammar=grammar, retries=args.retries,
+            grammar=grammar, retries=args.retries, quantidade=args.quantidade,
         )
     else:
         interactive(llama_cli, gguf_path, args.threads, grammar=grammar,

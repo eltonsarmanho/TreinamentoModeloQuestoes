@@ -49,13 +49,12 @@ calculado em Python antes de montar a questão**
 (ano, habilidade, descrição, dificuldade) reais do banco, para o prompt de
 treino continuar idêntico ao que o app manda em produção.
 
-Cada questão tem as **4 justificativas** (uma por alternativa), no mesmo
-padrão do SAEB real: cada distrator é o resultado de um **erro pedagógico
-específico** (operação trocada, erro de vai-um, erro de casa decimal,
-confundir "valor do desconto" com "valor final"...), e sua justificativa
-explica esse erro citando o valor — não um número aleatório. Isso reforça o
-vínculo letra↔valor↔raciocínio no treino, atacando o problema de gabarito
-inconsistente com a justificativa (ver "Limitações conhecidas" abaixo):
+Cada questão tem **5 alternativas** (A-E, contrato do app — ver "Formato dos
+dados" abaixo). O distrator não é um número aleatório: é o resultado de um
+**erro pedagógico específico** (operação trocada, erro de vai-um, erro de
+casa decimal, confundir "valor do desconto" com "valor final"...); só a
+justificativa da alternativa CORRETA vira `resolucao_passo_a_passo` — o
+contrato não tem mais um campo de justificativa por alternativa:
 
 ```bash
 python src/generate_synthetic.py --dry-run             # só mostra estatísticas, não escreve nada
@@ -78,8 +77,8 @@ computar o gabarito em Python). Para habilidades mais interpretativas
 contexto das questões de cálculo, `distill_teacher.py` usa um **modelo
 professor maior** via Hugging Face Inference Providers para gerar questões
 novas — mas **nada entra no treino sem passar pelo filtro determinístico**:
-schema completo, 4 alternativas/justificativas distintas, sem menção a
-figura, tamanho dentro do `max_seq_length`, gabarito não reprovado por
+schema completo, 5 alternativas distintas, sem menção a figura, tamanho
+dentro do `max_seq_length`, `resposta_correta` não reprovada por
 `check_consistency()` e sem duplicata de enunciado. O professor erra às
 vezes; o filtro é o que garante que só entra dado limpo.
 
@@ -104,23 +103,26 @@ depender só de "o modelo aprendeu direito", `test_model.py` roda um pipeline
 de verificação sobre o artefato real (`generate_validated()`):
 
 1. **Grammar GBNF** (`grammars/questao.gbnf`) restringe a decodificação do
-   `llama-cli` ao schema exato — garante por construção JSON válido, todas
-   as chaves (incluindo `resposta`), 4 alternativas e 4 justificativas,
-   gabarito em `{A,B,C,D}`. Não garante consistência lógica (passo 2).
-2. **`check_consistency()`** compara `alternativas[gabarito]` com `resposta`
-   por **igualdade exata** — sem regex, sem depender de como a justificativa
-   foi escrita, funciona para fração/porcentagem/qualquer tipo. Para
-   artefatos antigos (sem o campo) cai num fallback por regex sobre a conta
-   da justificativa.
+   `llama-cli` ao contrato exato exigido pelo app — garante por construção
+   JSON válido, wrapper `{"questoes": [...]}`, todas as chaves, 5
+   alternativas (A-E), `resposta_correta` em `{A,B,C,D,E}`, `difficulty` em
+   `{EASY,MEDIUM,HARD}`. Não garante consistência lógica (passo 2).
+2. **`check_consistency()`** extrai uma conta "a op b = r" de
+   `resolucao_passo_a_passo` e compara com `alternativas[resposta_correta]`.
+   Cobre bem contas simples; não cobre raciocínio verbal sem equação nem
+   frações/porcentagens textuais (ver "Limitações conhecidas" abaixo — esse é
+   o efeito colateral aceito de remover o campo `resposta`, que existia só
+   para dar cobertura exata e foi descartado para seguir o contrato do app).
 3. Se reprovar, **best-of-N**: amostra até `--retries N`+1 candidatos,
    parando no primeiro que passa e guardando o **melhor** entre os que
    reprovam (não o último).
-4. Esgotadas as tentativas, **`fix_gabarito()`** troca a letra do gabarito
-   para a alternativa que contém a `resposta` — só descarta a questão
-   (`status="falha"`) se nem isso resolver.
+4. Esgotadas as tentativas, **`fix_gabarito()`** troca `resposta_correta`
+   para a alternativa que bate com a conta de `resolucao_passo_a_passo` — só
+   descarta a questão (`status="falha"`) se nem isso resolver.
 
 ```bash
 python src/test_model.py --ano "5º" --habilidade H08 --descricao "..." --dificuldade Fácil
+python src/test_model.py --quantidade 5             # pede um lote de 5 questões numa chamada
 python src/test_model.py --batch                    # pipeline completo (grammar + verificação)
 python src/test_model.py --batch --raw              # mede o modelo cru, sem grammar/verificação (comparação)
 python src/test_model.py --no-grammar               # só o verificador, sem a grammar
@@ -133,46 +135,41 @@ CPU, Q4_K_M), sem dependência de `torch`/`unsloth` — só precisa do
 `llama-cli` (gerado por `export_gguf.py` em `~/.unsloth/llama.cpp/llama-cli`)
 e do `.gguf` exportado.
 
-### Gabarito inconsistente com a justificativa
+### Gabarito inconsistente com a resolução
 
-Em alguns testes o cálculo na justificativa está certo, mas a letra do
-`gabarito` não bate com ele (ou as 4 justificativas saem repetidas/genéricas).
-Causas identificadas, e o que ataca cada uma:
+Em alguns testes o cálculo na resolução está certo, mas a letra de
+`resposta_correta` não bate com ele. Causas identificadas, e o que ataca cada
+uma:
 
-1. **Ordem das chaves no JSON treinado**: a geração é autorregressiva — antes
-   desta mudança, `gabarito` vinha *antes* de `justificativas` no schema,
-   então o modelo comprometia a letra sem ter "mostrado o trabalho" ainda (o
-   modo non-thinking não tem `<think>` para isso). Corrigido: `justificativas`
-   agora vem antes de `gabarito` no schema (`extract_data.py`/`SYSTEM_PROMPT`
-   e `grammars/questao.gbnf`).
-2. **Distratores sintéticos sem justificativa própria** (regressão
-   introduzida na primeira versão de `generate_synthetic.py`, identificada em
-   testes reais no app): gerar só a justificativa do gabarito e nada para as
-   outras 3 alternativas ensinava o modelo a tratar "justificativa" como
-   enfeite, e ele passava a repetir a mesma frase nas 4. Corrigido: cada
-   gerador agora produz **4 justificativas distintas**, uma por distrator
-   pedagógico (ver seção do `generate_synthetic.py` acima). Métrica nova:
-   `justificativas_distintas_pct` em `evaluate.py`/`test_model.py`.
-3. **Verificador cego em 70–77% dos casos** (medido em `eval_report.json`:
-   23 de 30 "não verificável"). Duas causas: (a) o modelo emite operadores
-   Unicode (`−` U+2212, `×`, `–`) que o regex ASCII não casava; (b) mais
-   grave, justificativas em texto corrido sem equação ("Subtraindo 5 de 12,
-   obtemos 7") que nenhum regex cobre de forma robusta. Corrigido em duas
-   frentes: normalização Unicode (`normalize_math`) e, sobretudo, o campo
-   **`resposta`** no schema — o valor da resposta num slot dedicado torna a
-   verificação uma comparação exata, levando a cobertura de ~25% para 100%
-   no conjunto sintético.
+1. **Ordem das chaves no JSON treinado**: a geração é autorregressiva —
+   `resolucao_passo_a_passo` é emitido ANTES de `resposta_correta` na
+   sequência de treino (mesmo conjunto de chaves do contrato do app, que não
+   garante nem depende de ordem posicional — ver "Formato dos dados" abaixo),
+   para o modelo "mostrar o trabalho" antes de se comprometer com a letra (o
+   modo non-thinking não tem `<think>` para isso).
+2. **Distratores sintéticos sem valor plausível**: cada gerador de
+   `generate_synthetic.py` produz o distrator a partir de um **erro
+   pedagógico específico** (operação trocada, erro de vai-um, erro de casa
+   decimal...), não um número aleatório — evita que o modelo aprenda padrões
+   de distrator "óbvios" que não ensinam nada sobre o erro real do aluno.
+3. **Verificador cego em boa parte dos casos**: o contrato do app (schema
+   fixo, sem exceção) não tem um campo dedicado ao VALOR da resposta — só
+   `resposta_correta` (a LETRA). `check_consistency()` depende então de
+   extrair uma equação "a op b = r" de `resolucao_passo_a_passo` via regex,
+   o que cobre contas simples mas não raciocínio verbal sem equação nem
+   frações/porcentagens textuais (medido: ~75% de cobertura no conjunto
+   sintético, que é só aritmética — menor em habilidades mais interpretativas
+   do banco real). Normalização Unicode (`normalize_math`) evita que
+   operadores tipográficos (`−` U+2212, `×`, `–`) quebrem o regex.
 4. **Qwen3-1.7B é pequeno**: aritmética multi-dígito e coerência semântica em
    contextos incomuns são pontos fracos conhecidos de LLMs nessa faixa sem
    chain-of-thought — nenhuma correção de schema/dataset elimina isso
    totalmente. Atacado por dataset maior/mais limpo (1 e 2 acima, mais
    `distill_teacher.py`) e mitigado em produção pelo verificador acima.
 
-Os itens 1–2 só têm efeito **depois de retreinar** (`python src/train.py`
-sobre o `data/train.jsonl` regenerado). Para produção, independente de
-quando/se o retreino aconteceu, `test_model.py` já roda o verificador
-gerar→checar→corrigir (seção "Verificação em produção" acima) — é a garantia
-que não depende do modelo ter aprendido perfeitamente.
+Para produção, `test_model.py` já roda o verificador gerar→checar→corrigir
+(seção "Verificação em produção" acima) — é a garantia que não depende do
+modelo ter aprendido perfeitamente.
 
 ## Por que essa abordagem (literatura atual)
 
@@ -225,30 +222,48 @@ disponível.
 
 ## Formato dos dados
 
-Entrada (user): `Gere uma questão de matemática. Ano: 5º ano. Habilidade: H08 —
-<descritor>. Dificuldade: Fácil.`
+Contrato fixo exigido pelo app mobile (definido pelos envolvidos, sem
+exceção — qualquer desvio de chave/tipo/enum quebra o parsing no app).
+
+Entrada (user): `Gere 1 questão(ões) de matemática. Ano: 5º ano. Habilidade:
+H08 — <descritor>. Dificuldade: Fácil.` (o "1" muda se o usuário pedir um
+lote — ex.: `Gere 10 questão(ões)...` — e o modelo deve devolver 10 itens em
+`questoes`.)
 
 Saída (assistant):
 
 ```json
 {
-  "enunciado": "...",
-  "comando": "...",
-  "alternativas": {"A": "...", "B": "12", "C": "...", "D": "..."},
-  "justificativas": {"A": "...", "B": "...", "C": "...", "D": "..."},
-  "resposta": "12",
-  "gabarito": "B"
+  "questoes": [
+    {
+      "enunciado": "...",
+      "alternativas": {"A": "...", "B": "12", "C": "...", "D": "...", "E": "..."},
+      "resolucao_passo_a_passo": "...",
+      "resposta_correta": "B",
+      "difficulty": "EASY"
+    }
+  ]
 }
 ```
 
-Ordem das chaves importa (ver "Gabarito inconsistente com a justificativa"
-abaixo): o modelo primeiro **mostra o trabalho** (`justificativas`), depois
-se compromete com o **valor** (`resposta`) e só então escolhe a **letra**
-(`gabarito`). Isso torna a verificação uma comparação exata
-`alternativas[gabarito] == resposta`, sem depender de interpretar texto.
+`difficulty` é `EASY`/`MEDIUM`/`HARD` (mapeado de Fácil/Moderado/Difícil).
+Internamente o modelo é treinado a emitir `resolucao_passo_a_passo` ANTES de
+`resposta_correta` (mostra o trabalho antes de se comprometer com a letra —
+ver "Gabarito inconsistente com a resolução" abaixo); como JSON não garante
+ordem para quem consome por nome, isso não afeta o contrato, só a sequência
+de geração token a token.
+
+Esse schema **não tem mais** um campo dedicado ao VALOR da resposta nem
+justificativa por alternativa (ambos existiam numa versão anterior só para
+uso interno de verificação) — foram removidos para seguir exatamente o
+contrato do app. Efeito colateral aceito: `check_consistency()` volta a
+depender de regex sobre `resolucao_passo_a_passo` (ver seção acima), com
+cobertura menor do que a comparação exata que o campo `resposta` permitia.
 
 Questões com imagem (230 de 553) são excluídas — o modelo em produção é só
-texto e não deve aprender a citar figuras inexistentes.
+texto e não deve aprender a citar figuras inexistentes. Alternativa **E** não
+existe no banco real (que só tem A-D); para esses casos é preenchida com um
+distrator fixo ("Nenhuma das alternativas anteriores"), nunca a correta.
 
 ## Hardware
 

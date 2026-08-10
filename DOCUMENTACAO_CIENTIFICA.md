@@ -1,10 +1,11 @@
 # Fine-tuning de um LLM de 1.7B para Geração Offline de Questões de Matemática no Padrão SAEB: Metodologia, Protocolo e Resultados Preliminares
 
 **Documento de trabalho interno — base para publicação futura.**
-Última atualização: 2026-08-02.
+Última atualização: 2026-08-05.
 Repositório: `TreinamentoModeloQuestoes` (código, dados e artefatos referenciados neste documento).
 
 ---
+
 
 ## Resumo
 
@@ -26,6 +27,15 @@ cada etapa, sinalizando explicitamente quais resultados vêm de amostras
 pequenas (tratamento estatístico correspondentemente cauteloso) e quais
 etapas foram implementadas mas ainda não avaliadas após retreino no momento
 da escrita.
+
+> **Nota de migração de contrato**: após a integração com o app mobile, o
+> schema JSON de saída foi migrado para um contrato fixo definido pela equipe
+> de integração (wrapper `{"questoes": [...]}`, 5 alternativas A–E,
+> `resposta_correta`, `resolucao_passo_a_passo`, `difficulty`), substituindo o
+> schema usado durante o desenvolvimento (`gabarito`/`justificativas` por
+> alternativa/`resposta`). Ver detalhes e trade-offs na Seção 3.2. **O modelo
+> já foi retreinado sobre esse contrato** (517 exemplos: 273 reais + 244
+> sintéticos, incluindo frações H07–H09) — resultados em Seção 5.5.
 
 ---
 
@@ -120,43 +130,72 @@ dificuldades e 27 habilidades distintas.
 
 ### 3.2 Formato do exemplo de treino
 
+> **Nota de migração de contrato.** O schema descrito nesta seção é o
+> **atual**, definido pela equipe responsável pela integração com o app
+> mobile como um contrato fixo, sem exceção: qualquer campo, tipo ou valor de
+> enum fora dele quebra o parsing no app. Ele substitui um schema anterior
+> (`enunciado`/`comando`/`alternativas` A-D/`justificativas` por
+> alternativa/`resposta`/`gabarito`) usado durante a fase de desenvolvimento
+> deste pipeline — os resultados preliminares da Seção 5 e a análise de
+> cobertura da Seção 5.4 foram medidos sob esse schema anterior. As Seções
+> 3.2, 3.9 e 6 foram atualizadas para o contrato atual; o restante do texto
+> (motivação, metodologia de treino, protocolo de avaliação) permanece válido
+> — o schema de saída é ortogonal ao método de fine-tuning.
+
 Cada item vira um exemplo de conversa (formato *chat*) com três mensagens:
 
 - `system`: instrução fixa (`SYSTEM_PROMPT`) definindo o papel do modelo e o
   schema JSON de saída esperado.
 - `user`: template fixo —
-  `"Gere uma questão de matemática. Ano: {ano} ano. Habilidade: {habilidade}
-  — {descricao}. Dificuldade: {dificuldade}."` — o mesmo condicionamento
-  (ano, habilidade, descrição, dificuldade) usado pelo aplicativo em
-  produção.
-- `assistant`: JSON compacto com as chaves, **nesta ordem**: `enunciado`,
-  `comando`, `alternativas` (dict A–D), `justificativas` (dict A–D),
-  `resposta` (o **valor** da alternativa correta) e `gabarito` (a **letra**).
+  `"Gere {quantidade} questão(ões) de matemática. Ano: {ano} ano. Habilidade:
+  {habilidade} — {descricao}. Dificuldade: {dificuldade}."` — o mesmo
+  condicionamento (ano, habilidade, descrição, dificuldade) usado pelo
+  aplicativo em produção, mais a quantidade de questões pedidas numa única
+  chamada (ver adiante).
+- `assistant`: JSON compacto no contrato `{"questoes": [...]}`, onde cada
+  questão tem as chaves `enunciado`, `alternativas` (dict A–E, 5
+  alternativas), `resolucao_passo_a_passo` (string única com o raciocínio),
+  `resposta_correta` (a **letra** da alternativa correta, A–E) e `difficulty`
+  (`EASY`/`MEDIUM`/`HARD`).
 
-**Decisão de protocolo relevante**: a ordem das chaves no JSON de saída não é
-arbitrária. Como a geração é autorregressiva (token a token, esquerda para
-direita), a posição de uma chave determina se o modelo já "viu" (gerou) o
-raciocínio associado antes de se comprometer com outra chave. Na primeira
-versão do pipeline, `gabarito` precedia `justificativas`; isto foi
-identificado como uma causa provável do modo de falha descrito na Seção 5.2, e
-corrigido — `justificativas` passou a preceder `gabarito`, forçando o modelo
-a "mostrar o trabalho" antes de emitir a letra final. Como o modelo roda em
-modo *non-thinking* (Seção 3.6, sem bloco `<think>`), a ordem das chaves do
-JSON é o único mecanismo disponível para induzir esse tipo de sequenciamento
-de raciocínio.
+**Wrapper de lote (`questoes`)**: o app pode pedir mais de uma questão por
+chamada (ex.: "gere 10 questões"); o contrato responde sempre com uma lista,
+mesmo quando `quantidade=1`. Para ensinar esse comportamento sem duplicar o
+custo de geração por questão em produção (a maioria dos pedidos reais é de 1
+questão), uma fração dos exemplos sintéticos agrupa 2–5 questões da mesma
+habilidade/dificuldade num único exemplo de treino (`generate_synthetic.py`,
+`TAMANHOS_LOTE`), enquanto os exemplos do banco real (uma questão por linha)
+permanecem sempre com `quantidade=1`.
 
-**Campo `resposta` (introduzido após a análise da Seção 5.4)**: separar o
-*valor* da resposta (`resposta`) da *letra* que a identifica (`gabarito`)
-tem duas funções. (i) **Sequenciamento de raciocínio**: o modelo se
-compromete primeiro com o resultado numérico, e só então escolhe a letra —
-decompondo em dois passos o que antes era uma decisão única que acoplava
-cálculo e mapeamento posicional. (ii) **Verificabilidade por construção**: a
-checagem de corretude passa a ser a comparação exata
-`alternativas[gabarito] == resposta`, eliminando a necessidade de interpretar
-texto livre. O custo é de aproximadamente 6 tokens (~2% da saída média),
-irrelevante para a latência mobile. Esta é a mesma ideia geral de tornar a
-saída *machine-checkable* que fundamenta a decodificação restrita
-(Seção 3.9), aplicada ao nível do schema em vez do nível do token.
+**Decisão de protocolo relevante (ordem de emissão, não de contrato)**: a
+ordem das chaves no JSON de saída não é arbitrária. Como a geração é
+autorregressiva (token a token, esquerda para direita), a posição de uma
+chave determina se o modelo já "viu" (gerou) o raciocínio associado antes de
+se comprometer com outra chave. Na primeira versão do pipeline, `gabarito`
+precedia `justificativas`; isto foi identificado como uma causa provável do
+modo de falha descrito na Seção 5.2, e corrigido — o raciocínio passou a
+preceder o compromisso com a resposta. O contrato atual não especifica ordem
+de chaves (JSON não garante ordem para quem consome por nome, e o app lê por
+chave), mas a sequência de **emissão** treinada mantém
+`resolucao_passo_a_passo` antes de `resposta_correta`, preservando esse
+sequenciamento de raciocínio mesmo sem um campo dedicado ao valor numérico
+(ver próximo parágrafo). Como o modelo roda em modo *non-thinking* (Seção
+3.6, sem bloco `<think>`), essa sequência é o único mecanismo disponível para
+induzir esse tipo de raciocínio antes da resposta.
+
+**Remoção do campo `resposta` (efeito colateral aceito da migração de
+contrato)**: uma versão anterior deste pipeline introduziu um campo `resposta`
+dedicado ao *valor* da resposta correta, separado da *letra* (`gabarito`),
+especificamente para tornar `check_consistency()` uma comparação exata
+(`alternativas[gabarito] == resposta`) — ver análise de cobertura na Seção
+5.4. Esse campo não existe no contrato atual (que não permite campos além
+dos listados acima) e foi removido; a verificação de consistência voltou a
+depender de extrair uma equação do texto de `resolucao_passo_a_passo` via
+regex — o mesmo mecanismo, com a mesma cobertura limitada, que motivou a
+criação do campo `resposta` em primeiro lugar (Seção 5.4). Esse é o principal
+trade-off da migração: o contrato exigido pela integração mobile tem
+prioridade sobre a otimização de verificabilidade, mas o efeito é mensurável
+e está documentado para não ser confundido com regressão não intencional.
 
 ### 3.3 Divisão treino/validação
 
@@ -175,9 +214,9 @@ generalizar capacidade aritmética — hipótese corroborada empiricamente pelos
 modos de falha da Seção 6. `src/generate_synthetic.py` gera questões de
 adição, subtração, multiplicação, divisão, porcentagem, potenciação e
 frações (representação pictórica em texto, equivalência e conversão
-fração→porcentagem — habilidades H07/H08/H09 do 9º ano) em que **o gabarito
-é calculado em Python antes de montar a questão** — nunca produzido por um
-LLM, portanto nunca incorreto por construção. As tuplas de condicionamento
+fração→porcentagem — habilidades H07/H08/H09 do 9º ano) em que **a resposta
+correta é calculada em Python antes de montar a questão** — nunca produzida por um
+LLM, portanto nunca incorreta por construção. As tuplas de condicionamento
 (ano, habilidade, descrição, dificuldade) usadas são as mesmas presentes no
 banco real, para que a distribuição de prompts de treino não diverja da
 distribuição enfrentada em produção.
@@ -202,17 +241,21 @@ a gerar as 4 justificativas de forma degenerada (repetidas/idênticas) em
 testes reais, sugerindo que a ausência de justificativas para distratores no
 treino ensinava o modelo a tratar esse campo como acessório.
 
-No momento da escrita: **396 exemplos sintéticos** gerados (11 combinações de
-habilidade × 3 dificuldades × 12 exemplos), somando **669 exemplos de treino
-total** (273 reais + 396 sintéticos) em `data/train.jsonl`. Validação
-determinística interna (`schema_utils.check_structure` +
-`check_consistency`, rodada sobre a geração antes de qualquer treino): 0
-falhas de schema/gabarito/alternativas/justificativas em 396 exemplos; 100%
-de consistência gabarito↔justificativa nos casos onde a checagem por regex é
-aplicável (297/297 na rodada correspondente a este tamanho de lote — as
-questões de fração/porcentagem tipicamente caem fora do que a heurística
-consegue verificar, precisamente por não seguirem o padrão "a op b = r"; ver
-Seção 3.9 para os limites dessa checagem).
+No momento da escrita: **396 questões sintéticas** geradas (11 combinações de
+habilidade × 3 dificuldades × 12 exemplos), agrupadas em **244 exemplos de
+treino** (uma fração dos exemplos agrupa 2–5 questões da mesma habilidade/
+dificuldade num único `{"questoes": [...]}`, ensinando o modelo a responder
+pedidos de lote — ver Seção 3.2), somando **517 exemplos de treino total**
+(273 reais + 244 sintéticos) em `data/train.jsonl`. Validação determinística
+interna (`schema_utils.check_structure` + `check_consistency`, rodada sobre a
+geração antes de qualquer treino): 0 falhas de schema/resposta_correta/
+alternativas/difficulty em 396 questões; consistência resposta_correta↔
+resolucao_passo_a_passo de 100% nos casos onde a checagem por regex é
+aplicável (298/298 verificáveis, ~75% de cobertura sobre as 396 questões —
+as de fração/porcentagem tipicamente caem fora do que a heurística consegue
+verificar, precisamente por não seguirem o padrão "a op b = r"; ver Seção 3.9
+para os limites dessa checagem, incluindo por que a cobertura não chega a
+100% neste schema).
 
 **Nota de robustez identificada durante a implementação**: a primeira versão
 do gerador de conversão fração→porcentagem (H09) continha um laço de
@@ -235,14 +278,14 @@ ordenação, sequências) e para diversificar o contexto das questões
 aritméticas, `src/distill_teacher.py` implementa uma destilação com
 **professor maior** (modelo de chat acessado via Hugging Face Inference
 Providers, configurável — padrão `Qwen/Qwen3-235B-A22B-Instruct-2507`).
-Diferente da Seção 3.4, aqui o gabarito não é computável a priori: a garantia
-de qualidade vem de um **filtro determinístico pós-geração**, não da
+Diferente da Seção 3.4, aqui a resposta correta não é computável a priori: a
+garantia de qualidade vem de um **filtro determinístico pós-geração**, não da
 geração em si. Um exemplo só é aceito se, simultaneamente: schema completo;
-4 alternativas e 4 justificativas distintas; ausência de menção a
-figura/imagem; tamanho dentro do limite de contexto de treino
-(`max_seq_length`); gabarito **não reprovado** por `check_consistency()`
-(Seção 3.9); e enunciado não duplicado (deduplicação por normalização de
-texto). Este desenho segue o princípio geral de RLVR/verificação
+5 alternativas distintas; ausência de menção a figura/imagem; tamanho dentro
+do limite de contexto de treino (`max_seq_length`); `resposta_correta`
+**não reprovada** por `check_consistency()` (Seção 3.9); e enunciado não
+duplicado (deduplicação por normalização de texto). Este desenho segue o
+princípio geral de RLVR/verificação
 determinística (Seção 2): a confiabilidade do dado não depende de o
 professor "acertar sempre", e sim de o filtro rejeitar o que não presta.
 
@@ -303,26 +346,23 @@ inferência de teste (`src/test_model.py`, função `generate_validated()`)
 implementa uma camada de verificação determinística em quatro estágios:
 
 1. **Decodificação restrita por gramática GBNF** (`grammars/questao.gbnf`):
-   restringe a decodificação do `llama-cli` ao schema JSON exato (mesma
-   ordem de chaves da Seção 3.2), garantindo por construção JSON válido,
-   presença de todas as chaves, exatamente 4 alternativas e 4 justificativas,
-   campo `resposta` e gabarito em `{A,B,C,D}`. Não garante corretude
-   semântica.
-2. **Checagem de consistência** (`schema_utils.check_consistency`), com duas
-   vias em ordem de preferência:
-   - **Via exata** (padrão após a introdução do campo `resposta`): compara
-     `alternativas[gabarito]` com `resposta` por igualdade textual canônica,
-     com desempate por igualdade do primeiro número (tolerando unidades, como
-     `"5"` ≈ `"5 bonecos"`). O desempate numérico só decide quando casa com
-     uma **única** alternativa; havendo ambiguidade, o resultado é
-     "não verificável" em vez de um palpite. Esta via independe de como a
-     justificativa foi redigida e cobre qualquer tipo de questão — frações,
-     porcentagens, respostas não numéricas.
-   - **Via por expressão regular** (fallback, para artefatos anteriores à
-     mudança de schema): extrai uma equação "a op b = r" da justificativa do
-     gabarito, recalcula o lado esquerdo e compara com o valor da alternativa.
-     Precede a normalização de operadores tipográficos Unicode (ver
-     Seção 5.4). Cobertura empírica medida: ~25% (Seção 5.4).
+   restringe a decodificação do `llama-cli` ao contrato exato exigido pelo
+   app, garantindo por construção JSON válido, wrapper `{"questoes": [...]}`,
+   presença de todas as chaves em cada questão, exatamente 5 alternativas
+   (A–E), `resposta_correta` em `{A,B,C,D,E}` e `difficulty` em
+   `{EASY,MEDIUM,HARD}`. Não garante corretude semântica.
+2. **Checagem de consistência** (`schema_utils.check_consistency`): extrai
+   uma equação "a op b = r" de `resolucao_passo_a_passo`, recalcula o lado
+   esquerdo e compara com o valor da alternativa apontada por
+   `resposta_correta`. É a **única** via disponível no contrato atual — o
+   contrato não permite um campo dedicado ao valor da resposta (o antigo
+   campo `resposta`, que existia justamente para tornar esta checagem uma
+   comparação exata; ver nota de migração na Seção 3.2 e a análise completa
+   na Seção 5.4). Cobertura empírica medida no conjunto sintético (só
+   aritmética) após a migração: ~75%; era ~25% antes de qualquer correção e
+   chegou a 100% durante a janela em que o campo `resposta` existiu. A
+   normalização de operadores tipográficos Unicode (Seção 5.4) permanece em
+   vigor e ainda contribui para essa cobertura.
 3. **Best-of-N com seleção por verificador**: são amostrados até *N*
    candidatos, **parando assim que um passa** na verificação. Entre os que
    reprovam, o pipeline retém o **melhor** segundo uma ordem parcial
@@ -337,24 +377,14 @@ implementa uma camada de verificação determinística em quatro estágios:
    de acerto por amostra já é superior a 0,5 — condição satisfeita aqui
    (≈0,9 observado empiricamente).
 4. **Correção determinística**: esgotadas as tentativas, `fix_gabarito()`
-   troca a letra do gabarito para a alternativa que contém a `resposta`
-   declarada; só quando nem isso é possível a questão é marcada para
-   descarte (`status="falha"`).
+   troca `resposta_correta` para a alternativa que bate com a conta extraída
+   de `resolucao_passo_a_passo`; só quando nem isso é possível a questão é
+   marcada para descarte (`status="falha"`).
 
 Esta camada não substitui a melhoria do modelo (Seções 3.4–3.5): ela é a
 garantia de produção que continua valendo **independentemente** de quão bem
 o retreino corrigiu o comportamento do modelo, e seu custo é limitado à
 latência das regenerações nos casos que reprovam na primeira tentativa.
-
-**Nota sobre o período de transição**: um artefato treinado *antes* da
-introdução do campo `resposta` não sabe o que colocar nele; forçado pela
-gramática, tende a ecoar a própria letra do gabarito (`"resposta": "B"`).
-Tratar isso como inconsistência produziria falsos negativos, então
-`check_consistency()` distingue explicitamente os dois casos: um valor que
-não casa com nenhuma alternativa **e** é uma letra isolada A–D é interpretado
-como esse artefato e delega à via 2; um valor que não casa e não é letra
-indica questão genuinamente malformada. A verificação exata só entra em
-regime pleno após o retreino.
 
 ## 4. Protocolo de avaliação
 
@@ -373,19 +403,21 @@ métrica (`schema_utils.py`, compartilhado):
   verificação da Seção 3.9 opcionalmente ativo (`--raw` para medir o modelo
   "cru", sem grammar/verificação, como comparação controlada).
 
-**Métricas estruturais** (definidas em `schema_utils.check_structure`): %
-JSON sintaticamente válido; % schema completo (todas as chaves presentes); %
-gabarito ∈ {A,B,C,D}; % 4 alternativas distintas; % 4 justificativas
-distintas (métrica introduzida após o modo de falha da Seção 6); distribuição
-das letras de gabarito geradas (detecta viés); % de saídas que mencionam
-indevidamente "figura/imagem/gráfico".
+**Métricas estruturais** (definidas em `schema_utils.check_structure`, sobre
+o wrapper `{"questoes": [...]}`): % JSON sintaticamente válido; % wrapper
+válido (`questoes` é lista não vazia); % quantidade de questões bate com a
+pedida; % schema completo (todas as chaves presentes em cada questão); %
+`resposta_correta` ∈ {A,B,C,D,E}; % 5 alternativas distintas; % `difficulty`
+∈ {EASY,MEDIUM,HARD}; distribuição das letras de `resposta_correta` geradas
+(detecta viés); % de saídas que mencionam indevidamente
+"figura/imagem/gráfico".
 
 **Métrica de consistência semântica**: % de casos em que
-`check_consistency()` (Seção 3.9) confirma que o gabarito bate com a conta
-da justificativa, calculada apenas sobre o subconjunto de amostras em que a
-equação é reconhecível pela heurística de regex — reportada sempre junto com
-o denominador (n verificável), dado o tamanho pequeno do conjunto de
-validação.
+`check_consistency()` (Seção 3.9) confirma que `resposta_correta` bate com a
+conta extraída de `resolucao_passo_a_passo`, calculada apenas sobre o
+subconjunto de amostras em que a equação é reconhecível pela heurística de
+regex — reportada sempre junto com o denominador (n verificável), dado o
+tamanho pequeno do conjunto de validação.
 
 **Métrica de linguagem**: perplexity da resposta de referência (loss
 calculada apenas sobre os tokens do assistant, análogo ao treino).
@@ -398,21 +430,25 @@ relevante para a decisão de deploy.
 ## 5. Resultados preliminares
 
 **Aviso metodológico**: o conjunto de validação real tem apenas 30 itens, e
-o subconjunto onde a consistência gabarito↔justificativa é verificável pela
-heurística de regex é ainda menor (n=3 a n=8 nas rodadas reportadas). Os
-números desta seção devem ser lidos como **direcionais**, não como
-estimativas estatisticamente robustas — um ponto a ser corrigido antes de
-qualquer submissão, expandindo o conjunto de validação real ou reportando
-intervalos de confiança sobre um n maior.
+o subconjunto onde a consistência é verificável pela heurística de regex é
+ainda menor (n=3 a n=11 nas rodadas reportadas). Os números desta seção
+devem ser lidos como **direcionais**, não como estimativas estatisticamente
+robustas — um ponto a ser corrigido antes de qualquer submissão, expandindo o
+conjunto de validação real ou reportando intervalos de confiança sobre um n
+maior.
 
-**Nota de defasagem**: os resultados abaixo foram medidos sobre um modelo
-treinado com **562** exemplos (274 reais + 288 sintéticos, cobrindo apenas
-aritmética inteira/decimal). Desde então, `generate_synthetic.py` passou a
-cobrir também frações (H07–H09, Seção 3.4), elevando o dataset de treino
-para **669** exemplos (273 + 396). Os números desta seção **antecedem** essa
-expansão e precisam ser remedidos após o próximo retreino.
+**Nota sobre a evolução das seções abaixo**: as Seções 5.1–5.4 documentam a
+trajetória do projeto **antes** da migração de contrato (Seção 3.2) — schema
+com `gabarito`/`justificativas`/`resposta`, dataset em versões sucessivas
+(562, depois 669 exemplos). Mantidas como registro histórico do raciocínio
+que levou ao desenho atual (em particular, a análise de cobertura da Seção
+5.4 é a motivação direta do campo `resposta`, posteriormente removido pela
+migração). A **Seção 5.5** reporta os resultados do modelo **retreinado sob
+o contrato atual** (517 exemplos, schema com `resposta_correta`/
+`resolucao_passo_a_passo`/`difficulty`) e é a referência para o estado
+presente do projeto.
 
-### 5.1 Modelo treinado sobre 562 exemplos (274 reais + 288 sintéticos, geração de distratores v1)
+### 5.1 Modelo treinado sobre 562 exemplos (274 reais + 288 sintéticos, geração de distratores v1) — schema pré-migração, histórico
 
 Medido via `evaluate.py` (GPU, caminho de desenvolvimento), 30 amostras de
 validação:
@@ -570,30 +606,101 @@ r=32 e subajuste em r=8 (documentação técnica do Unsloth) — de modo que o
 espaço de melhoria está no contrato de saída e na verificação, não na
 parametrização do ajuste fino.
 
+### 5.5 Modelo retreinado sob o contrato de schema atual (517 exemplos, pós-migração)
+
+Após a migração de contrato (Seção 3.2) — que introduziu o wrapper
+`{"questoes": [...]}`, 5 alternativas (A–E), `resposta_correta`,
+`resolucao_passo_a_passo` e `difficulty`, e **removeu** o campo `resposta`
+que sustentava a verificação exata da Seção 5.4 — o modelo foi retreinado
+sobre **517 exemplos** (273 reais + 244 sintéticos agrupando 396 questões,
+incluindo as frações H07–H09). Estes são os primeiros resultados medidos
+sob o contrato atual, e substituem as Seções 5.1–5.4 como referência do
+estado presente do projeto.
+
+Medido via `evaluate.py` (GPU, caminho de desenvolvimento), 30 amostras de
+validação real:
+
+| Métrica estrutural | Resultado |
+|---|---|
+| JSON válido | 100% |
+| Wrapper `{"questoes": [...]}` válido | 100% |
+| Schema completo | 100% |
+| `resposta_correta` válida (A–E) | 100% |
+| 5 alternativas distintas | 90,0% |
+| `difficulty` válida (EASY/MEDIUM/HARD) | 100% |
+| Menções indevidas a figura | 13,3% |
+| Consistência `resposta_correta` ↔ `resolucao_passo_a_passo` | 72,7% (11/30 verificáveis) |
+| Perplexity (resposta de referência) | 1,772 |
+
+| Velocidade (GPU, dev) | Resultado |
+|---|---|
+| Latência média | 5,09 s |
+| Latência p95 | 6,82 s |
+| Tokens/s de geração | 30,3 |
+| Tokens de saída (média) | 152,7 |
+
+**Leitura destes números frente à Seção 5.4.** A hipótese registrada na
+Seção 5.4 e no antigo item 1 da Seção 8 era que a cobertura de verificação
+chegaria a ~100% após o retreino, sob a premissa de que o campo `resposta`
+seguiria no schema. Essa premissa deixou de valer: o contrato exigido pela
+integração mobile não permite esse campo (Seção 3.2), então a cobertura
+medida (72,7%, n=11/30) reflete o teto da via por regex sobre
+`resolucao_passo_a_passo` — mais alta que os ~25% da primeira medição
+(Causa 1 da Seção 5.4 corrigida por `normalize_math`), mas sem o salto a
+100% que o campo dedicado teria dado. Este é o resultado esperado do
+trade-off descrito na Seção 3.2, não uma regressão de treino: o contrato
+correto tem prioridade sobre a métrica de verificabilidade.
+
+As outras métricas estruturais saíram em 100% (à exceção de 5 alternativas
+distintas, 90%) — acima dos 96,7% medidos na Seção 5.1 sob o schema
+anterior, indicando que a grammar GBNF (Seção 3.9) e o dataset ampliado
+continuam entregando estrutura confiável mesmo com o contrato mais rígido
+(5 alternativas em vez de 4, wrapper de lista, enum `difficulty`).
+
+**Pendências de medição**: a validação do artefato `.gguf` real
+(`test_model.py --batch`) ainda não foi remedida sob o contrato atual — o
+`eval_report_gguf.json` existente é de uma rodada anterior à migração
+(schema `gabarito`/`justificativas`) e não deve ser citado como resultado
+do modelo atual. O teste manual de uma única questão (via
+`test_model.py --ano "5º" --habilidade H08 ... --dificuldade Fácil`)
+confirmou geração correta no formato exato do contrato, mas não substitui
+uma rodada `--batch` com métricas agregadas. O suporte a lote (`--quantidade
+N` no CLI, `"questoes"` com múltiplos itens) também ainda não tem uma
+rodada de avaliação agregada — só verificação pontual.
+
 ## 6. Limitações
 
-- **Amostra de validação pequena** (n=30, e n≤8 para a métrica de
+- **Amostra de validação pequena** (n=30, e n≤11 para a métrica de
   consistência) — ver aviso metodológico da Seção 5.
-- **A verificação exata depende do modelo preencher `resposta` com o valor
-  correto**: ela confere a *coerência interna* entre o valor declarado e a
-  letra escolhida, não a corretude do valor em si. Um modelo que calcule
-  errado e declare consistentemente esse valor errado em ambos os campos
-  passa pela verificação. Mitigar isso exige um solucionador independente
-  (viável apenas para os subtipos de questão gerados deterministicamente) ou
-  RLVR (Seção 8).
-- **A via de fallback por expressão regular permanece sintaticamente
-  limitada** (Seção 5.4, Causa 2): relevante apenas para artefatos anteriores
-  à mudança de schema, mas é o caminho ativo até o próximo retreino.
-- **Resultados da Seção 5 antecedem o retreino com os dados sintéticos
-  corrigidos (Seção 3.4) e a destilação (Seção 3.5)** — no momento da
-  escrita, a correção mais recente foi validada apenas estruturalmente
-  (geração determinística, sem custo de treino), não através de um modelo
-  retreinado. Este documento deve ser atualizado com os resultados
-  pós-retreino antes de qualquer submissão.
+- **A verificação por expressão regular permanece sintaticamente limitada**
+  (Seção 5.4, Causa 2) e, após a migração de contrato (Seção 3.2), é a
+  **única** via disponível — o contrato do app não admite o campo `resposta`
+  que, numa versão anterior deste pipeline, havia elevado a cobertura a
+  100% no conjunto sintético por comparação exata. Cobertura atual medida:
+  ~75% no conjunto sintético (só aritmética, Seção 3.4), 72,7% (n=11/30) no
+  conjunto de validação real após o retreino (Seção 5.5) — presumivelmente
+  menor nas habilidades mais interpretativas do banco real fora dessa
+  amostra. Além da cobertura parcial, a checagem só confere *coerência
+  interna* entre a conta extraída e a letra escolhida, não a corretude da
+  conta em si: um modelo que calcule errado e seja consistente com o próprio
+  erro passa pela verificação. Não cobre raciocínio verbal sem equação
+  explícita nem respostas textuais (frações, porcentagens) — mitigado apenas
+  pelo best-of-N e pela correção determinística (Seção 3.9), não eliminado.
+  Mitigar a limitação de corretude (não só de cobertura) exigiria um
+  solucionador independente (viável apenas para os subtipos de questão
+  gerados deterministicamente) ou RLVR (Seção 8).
+- **Validação do artefato `.gguf` real ainda não remedida sob o contrato
+  atual** (Seção 5.5): o retreino sobre os 517 exemplos já foi feito e
+  avaliado no caminho de desenvolvimento (GPU, `evaluate.py`), mas
+  `test_model.py --batch` — que mede o mesmo binário/arquivo que roda no
+  app — ainda não foi rodado após a migração de schema; o relatório
+  existente (`eval_report_gguf.json`) é de uma rodada anterior, com o schema
+  antigo, e não deve ser citado como resultado do modelo atual.
 - **Escopo de cálculo determinístico ainda parcial**: `generate_synthetic.py`
   cobre adição, subtração, multiplicação, divisão exata, porcentagem,
   potenciação e frações (representação pictórica textual, equivalência,
-  conversão para porcentagem — H07/H08/H09). Fora do escopo atual: conversão
+  conversão para porcentagem — H07/H08/H09), já incorporadas ao dataset de
+  treino atual (Seção 3.4/5.5). Fora do escopo atual: conversão
   fração↔decimal explícita (H09 cobre só fração→porcentagem) e operações
   aritméticas diretamente entre frações (soma/subtração com denominadores
   diferentes) — candidatas naturais para uma próxima extensão.
@@ -604,6 +711,11 @@ parametrização do ajuste fino.
   grammar ainda não quantificada sobre o modelo retreinado).
 - **Destilação (Seção 3.5) não executada em produção** até o momento da
   escrita — implementada e validada apenas em modo dry-run.
+- **Suporte a lote (`quantidade` > 1, Seção 3.2) sem avaliação agregada**:
+  verificado pontualmente (uma chamada manual com `--quantidade 5` retornou
+  5 questões no formato correto), mas não há, até o momento da escrita,
+  uma rodada de `test_model.py`/`evaluate.py` que meça estrutura e
+  consistência especificamente sobre pedidos de lote (N > 1).
 
 ## 7. Reprodutibilidade
 
@@ -622,29 +734,34 @@ sobre `data/train.jsonl`).
 
 ## 8. Trabalhos futuros
 
-1. **Retreinar e reavaliar** com o schema contendo `resposta` (Seção 3.2) e o
-   gerador sintético corrigido (Seção 3.4), quantificando: (a) a cobertura
-   real do verificador — hipótese a testar: ~100%, contra os 50% medidos no
-   artefato não retreinado (Seção 5.4); (b) a taxa de correções acionadas por
-   `fix_gabarito()`, que mede quantos erros de vínculo valor→letra o modelo
-   ainda comete; (c) `justificativas_distintas_pct` (comparação direta com a
-   Seção 5.1).
-2. **Executar a destilação em escala** (Seção 3.5) e reportar taxas de
+1. **Remedir o artefato `.gguf` real** (`test_model.py --batch`) sob o
+   contrato de schema atual — o retreino da Seção 5.5 só foi avaliado no
+   caminho de desenvolvimento (GPU); falta confirmar que as mesmas métricas
+   estruturais e de consistência se sustentam no binário/arquivo que roda no
+   app (CPU, `llama-cli`, Q4_K_M).
+2. **Avaliar especificamente pedidos de lote** (`quantidade` > 1, Seção 3.2):
+   hoje só há verificação pontual manual; falta uma rodada agregada que meça
+   estrutura e consistência sobre N > 1 questões por chamada.
+3. **Executar a destilação em escala** (Seção 3.5) e reportar taxas de
    aceitação/rejeição por motivo de filtro — dado ainda inexistente.
-3. **RLVR/GRPO** (Shao et al., 2024; DeepSeek-AI, 2025): usar
+4. **RLVR/GRPO** (Shao et al., 2024; DeepSeek-AI, 2025): usar
    `check_consistency()` (Seção 3.9) diretamente como função de recompensa
    verificável, seguindo a evidência de que recompensa por processo supera
    recompensa só por resultado em modelos pequenos (arXiv:2607.02869).
    Viabilidade de hardware já confirmada (Unsloth reporta GRPO em
    Qwen3-1.7B com FP8 em ~5GB de VRAM, dentro da RTX 3060 6GB disponível).
-4. **Retreinar e reavaliar com as questões de fração** (H07–H09, adicionadas
-   em `generate_synthetic.py` após a Seção 5 ter sido escrita — ver "Nota de
-   defasagem" na abertura da Seção 5) e, na sequência, estender o gerador
-   para conversão fração↔decimal e aritmética direta entre frações.
-5. **Quantificar separadamente o custo de raciocínio da grammar GBNF total**
+   Nota: com o campo `resposta` removido do contrato (Seção 3.2), a função
+   de recompensa fica limitada à mesma via por regex da Seção 3.9/5.5 — o
+   ganho esperado de GRPO aqui é sobre a corretude da conta, não sobre a
+   cobertura da verificação, que tem teto conhecido (~75%).
+5. **Estender `generate_synthetic.py`** para conversão fração↔decimal
+   explícita e aritmética direta entre frações (soma/subtração com
+   denominadores diferentes) — únicos subtipos de cálculo determinístico
+   ainda fora de escopo (H07–H09 já cobertas desde a Seção 3.4/5.5).
+6. **Quantificar separadamente o custo de raciocínio da grammar GBNF total**
    frente a uma variante estilo CRANE (grammar só na resposta final,
    raciocínio livre antes) — pergunta em aberto na Seção 6.
-6. **Ampliar o conjunto de validação real** para reduzir a incerteza
+7. **Ampliar o conjunto de validação real** para reduzir a incerteza
    estatística da Seção 5 antes de reportar números em publicação.
 
 ## Referências bibliográficas
@@ -689,12 +806,18 @@ sobre `data/train.jsonl`).
 
 ---
 
-**Nota de manutenção deste documento**: as Seções 5 e 6 devem ser
-atualizadas assim que (a) o modelo for retreinado sobre os 669 exemplos
-atuais (273 reais + 396 sintéticos, já incluindo frações H07–H09 e o campo
-`resposta`), e (b) a destilação (Seção 3.5) for executada em escala. Os
-resultados da Seção 5.1 e a medição intermediária da Seção 5.4 referem-se a
-artefatos anteriores a esse retreino e são explicitamente provisórios. Os
-itens marcados "verificar autoria completa" na lista de referências foram
-localizados via busca automatizada e precisam de conferência manual do
-preprint antes de qualquer submissão formal.
+**Nota de manutenção deste documento**: o modelo **já foi retreinado** sobre
+o contrato de schema atual (517 exemplos: 273 reais + 244 sintéticos/396
+questões, Seção 3.4) — resultados em **Seção 5.5**, que substitui as Seções
+5.1–5.4 como referência do estado presente (mantidas como registro
+histórico do raciocínio que levou ao desenho atual, em particular à
+introdução e posterior remoção do campo `resposta`). Pendências que ainda
+exigem atualização deste documento: (a) remedir `test_model.py --batch`
+sobre o `.gguf` exportado após o retreino (Seção 5.5/6/8, item 1) — o
+`eval_report_gguf.json` existente é de uma rodada anterior à migração de
+contrato e não deve ser citado como resultado atual; (b) avaliar
+especificamente pedidos de lote (`quantidade` > 1); (c) executar a
+destilação (Seção 3.5) em escala. Os itens marcados "verificar autoria
+completa" na lista de referências foram localizados via busca automatizada
+e precisam de conferência manual do preprint antes de qualquer submissão
+formal.
