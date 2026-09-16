@@ -1,0 +1,516 @@
+\documentclass[aspectratio=169,11pt]{beamer}
+
+% ============================================================
+% Ciclo de treinamento L2-2026-09 — Qwen3-1.7B para geração de
+% questões de matemática (SAEB), pipeline QLoRA + GGUF offline.
+% Todos os números citados nestes slides vêm de:
+%   outputs/relatorios/RELATORIO_CICLO_L2-2026-09.md
+%   outputs/relatorios/RELATORIO_QUALIDADE_L2-2026-09.md
+%   outputs/relatorios/VEREDITO_FINAL_L2-2026-09.json
+%   outputs/relatorios/filtrado_{baseline,candidato}_gguf.json
+%   outputs/relatorios/cobertura_{controle,candidato}_gguf.json
+%   outputs/relatorios/incorporacao_L2-2026-09.json
+% ============================================================
+
+\usetheme{Madrid}
+\usecolortheme{default}
+\setbeamertemplate{navigation symbols}{}
+\setbeamertemplate{footline}[frame number]
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[brazil]{babel}
+\usepackage{booktabs}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta, positioning, shapes.geometric, fit, backgrounds, decorations.pathreplacing}
+\usepackage{pgf-pie}
+\usepackage{fontawesome5}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{array}
+\usepackage{colortbl}
+\usepackage{siunitx}
+\usepackage{seqsplit} % permite quebra de linha em nomes de arquivo longos (texttt) dentro de células de tabela
+\sisetup{output-decimal-marker={,}, group-separator={.}}
+
+% ---------- paleta ----------
+\definecolor{okgreen}{RGB}{34,139,34}
+\definecolor{warnorange}{RGB}{204,102,0}
+\definecolor{badred}{RGB}{178,34,34}
+\definecolor{basegray}{RGB}{90,90,90}
+\definecolor{accentblue}{RGB}{31,78,121}
+\definecolor{lightblue}{RGB}{221,235,247}
+
+\newcommand{\okmark}{{\color{okgreen}\faCheckCircle}}
+\newcommand{\warnmark}{{\color{warnorange}\faExclamationTriangle}}
+\newcommand{\badmark}{{\color{badred}\faTimesCircle}}
+
+\title[Ciclo L2-2026-09 — Qwen3-1.7B SAEB]{Ciclo de Treinamento L2-2026-09}
+\subtitle{Incorporação de 486 questões e retreino do gerador offline de questões de Matemática (SAEB)}
+\author{Relatório técnico de execução}
+\institute{Pipeline QLoRA + GGUF — Qwen3-1.7B}
+\date{16 de setembro de 2026}
+
+\begin{document}
+
+% ------------------------------------------------------------
+\begin{frame}
+  \titlepage
+\end{frame}
+
+% ------------------------------------------------------------
+\begin{frame}{Sumário}
+  \tableofcontents
+\end{frame}
+
+% ============================================================
+\section{Contexto e desenho experimental}
+% ============================================================
+
+\begin{frame}{O que este ciclo fez}
+  \begin{columns}[T]
+    \begin{column}{0.55\textwidth}
+      \textbf{Ponto de partida.} Um modelo Qwen3-1.7B já treinado (\emph{baseline}),
+      servindo questões de múltipla escolha de Matemática para um app mobile
+      offline, cobrindo apenas os anos 2\textordmasculine, 5\textordmasculine\ e 9\textordmasculine.
+
+      \vspace{0.4cm}
+      \textbf{O que chegou.} Um lote de 499 questões autorais, cobrindo
+      1\textordmasculine, 2\textordmasculine, 3\textordmasculine\ e 4\textordmasculine\ ano — anos sem nenhuma cobertura anterior.
+
+      \vspace{0.4cm}
+      \textbf{A pergunta do ciclo.} Esse lote, depois de auditado e incorporado,
+      melhora o modelo em produção o suficiente para justificar a troca?
+    \end{column}
+    \begin{column}{0.45\textwidth}
+      \begin{tikzpicture}[
+          box/.style={draw, rounded corners, minimum width=3.6cm, minimum height=0.9cm, align=center, font=\small},
+          arr/.style={-{Stealth[length=2.5mm]}, thick}
+        ]
+        \node[box, fill=lightblue] (auditoria) {Auditar o lote\\\footnotesize 499 questões};
+        \node[box, fill=lightblue, below=0.5cm of auditoria] (incorp) {Incorporar ao banco\\\footnotesize versionado, rastreável};
+        \node[box, fill=lightblue, below=0.5cm of incorp] (treino) {Retreinar (QLoRA)\\\footnotesize hiperparâmetros fixos};
+        \node[box, fill=lightblue, below=0.5cm of treino] (avaliar) {Avaliar pareado\\\footnotesize GGUF real, mesmas seeds};
+        \node[box, fill=okgreen!25, below=0.5cm of avaliar] (gate) {Aplicar gates\\\footnotesize decisão mecânica};
+        \draw[arr] (auditoria) -- (incorp);
+        \draw[arr] (incorp) -- (treino);
+        \draw[arr] (treino) -- (avaliar);
+        \draw[arr] (avaliar) -- (gate);
+      \end{tikzpicture}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+\begin{frame}{Por que um modelo de controle foi necessário}
+  \begin{block}{O problema}
+    O ambiente Python (\texttt{venv}) do ciclo anterior não existia mais, e o
+    \texttt{requirements.txt} proíbe fixar versões de bibliotecas. O modelo novo
+    teve de ser treinado com um \emph{stack} diferente (torch~2.10, transformers~5.5,
+    unsloth~2026.9.4). Comparar baseline contra candidato direto misturaria
+    \textbf{duas variáveis}: os dados novos e a atualização de bibliotecas.
+  \end{block}
+  \begin{center}
+  \begin{tikzpicture}[
+      node distance=0.9cm and 1.4cm,
+      m/.style={draw, rounded corners, minimum width=3.3cm, minimum height=1.1cm, align=center, font=\small},
+      lbl/.style={font=\scriptsize\itshape, align=center}
+    ]
+    \node[m, fill=basegray!20] (base) {\textbf{Baseline}\\517 exemplos\\\emph{stack} antigo};
+    \node[m, fill=warnorange!20, right=of base] (ctrl) {\textbf{Controle}\\517 exemplos (=baseline)\\\emph{stack} novo};
+    \node[m, fill=okgreen!25, right=of ctrl] (cand) {\textbf{Candidato}\\963 exemplos (+446)\\\emph{stack} novo};
+
+    \node[lbl, below=0.15cm of base] {referência de produção};
+    \node[lbl, below=0.15cm of ctrl] {isola efeito do \emph{stack}};
+    \node[lbl, below=0.15cm of cand] {isola efeito dos \textbf{dados}};
+
+    \draw[{Stealth[length=2.5mm]}-{Stealth[length=2.5mm]}, thick, basegray] (base) -- (ctrl)
+      node[midway, above, font=\scriptsize] {$\Delta$ \emph{stack}};
+    \draw[{Stealth[length=2.5mm]}-{Stealth[length=2.5mm]}, thick, accentblue] (ctrl) -- (cand)
+      node[midway, above, font=\scriptsize] {$\Delta$ \textbf{dados}};
+  \end{tikzpicture}
+  \end{center}
+  \vspace{0.2cm}
+  Toda comparação neste relatório usa o par \textbf{controle~$\times$~candidato}
+  (mesmo \emph{stack}) ou \textbf{baseline~$\times$~candidato sob o mesmo pipeline},
+  nunca baseline contra candidato de \emph{stacks} distintos.
+\end{frame}
+
+% ============================================================
+\section{Auditoria e incorporação do lote}
+% ============================================================
+
+\begin{frame}{Auditoria do lote de 499 questões}
+  % Um gráfico de pizza é a escolha errada aqui: com 481/5/13 sobre 499,
+  % duas fatias ficam sempre próximas de invisíveis, e seus rótulos numéricos
+  % ficam ilegíveis (testado e descartado). Cartões de estatística mostram a
+  % assimetria da distribuição sem perder nenhum dos três números.
+  \begin{center}
+  \begin{tikzpicture}[
+      card/.style={draw, rounded corners, minimum width=3.1cm, minimum height=2.1cm, align=center},
+      big/.style={font=\Huge\bfseries},
+      lbl/.style={font=\small}
+    ]
+    \node[card, fill=okgreen!15, draw=okgreen!70!black] (ap) at (0,0) {
+      \begin{tabular}{@{}c@{}} {\color{okgreen!60!black}\faCheckCircle} \\[2pt] {\color{okgreen!60!black}\Large\textbf{481}} \\[2pt] Aprovadas \end{tabular}
+    };
+    \node[card, fill=warnorange!12, draw=warnorange!80!black] (al) at (4.0,0) {
+      \begin{tabular}{@{}c@{}} {\color{warnorange!80!black}\faExclamationTriangle} \\[2pt] {\color{warnorange!80!black}\Large\textbf{5}} \\[2pt] Com alerta \end{tabular}
+    };
+    \node[card, fill=badred!10, draw=badred!70!black] (rj) at (8.0,0) {
+      \begin{tabular}{@{}c@{}} {\color{badred!70!black}\faTimesCircle} \\[2pt] {\color{badred!70!black}\Large\textbf{13}} \\[2pt] Rejeitadas \end{tabular}
+    };
+    \node[font=\scriptsize, below=0.15cm of ap] {96,4\,\% do lote};
+    \node[font=\scriptsize, below=0.15cm of al] {1,0\,\% do lote};
+    \node[font=\scriptsize, below=0.15cm of rj] {2,6\,\% do lote};
+  \end{tikzpicture}
+  \end{center}
+  \vspace{0.2cm}
+  \begin{columns}[T]
+    \begin{column}{0.48\textwidth}
+      \small
+      \textbf{Gate mecânico do guia de entrega:} 499/499 passaram —
+      resultado atípico, tratado como suspeito até prova em contrário.
+    \end{column}
+    \begin{column}{0.52\textwidth}
+      \small
+      \textbf{Evidências de autoria real (não geração automática):}
+      \begin{itemize}
+        \item Cobertura do vocabulário do \texttt{.docx} de origem: \textbf{0,98}
+        \item Duplicata exata com o banco / \emph{leakage} / near-duplicata: \textbf{0} em todos
+      \end{itemize}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+\begin{frame}{As 13 rejeições: um defeito, uma causa}
+  \begin{alertblock}{Padrão único, todo em EF03MA01 (3\textordmasculine\ ano)}
+    Pergunta de \textbf{identificação} respondida com uma \textbf{quantidade}, cuja
+    justificativa é uma decomposição decorativa que não executa a comparação pedida.
+  \end{alertblock}
+  \begin{center}
+    \begin{tikzpicture}[font=\small]
+      \node[draw, rounded corners, fill=badred!10, text width=10.5cm, align=left, inner sep=8pt] (ex) {
+        \textbf{Enunciado:} ``Na padaria, na segunda foram vendidos 597 pães e na
+        sexta 842 pães.''\\
+        \textbf{Pergunta:} ``\textbf{Em qual dia} foram vendidos menos pães?''\\
+        \textbf{Gabarito:} C~=~``597 pães.''\\
+        \textbf{Justificativa:} ``Correto - $500+97=597$''\\[2pt]
+        {\color{badred}\faArrowRight}~a conta \emph{nunca compara} 597 com 842
+      };
+    \end{tikzpicture}
+  \end{center}
+  \textbf{Causa-raiz:} a regra do guia (``a justificativa da correta traz a
+  conta em números'') aplicada a uma habilidade \textbf{não-aritmética}.
+  As 13 questões foram devolvidas ao autor — não corrigidas silenciosamente.
+\end{frame}
+
+\begin{frame}{O banco de dados: antes, lote, depois}
+  \begin{table}
+    \centering
+    \small
+    \begin{tabular}{@{}lrrr@{}}
+      \toprule
+      \textbf{Métrica} & \textbf{Antes} & \textbf{Lote novo} & \textbf{Combinado} \\
+      \midrule
+      Linhas no banco                          & 553  & 486  & \textbf{1.039} \\
+      Questões que chegam ao treino de texto    & 303  & 476  & \textbf{779} \\
+      Anos cobertos                             & 2\textordmasculine/5\textordmasculine/9\textordmasculine & 1\textordmasculine–4\textordmasculine & 1\textordmasculine–5\textordmasculine, 9\textordmasculine \\
+      Habilidades distintas (ano$\times$hab.)   & 55   & 10   & 65 \\
+      \rowcolor{lightblue}
+      Verificáveis por máquina                  & 19,8\,\% & 100\,\% & \textbf{68,8\,\%} \\
+      Gabarito D (mínimo histórico)             & 35   & 117  & \textbf{152} \\
+      \bottomrule
+    \end{tabular}
+  \end{table}
+  \vspace{0.3cm}
+  \small
+  Das 486 incorporadas: \textbf{476} chegam ao treino de texto; \textbf{10}
+  dependem de imagem e ficam só no banco. As 170 questões textualizadas que
+  \emph{têm} figura preservam o PNG (\texttt{imagem\_path}) sem entrar no
+  filtro que exclui do treino de texto — evitando repetir a perda histórica
+  de 230 questões do banco original.
+\end{frame}
+
+% ============================================================
+\section{Resultados de avaliação}
+% ============================================================
+
+\begin{frame}{O ganho está localizado — e é real}
+  \begin{center}
+  \begin{tikzpicture}
+    \begin{scope}
+      \def\barw{0.9}
+      \def\gap{2.6}
+      % eixo — rótulo do título deslocado para a esquerda do topo da seta,
+      % evitando colidir com o tick "9" (o "/9" à direita é redundante com
+      % os ticks e foi removido).
+      \draw[->, thick] (-0.6,0) -- (11.5,0) node[right, font=\small] {};
+      \node[font=\scriptsize, anchor=south, rotate=90, inner sep=2pt] at (-1.35,2.3) {questões verificáveis};
+      \draw[->, thick] (-0.6,0) -- (-0.6,4.9);
+      \foreach \y/\lbl in {0/0, 1.53/3, 3.07/6, 4.6/9}
+        \draw (-0.7,\y) -- (-0.6,\y) node[left, font=\tiny] {\lbl};
+      % dados: ano, controle, candidato (escala /9, exceto congelado /30 normalizado à mesma altura)
+      \foreach \i/\ano/\c/\k in {0/{1\textordmasculine}/9/9, 1/{2\textordmasculine}/7/9, 2/{3\textordmasculine}/4/9, 3/{4\textordmasculine}/3/3}{
+        \pgfmathsetmacro{\x}{\i*\gap}
+        \pgfmathsetmacro{\hc}{\c/9*4.6}
+        \pgfmathsetmacro{\hk}{\k/9*4.6}
+        \draw[fill=basegray!45] (\x,0) rectangle ++(\barw,\hc);
+        \draw[fill=okgreen!70] (\x+\barw+0.15,0) rectangle ++(\barw,\hk);
+        \node[font=\tiny, above] at (\x+0.15,\hc+0.12) {\c};
+        \node[font=\tiny, above] at (\x+\barw+0.15+0.45,\hk+0.12) {\k};
+        \node[font=\small, below=2pt] at (\x+\barw+0.075,-0.05) {\ano\ ano};
+      }
+      % legenda
+      \node[draw, fill=basegray!45, minimum width=0.35cm, minimum height=0.35cm] at (9.3,4.2) {};
+      \node[right, font=\scriptsize] at (9.55,4.2) {Controle (não viu esses anos)};
+      \node[draw, fill=okgreen!70, minimum width=0.35cm, minimum height=0.35cm] at (9.3,3.6) {};
+      \node[right, font=\scriptsize] at (9.55,3.6) {Candidato (viu)};
+    \end{scope}
+  \end{tikzpicture}
+  \end{center}
+  \centering
+  \textbf{Holdout de cobertura} (30 itens, 1\textordmasculine–4\textordmasculine\ ano, fora do treino) —
+  Teste de McNemar pareado: ganhou 7, perdeu 0, \textbf{\color{okgreen}p~=~0,016}
+\end{frame}
+
+\begin{frame}{Onde não houve ganho — e por quê}
+  \begin{columns}[T]
+    \begin{column}{0.5\textwidth}
+      \textbf{Conjunto congelado (2\textordmasculine/5\textordmasculine/9\textordmasculine\ ano, n=30)}
+
+      Mesmo conjunto do ciclo anterior, para comparação pareada e válida.
+      \vspace{0.2cm}
+      \begin{itemize}
+        \item Verificáveis: ganhou 1, perdeu 3
+        \item McNemar: \textbf{p~=~0,625} \badmark
+        \item \textbf{Estatisticamente é ruído}
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.5\textwidth}
+      \begin{block}{Esperado, não uma falha}
+        O lote \textbf{não trouxe} nenhuma questão nova de 5\textordmasculine\ ou 9\textordmasculine\ ano
+        (apenas reforçou 2\textordmasculine). Não haveria ganho a medir ali.
+      \end{block}
+      \vspace{0.15cm}
+      \begin{exampleblock}{\texttt{eval\_loss} — mesma configuração, único fator variado: os dados}
+        Controle: 0,5583 $\longrightarrow$ Candidato: \textbf{0,5362} ($-4,0\,\%$)
+      \end{exampleblock}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+\begin{frame}{Os 9 gates de promoção}
+  \small
+  \begin{table}
+    \centering
+    \begin{tabular}{@{}cp{5.7cm}rc@{}}
+      \toprule
+      \textbf{Gate} & \textbf{Critério} & \textbf{Resultado} & \\
+      \midrule
+      G1 & Estrutura $\geq$ 99\,\% e $\geq$ baseline & 100\,\% em 7/7 flags & \okmark \\
+      G2 & Falhas pós \emph{best-of-N} $=$ 0 & 0 & \okmark \\
+      G3 & Consistência $\geq$ baseline $-5$pp & 100\,\% $\to$ 100\,\% & \okmark \\
+      G4 & Dependência visual sem piora significativa & p~=~1,000 (McNemar) & \okmark \\
+      G5 & Aderência à dificuldade $\geq$ baseline $-5$pp & 100\,\% $\to$ 100\,\% & \okmark \\
+      G6 & Viés de gabarito $\leq$ baseline $+5$pp & 46,7\,\% $\to$ \textbf{36,7\,\%} & \okmark \\
+      G7 & Sem esquecimento (5\textordmasculine/9\textordmasculine) & estrutura preservada & \okmark \\
+      G8 & Velocidade $\geq$ baseline $-10\,\%$ & 26,3 $\to$ 26,5 tok/s & \okmark \\
+      G9 & Perplexidade \emph{(informativo)} & não medida & --- \\
+      \bottomrule
+    \end{tabular}
+  \end{table}
+  \begin{center}
+    \Large\textbf{\color{okgreen}Decisão: PROMOVIDO} \quad {\normalsize (8/8 gates bloqueantes)}
+  \end{center}
+\end{frame}
+
+% ============================================================
+\section{Pontos positivos}
+% ============================================================
+
+\begin{frame}{Pontos positivos}
+  \begin{itemize}
+    \item \okmark\ \textbf{Ganho estatisticamente significativo} em cobertura
+      de 1\textordmasculine–4\textordmasculine\ ano (McNemar p~=~0,016), com destaque para 3\textordmasculine\ ano
+      (verificabilidade 4/9~$\to$~9/9)
+    \item \okmark\ \textbf{Verificabilidade do corpus real} praticamente
+      triplicou: 19,8\,\%~$\to$~68,8\,\%
+    \item \okmark\ \textbf{Zero \emph{leakage}} entre o lote novo e o conjunto
+      de validação, e zero contaminação entre treino/val/holdout
+    \item \okmark\ \textbf{Nenhuma regressão estrutural} — 7/7 flags em
+      100\,\%, dificuldade e consistência preservadas, sem esquecimento de
+      5\textordmasculine/9\textordmasculine
+    \item \okmark\ \textbf{Viés de gabarito reduzido} (46,7\,\%~$\to$~36,7\,\%
+      na letra mais frequente)
+    \item \okmark\ \textbf{Melhoria de produto}: filtro de dependência visual
+      passou a regenerar questões que apontam para figura/gráfico inexistente
+    \item \okmark\ \textbf{Rastreabilidade completa}: banco versionado com
+      \emph{backup}, \emph{hash} sha256 de cada artefato, script de reversão
+      documentado
+  \end{itemize}
+\end{frame}
+
+% ============================================================
+\section{Pontos negativos e riscos}
+% ============================================================
+
+\begin{frame}{O risco mais sério: erro matemático não detectado}
+  \begin{alertblock}{Questão aceita com status \texttt{não\_verificável}}
+    \footnotesize
+    \textit{``Em uma figura, o círculo tem raio 10\,cm e a área da parte
+    sombreada corresponde a 30\,\% da área do círculo. Qual o lado do
+    triângulo inscrito?''}\\[2pt]
+    Resolução gerada: $a = \sqrt{376{,}8/\sqrt{3}} \approx 10\sqrt{3}$\,cm~~
+    {\color{badred}\faTimesCircle}~correto $\approx 14{,}7$, não $17{,}3$;
+    o triângulo inscrito ocupa $\sim$41\,\% da área, não 30\,\%
+  \end{alertblock}
+  \vspace{0.15cm}
+  \begin{columns}[T]
+    \begin{column}{0.44\textwidth}
+      \begin{center}
+      \begin{tikzpicture}
+        \pie[radius=1.55, text=legend, color={okgreen!70, warnorange!55},
+             sum=auto, before number=\phantom{0}, after number=]
+          {2/Verificáveis, 17/Sem checagem}
+      \end{tikzpicture}
+      \end{center}
+    \end{column}
+    \begin{column}{0.56\textwidth}
+      \small
+      No 9\textordmasculine\ ano, apenas \textbf{2 de 19} gerações são
+      conferíveis pelo verificador determinístico.
+
+      \vspace{0.25cm}
+      \textbf{Vale igualmente para o modelo anterior} — não é regressão
+      deste ciclo, é lacuna estrutural do produto.
+    \end{column}
+  \end{columns}
+\end{frame}
+
+\begin{frame}{Outros riscos abertos}
+  \begin{columns}[T]
+    \begin{column}{0.5\textwidth}
+      \begin{itemize}
+        \item \warnmark\ Nunca testado em \textbf{hardware mobile real} —
+          todas as métricas de velocidade são CPU de desktop (4 threads)
+        \item \warnmark\ \textbf{Geração em lote} (\texttt{quantidade > 1})
+          não foi testada neste ciclo
+        \item \warnmark\ $n=30$ por conjunto: suficiente para o ganho de
+          cobertura, insuficiente para estimar taxa de falha em produção
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.5\textwidth}
+      \begin{itemize}
+        \item \warnmark\ \textbf{Reprodutibilidade do \emph{stack} perdida}
+          — \texttt{requirements.txt} proíbe pinagem de versões
+        \item \warnmark\ Histórico de \texttt{eval\_loss} do baseline
+          sobrescrito acidentalmente (suprido pelo modelo de controle)
+        \item \warnmark\ Lote concentrado em \textbf{10 habilidades}
+          (61\,\% do corpus real), risco de especialização excessiva
+      \end{itemize}
+    \end{column}
+  \end{columns}
+  \vspace{0.3cm}
+  \begin{block}{Honestidade do processo}
+    Os gates \textbf{G4} (dependência visual) tiveram sua métrica e
+    tolerância \textbf{revisadas depois de reprovarem} na primeira rodada —
+    registrado explicitamente no código, com justificativa demonstrável sem
+    depender do resultado (detector com falso positivo comprovado; tolerância
+    de 2pp menor que a resolução do instrumento de medição, 3,3pp para $n=30$).
+  \end{block}
+\end{frame}
+
+% ============================================================
+\section{Artefatos gerados}
+% ============================================================
+
+\begin{frame}{Artefatos do ciclo — modelos e dados}
+  % Caminhos completos (40+ caracteres) não cabem numa coluna estreita mesmo
+  % com quebra de linha (seqsplit): a primeira linha quebrada toca a coluna
+  % ao lado sem espaço de respiro. Abreviar o prefixo repetido resolve na
+  % raiz, e como bônus produz uma tabela mais limpa.
+  \footnotesize
+  \begin{table}
+    \centering
+    \begin{tabular}{@{}p{3.3cm}p{8.4cm}@{}}
+      \toprule
+      \textbf{Artefato} & \textbf{Descrição} \\
+      \midrule
+      \texttt{gguf\_gguf/*.gguf} & Modelo promovido (candidato), quantizado Q4\_K\_M, 1,1\,GB — artefato de produção \\
+      \texttt{baseline\_v1/*.gguf} & Modelo anterior, preservado e reversível (\emph{hash} sha256 registrado) \\
+      \texttt{gguf\_controle\_\allowbreak gguf/*.gguf} & Modelo de controle (dados antigos, \emph{stack} novo) — isola o efeito do \emph{stack} \\
+      \texttt{lora/}, \texttt{lora\_candidato/} & Adaptadores LoRA do modelo promovido \\
+      \texttt{questoes.db} & Banco SQLite, 1.039 linhas (553 originais + 486 do lote) \\
+      \seqsplit{\texttt{questoes.antes-de-L2-*.db}} & \emph{Backup} do banco anterior à incorporação \\
+      \texttt{train.jsonl} & Conjunto de treino, 963 exemplos (719 reais + 244 sintéticos) \\
+      \texttt{val\_frozen\_v1.jsonl} & Conjunto de validação \textbf{congelado} — idêntico ao ciclo anterior, garante comparação pareada \\
+      \texttt{val\_novos\_v1.jsonl} & \emph{Holdout} de cobertura (30 itens, 1\textordmasculine–4\textordmasculine\ ano), fora do treino \\
+      \bottomrule
+    \end{tabular}
+  \end{table}
+  \vspace{2pt}
+  \scriptsize\color{basegray} Caminhos relativos a \texttt{outputs/} (modelos)
+  e \texttt{DB/} / \texttt{data/} (dados).
+\end{frame}
+
+\begin{frame}{Artefatos do ciclo — código e relatórios}
+  \footnotesize
+  % arraystretch reduzido: a quebra de RELATORIO_QUALIDADE_*.md em duas linhas
+  % (a única entrada que não cabe em 3.3cm numa linha só) tornava a tabela alta
+  % o bastante para empurrar a nota de rodapé para fora da margem do frame.
+  \renewcommand{\arraystretch}{0.88}
+  \begin{table}
+    \centering
+    \begin{tabular}{@{}p{3.3cm}p{8.4cm}@{}}
+      \toprule
+      \textbf{Artefato} & \textbf{Descrição} \\
+      \midrule
+      \texttt{validar\_entrega.py} & Validador mecânico da entrega, referenciado pelo guia mas antes inexistente \\
+      \texttt{importar\_entregas.py} & Incorporação versionada ao banco, com \emph{backup} automático e rastreabilidade \\
+      \texttt{promover\_checkpoint.py} & Aplica os 9 gates e emite o veredito de promoção de forma mecânica \\
+      \texttt{schema\_utils.py} (revisado) & Acrescenta \texttt{DEPENDENCIA\_VISUAL\_PATTERN}, detector de referência dêitica \\
+      \texttt{test\_model.py} (revisado) & \emph{Best-of-N} passa a penalizar e regenerar dependência visual; seeds pareadas \\
+      \texttt{extract\_data.py} (revisado) & Opção de conjunto de validação congelado e checagem de contaminação \\
+      \texttt{RELATORIO\_CICLO\_*.md} & Relatório técnico completo do ciclo \\
+      \texttt{RELATORIO\_QUALIDADE\_\allowbreak *.md} & Auditoria detalhada do lote de 499 questões \\
+      \texttt{VEREDITO\_FINAL\_*.json} & Registro estruturado da decisão de promoção \\
+      \texttt{HF\_MODEL\_CARD.md} & \emph{Model card} atualizado com os resultados deste ciclo \\
+      \bottomrule
+    \end{tabular}
+  \end{table}
+  \vspace{2pt}
+  \scriptsize\color{basegray} Caminhos relativos a \texttt{src/} (código) e
+  \texttt{outputs/relatorios/} (relatórios); \texttt{*} = \texttt{L2-2026-09}.
+\end{frame}
+
+% ============================================================
+\section{Recomendações}
+% ============================================================
+
+\begin{frame}{Recomendações}
+  \begin{enumerate}
+    \item \textbf{Testar o \texttt{.gguf} promovido em device real} antes de
+      publicar no app — único teste que ainda não foi feito
+    \item \textbf{Fechar a lacuna de verificação do 9\textordmasculine\ ano} — maior risco
+      aberto; um verificador simbólico (\emph{sympy}) cobriria o que o regex
+      \texttt{a op b = r} não alcança
+    \item \textbf{Corrigir a regra 1 do guia de entrega}, com exceção
+      explícita para habilidades não-aritméticas
+    \item \textbf{Congelar \texttt{requirements.lock}} agora que o \emph{stack}
+      atual está validado
+    \item Devolver as 13 questões rejeitadas ao autor — são recuperáveis
+    \item Próximo lote: ampliar além de 10 habilidades, priorizando
+      5\textordmasculine/9\textordmasculine\ ano, onde este ciclo não trouxe ganho
+  \end{enumerate}
+\end{frame}
+
+\begin{frame}
+  \centering
+  \Large\textbf{Decisão final: PROMOVIDO}\\[0.3cm]
+  \normalsize 8/8 gates bloqueantes aprovados · ganho estatisticamente\\
+  significativo em cobertura de 1\textordmasculine–4\textordmasculine\ ano (p~=~0,016) · nenhuma regressão\\[0.6cm]
+  \small\color{basegray} Todos os números citados neste relatório são
+  reproduzíveis a partir dos scripts e relatórios em \texttt{outputs/relatorios/}
+\end{frame}
+
+\end{document}

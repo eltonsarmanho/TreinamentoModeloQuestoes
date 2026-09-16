@@ -31,6 +31,49 @@ import re
 
 IMAGE_PATTERN = re.compile(r"\b(figura|imagem|gráfico|desenho|ilustração)\b", re.I)
 
+# IMAGE_PATTERN casa a palavra solta. Para FILTRAR DADOS DE TREINO isso é o
+# desejado (conservador: na dúvida, não treine no item). Para o pipeline de
+# PRODUÇÃO é ruim demais: medido em 2026-09, das 3 gerações que ele marcou,
+# uma era "Desenho" como nome de um hobby numa alternativa, e outra era
+# "...organizar em gráfico de barras. Os pesos são: 35, 42, 30, ..." — questão
+# inteiramente autocontida. Descartar essas seria jogar fora questão boa.
+#
+# O que de fato quebra a questão é a referência DÊITICA: o enunciado aponta
+# para um artefato visual que não existe ("Observe a imagem abaixo", "Gráfico
+# mostra quantidade de alunos..."), deixando o aluno sem o dado. É isso que
+# DEPENDENCIA_VISUAL_PATTERN detecta.
+# "imagem" (singular) termina em M; "imagens?" casaria só "imagen"/"imagens".
+_ARTEFATO_VISUAL = (
+    r"figuras?|image(?:m|ns)|gr[áa]ficos?|desenhos?|"
+    r"ilustra[çc](?:[ãa]o|[õo]es)|tabelas?|quadros?"
+)
+DEPENDENCIA_VISUAL_PATTERN = re.compile(
+    # 1) "observe a figura", "conforme o gráfico", "com base na tabela"
+    r"(?:observe|veja|analise|conforme|segundo|de acordo com|com base n|"
+    r"a partir d|utilizando (?:o|a)|considere (?:o|a))\s+(?:[oa]s?\s+)?"
+    rf"(?:{_ARTEFATO_VISUAL})"
+    # 2) "figura abaixo", "gráfico a seguir", "imagem apresentada"
+    rf"|(?:{_ARTEFATO_VISUAL})\s+(?:abaixo|acima|ao lado|a seguir|seguinte|"
+    r"apresentad[oa]s?|mostrad[oa]s?)"
+    # 3) "Gráfico mostra ...", "A tabela indica ..." — o artefato é SUJEITO de um
+    #    verbo de apresentação, logo o dado está nele. Os lookbehinds excluem
+    #    "QUAL gráfico representa essas notas?", em que o artefato é a RESPOSTA
+    #    (as alternativas são tipos de gráfico) e nada falta ao enunciado.
+    r"|(?<!qual )(?<!quais )(?<!que )"
+    rf"\b(?:{_ARTEFATO_VISUAL})\s+(?:mostra|apresenta|indica|representa|"
+    r"exibe|traz|cont[ée]m)\b",
+    re.I,
+)
+
+
+def depende_de_visual_ausente(texto):
+    """True se o texto aponta para um artefato visual que o app não tem.
+
+    Usado no best-of-N (test_model._score_candidato) para preferir um candidato
+    resolvível a um que manda o aluno olhar uma imagem inexistente.
+    """
+    return bool(DEPENDENCIA_VISUAL_PATTERN.search(str(texto or "")))
+
 QUESTOES_KEY = "questoes"
 ALTERNATIVE_LETTERS = "ABCDE"
 REQUIRED_KEYS = {

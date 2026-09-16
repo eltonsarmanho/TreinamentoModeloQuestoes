@@ -13,6 +13,7 @@ Uso:
     python src/extract_data.py
 """
 
+import argparse
 import json
 import random
 import sqlite3
@@ -171,9 +172,54 @@ def build_example(row):
             "ano": ano,
             "habilidade": clean(row["habilidade"]),
             "dificuldade": clean(row["grau_resolucao"]),
+            # Vazio para as linhas anteriores a 2026-09 (coluna criada por
+            # importar_entregas.py). Permite separar lotes sem parsear strings.
+            "lote": clean(row["lote"]) if "lote" in row.keys() else "",
         },
     }
     return example, None
+
+
+def split_com_val_congelado(examples, codigos_val):
+    """Mantém o conjunto de validação IDÊNTICO ao de um ciclo anterior.
+
+    Comparar baseline e modelo novo exige que os dois sejam medidos no MESMO
+    conjunto. stratified_split() re-sorteia a cada execução: acrescentar
+    exemplos muda a composição dos buckets (ano, dificuldade) e, com ela, quem
+    cai no val — o que tornaria a comparação entre os dois modelos inválida.
+    Aqui o val é o do ciclo anterior, item a item, e tudo o mais vai para o
+    treino. Nenhum exemplo novo pode entrar no conjunto de avaliação.
+    """
+    val = [ex for ex in examples if ex["meta"]["codigo_item"] in codigos_val]
+    train = [ex for ex in examples if ex["meta"]["codigo_item"] not in codigos_val]
+    return train, val
+
+
+def separa_holdout(examples, por_habilidade, seed=SEED, apenas_lote=None):
+    """Reserva N exemplos por (ano, habilidade) como conjunto de cobertura.
+
+    Serve para medir o modelo nos anos que o lote novo trouxe (1º/3º/4º) sem
+    contaminar o treino. NÃO substitui o val congelado: o baseline nunca viu
+    esses anos, então comparar os dois modelos aqui não teria sentido — este
+    conjunto é reportado à parte, como métrica informativa.
+    """
+    rng = random.Random(seed)
+    grupos = defaultdict(list)
+    for ex in examples:
+        if apenas_lote and ex["meta"].get("lote") != apenas_lote:
+            continue
+        grupos[(ex["meta"]["ano"], ex["meta"]["habilidade"])].append(ex)
+
+    reservados = set()
+    holdout = []
+    for chave in sorted(grupos):
+        bucket = sorted(grupos[chave], key=lambda e: e["meta"]["codigo_item"])
+        rng.shuffle(bucket)
+        for ex in bucket[:por_habilidade]:
+            holdout.append(ex)
+            reservados.add(ex["meta"]["codigo_item"])
+    restantes = [ex for ex in examples if ex["meta"]["codigo_item"] not in reservados]
+    return restantes, holdout
 
 
 def stratified_split(examples):
@@ -201,6 +247,21 @@ def write_jsonl(path, examples):
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--val-congelado", default=None,
+        help="jsonl cujo conjunto de codigo_item define o val (preserva a "
+             "comparabilidade com o baseline); sem ele, faz o split 90/10 de sempre",
+    )
+    parser.add_argument(
+        "--holdout-por-habilidade", type=int, default=0,
+        help="reserva N exemplos por (ano, habilidade) num conjunto de cobertura",
+    )
+    parser.add_argument("--holdout-lote", default=None,
+                        help="limita o holdout aos exemplos deste lote")
+    parser.add_argument("--holdout-saida", default=str(OUT_DIR / "val_novos.jsonl"))
+    args = parser.parse_args()
+
     rows = load_rows()
     examples, skipped = [], Counter()
     for row in rows:
@@ -210,16 +271,53 @@ def main():
         else:
             skipped[reason] += 1
 
-    train, val = stratified_split(examples)
+    holdout = []
+    if args.val_congelado:
+        codigos_val = {
+            json.loads(linha)["meta"]["codigo_item"]
+            for linha in open(args.val_congelado, encoding="utf-8")
+        }
+        pool, val = split_com_val_congelado(examples, codigos_val)
+        faltando = len(codigos_val) - len(val)
+        if faltando:
+            raise SystemExit(
+                f"{faltando} item(ns) do val congelado não foram encontrados no banco — "
+                "o conjunto de avaliação deixaria de ser comparável ao baseline."
+            )
+        if args.holdout_por_habilidade:
+            pool, holdout = separa_holdout(
+                pool, args.holdout_por_habilidade, apenas_lote=args.holdout_lote)
+        train = pool
+        rng = random.Random(SEED)
+        rng.shuffle(train)
+    else:
+        train, val = stratified_split(examples)
+
     OUT_DIR.mkdir(exist_ok=True)
     write_jsonl(OUT_DIR / "train.jsonl", train)
     write_jsonl(OUT_DIR / "val.jsonl", val)
+    if holdout:
+        write_jsonl(Path(args.holdout_saida), holdout)
+
+    # Rede de segurança: nenhum codigo_item pode estar em dois conjuntos.
+    conjuntos = {"train": train, "val": val, "holdout": holdout}
+    for a in conjuntos:
+        for b in conjuntos:
+            if a >= b:
+                continue
+            comum = ({e["meta"]["codigo_item"] for e in conjuntos[a]}
+                     & {e["meta"]["codigo_item"] for e in conjuntos[b]})
+            if comum:
+                raise SystemExit(f"CONTAMINAÇÃO {a}/{b}: {sorted(comum)[:5]}")
 
     print(f"Linhas no banco:       {len(rows)}")
     print(f"Exemplos válidos:      {len(examples)}")
     print(f"Descartadas:           {dict(skipped)}")
     print(f"Treino:                {len(train)} -> {OUT_DIR / 'train.jsonl'}")
-    print(f"Validação:             {len(val)} -> {OUT_DIR / 'val.jsonl'}")
+    print(f"Validação:             {len(val)} -> {OUT_DIR / 'val.jsonl'}"
+          + (" (CONGELADO)" if args.val_congelado else ""))
+    if holdout:
+        print(f"Holdout de cobertura:  {len(holdout)} -> {args.holdout_saida}")
 
     for campo in ("ano", "dificuldade"):
         dist = Counter(ex["meta"][campo] for ex in examples)

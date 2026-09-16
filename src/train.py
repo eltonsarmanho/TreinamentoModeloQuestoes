@@ -9,8 +9,13 @@ Se ocorrer OOM: reduzir MAX_SEQ_LENGTH para 768 ou BATCH_SIZE para 1
 
 Uso:
     python src/train.py
+Argumentos --train/--val/--out existem para rodar experimentos de CONTROLE
+(mesmo código e mesmos hiperparâmetros, dataset diferente) sem tocar em
+data/train.jsonl nem sobrescrever outputs/lora. Os padrões reproduzem
+exatamente o comportamento anterior.
 """
 
+import argparse
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -45,6 +50,14 @@ SEED = 42
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--train", default=str(DATA_DIR / "train.jsonl"))
+    parser.add_argument("--val", default=str(DATA_DIR / "val.jsonl"))
+    parser.add_argument("--out", default=str(OUTPUT_DIR / "lora"),
+                        help="onde salvar os adaptadores LoRA")
+    parser.add_argument("--checkpoints", default=str(OUTPUT_DIR / "checkpoints"))
+    args = parser.parse_args()
+
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name=BASE_MODEL,
         max_seq_length=MAX_SEQ_LENGTH,
@@ -67,10 +80,7 @@ def main():
 
     dataset = load_dataset(
         "json",
-        data_files={
-            "train": str(DATA_DIR / "train.jsonl"),
-            "val": str(DATA_DIR / "val.jsonl"),
-        },
+        data_files={"train": args.train, "val": args.val},
     )
 
     def format_chat(batch):
@@ -95,7 +105,7 @@ def main():
         train_dataset=dataset["train"],
         eval_dataset=dataset["val"],
         args=SFTConfig(
-            output_dir=str(OUTPUT_DIR / "checkpoints"),
+            output_dir=args.checkpoints,
             dataset_text_field="text",
             max_seq_length=MAX_SEQ_LENGTH,
             per_device_train_batch_size=BATCH_SIZE,
@@ -130,7 +140,7 @@ def main():
 
     result = trainer.train()
 
-    lora_dir = OUTPUT_DIR / "lora"
+    lora_dir = Path(args.out)
     model.save_pretrained(str(lora_dir))
     tokenizer.save_pretrained(str(lora_dir))
 

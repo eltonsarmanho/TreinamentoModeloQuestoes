@@ -20,6 +20,7 @@ GARANTIR JSON válido na saída, além de --no-think/template non-thinking.
 """
 
 import argparse
+import hashlib
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -42,29 +43,43 @@ def main():
         "--also-q8", action="store_true",
         help="gera também Q8_0 (~1.8GB) para comparação de qualidade",
     )
+    # --lora/--out: exportar um adaptador específico para um diretório
+    # específico, sem sobrescrever outputs/gguf. Necessário para gerar o
+    # artefato do candidato E do controle a partir do mesmo código. Padrões
+    # reproduzem o comportamento anterior.
+    parser.add_argument("--lora", default=str(LORA_DIR), help="pasta do adaptador LoRA")
+    parser.add_argument("--out", default=str(GGUF_DIR), help="pasta de saída")
     args = parser.parse_args()
 
-    if not LORA_DIR.exists():
-        raise SystemExit(f"{LORA_DIR} não existe — rode primeiro: python src/train.py")
+    lora_dir, gguf_dir = Path(args.lora), Path(args.out)
+    if not lora_dir.exists():
+        raise SystemExit(f"{lora_dir} não existe — rode primeiro: python src/train.py")
 
-    print(f"Carregando adaptadores LoRA de {LORA_DIR} (merge em fp16)...")
+    print(f"Carregando adaptadores LoRA de {lora_dir} (merge em fp16)...")
     model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name=str(LORA_DIR),
+        model_name=str(lora_dir),
         max_seq_length=MAX_SEQ_LENGTH,
         load_in_4bit=False,  # merge precisa dos pesos em fp16
     )
 
     methods = ["q4_k_m"] + (["q8_0"] if args.also_q8 else [])
-    GGUF_DIR.mkdir(parents=True, exist_ok=True)
+    gguf_dir.mkdir(parents=True, exist_ok=True)
     for method in methods:
         print(f"\nExportando GGUF {method.upper()}...")
         model.save_pretrained_gguf(
-            str(GGUF_DIR), tokenizer, quantization_method=method
+            str(gguf_dir), tokenizer, quantization_method=method
         )
 
     print("\n===== Exportação concluída =====")
-    for f in sorted(GGUF_DIR.glob("*.gguf")):
-        print(f"  {f.name}: {f.stat().st_size / 1e9:.2f} GB")
+    # O Unsloth pode gravar o .gguf em <out>/ ou em <out>_gguf/; listamos os
+    # dois com sha256, para que o artefato avaliado seja sempre identificável.
+    candidatos = sorted(gguf_dir.glob("*.gguf")) + sorted(
+        Path(f"{gguf_dir}_gguf").glob("*.gguf"))
+    if not candidatos:
+        raise SystemExit("NENHUM .gguf foi gerado — exportação incompleta.")
+    for f in candidatos:
+        digest = hashlib.sha256(f.read_bytes()).hexdigest()[:16]
+        print(f"  {f}: {f.stat().st_size / 1e9:.2f} GB  sha256={digest}")
     print(
         "\nIntegração mobile: carregue o .gguf com llama.cpp (Android NDK/iOS), "
         "LLMFarm, ChatterUI ou binding nativo. Use o chat template do Qwen3 em "

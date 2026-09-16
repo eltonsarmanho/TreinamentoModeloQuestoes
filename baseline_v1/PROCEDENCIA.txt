@@ -1,0 +1,5 @@
+commit: 3d60ca99ae9d7a104d6d3b42cec3b91d3c81b4ed
+data_congelamento: 2026-09-15T17:51:58-03:00
+a43707eec2acd292581b49a37a8a64db8cec7b25b4a47a3d622e32955dd611e8  /home/nees/Documents/VSCodigo/TreinamentoModeloQuestoes/baseline_v1/questoes.db
+4f56633d31694c1d5b0e9ccf696d03ede348f563ebe9ec3895d38a50d99fcc40  /home/nees/Documents/VSCodigo/TreinamentoModeloQuestoes/baseline_v1/val.jsonl
+b461b10fbf23622d064f23bbb716c78a1abbb744f9d60c9899d6dea0d34b78f3  /home/nees/Documents/VSCodigo/TreinamentoModeloQuestoes/baseline_v1/qwen3-1.7b.Q4_K_M.baseline.gguf

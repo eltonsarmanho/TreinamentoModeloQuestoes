@@ -36,6 +36,7 @@ import torch
 from tqdm import tqdm
 
 from schema_utils import (
+    DIFFICULTY_MAP,
     IMAGE_PATTERN,
     check_consistency,
     check_structure,
@@ -94,10 +95,16 @@ def main():
     )
     parser.add_argument("--num-samples", type=int, default=None)
     parser.add_argument("--max-new-tokens", type=int, default=MAX_NEW_TOKENS)
+    parser.add_argument("--model-path", default=None,
+                        help="caminho explícito do modelo/adaptador a avaliar")
+    parser.add_argument("--val", default=str(VAL_PATH),
+                        help="conjunto de avaliação (padrão: data/val.jsonl)")
+    parser.add_argument("--report", default=str(REPORT_PATH),
+                        help="arquivo de saída do relatório")
     args = parser.parse_args()
 
-    model_path = BASE_MODEL if args.baseline else str(LORA_DIR)
-    if not args.baseline and not LORA_DIR.exists():
+    model_path = args.model_path or (BASE_MODEL if args.baseline else str(LORA_DIR))
+    if not args.baseline and not args.model_path and not LORA_DIR.exists():
         raise SystemExit(
             f"{LORA_DIR} não existe — rode primeiro: python src/train.py "
             "(ou use --baseline para avaliar o modelo base)"
@@ -111,15 +118,23 @@ def main():
     )
     FastLanguageModel.for_inference(model)
 
-    examples = [json.loads(line) for line in open(VAL_PATH, encoding="utf-8")]
+    examples = [json.loads(line) for line in open(args.val, encoding="utf-8")]
     if args.num_samples:
         examples = examples[: args.num_samples]
 
     results, latencies, tokens_per_sec, output_tokens = [], [], [], []
     respostas_corretas, image_mentions = [], 0
     consistencia_ok, consistencia_verificavel = 0, 0
+    dif_aderente, dif_avaliavel = 0, 0
+    from collections import defaultdict
+    por_ano = defaultdict(lambda: {"n": 0, "estrutura_ok": 0, "dif_ok": 0,
+                                   "consist_ok": 0, "consist_verif": 0})
 
-    for ex in tqdm(examples, desc="Gerando questões"):
+    for idx, ex in enumerate(tqdm(examples, desc="Gerando questões"), 1):
+        # Seed por amostra: dois modelos diferentes veem exatamente a mesma
+        # sequência de amostragem, tornando a comparação pareada (ver nota
+        # equivalente em test_model.generate_validated).
+        torch.manual_seed(1000 + idx)
         prompt_ids = tokenizer.apply_chat_template(
             ex["messages"][:-1],
             tokenize=True,
@@ -163,11 +178,33 @@ def main():
         latencies.append(elapsed)
         tokens_per_sec.append(new_tokens / elapsed)
         output_tokens.append(new_tokens)
+        esperado = DIFFICULTY_MAP.get(ex["meta"].get("dificuldade"))
+        aderente = None
+        if esperado and questao:
+            dif_avaliavel += 1
+            aderente = questao.get("difficulty") == esperado
+            dif_aderente += int(aderente)
+
+        ano = ex["meta"].get("ano", "?")
+        estrutura_ok = all(flags[k] for k in (
+            "json_valido", "wrapper_valido", "schema_completo",
+            "resposta_valida", "alternativas_distintas", "difficulty_valida"))
+        por_ano[ano]["n"] += 1
+        por_ano[ano]["estrutura_ok"] += int(estrutura_ok)
+        por_ano[ano]["dif_ok"] += int(bool(aderente))
+        if consistente is not None:
+            por_ano[ano]["consist_verif"] += 1
+            por_ano[ano]["consist_ok"] += int(consistente)
+
         results.append({
             "codigo_item_ref": ex["meta"]["codigo_item"],
+            "ano": ano,
             **flags,
             "consistencia_resposta_correta": consistente,
             "sugestao_resposta_correta": sugestao,
+            "difficulty_pedida": ex["meta"].get("dificuldade"),
+            "difficulty_emitida": questao.get("difficulty") if questao else None,
+            "difficulty_aderente": aderente,
         })
 
     n = len(results)
@@ -177,6 +214,7 @@ def main():
     from collections import Counter
     report = {
         "modelo": model_path,
+        "conjunto_avaliacao": str(args.val),
         "num_amostras": n,
         "estrutura": {
             "json_valido_pct": round(pct("json_valido"), 1),
@@ -197,6 +235,27 @@ def main():
                 "em resolucao_passo_a_passo; medido só sobre as N amostras com uma "
                 "expressão aritmética 'a op b = r' reconhecível no texto."
             ),
+            "difficulty_aderente_pct": (
+                round(100 * dif_aderente / dif_avaliavel, 1) if dif_avaliavel else None
+            ),
+            "difficulty_avaliavel_n": dif_avaliavel,
+            "gabarito_letra_mais_frequente_pct": (
+                round(100 * max(Counter(respostas_corretas).values()) / len(respostas_corretas), 1)
+                if respostas_corretas else None
+            ),
+        },
+        "por_ano": {
+            ano: {
+                "n": v["n"],
+                "estrutura_ok_pct": round(100 * v["estrutura_ok"] / v["n"], 1),
+                "difficulty_aderente_pct": round(100 * v["dif_ok"] / v["n"], 1),
+                "consistencia_pct": (
+                    round(100 * v["consist_ok"] / v["consist_verif"], 1)
+                    if v["consist_verif"] else None
+                ),
+                "consistencia_verificavel_n": v["consist_verif"],
+            }
+            for ano, v in sorted(por_ano.items())
         },
         "linguagem": {"perplexity_referencia": round(ppl, 3)},
         "velocidade_gpu": {
@@ -212,17 +271,18 @@ def main():
         "detalhes": results,
     }
 
-    REPORT_PATH.parent.mkdir(exist_ok=True)
-    with open(REPORT_PATH, "w", encoding="utf-8") as f:
+    report_path = Path(args.report)
+    report_path.parent.mkdir(exist_ok=True)
+    with open(report_path, "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=2)
 
     print(f"\n===== Avaliação: {model_path} ({n} amostras) =====")
-    for section in ("estrutura", "linguagem", "velocidade_gpu"):
+    for section in ("estrutura", "por_ano", "linguagem", "velocidade_gpu"):
         print(f"[{section}]")
         for k, v in report[section].items():
             if k not in ("nota", "consistencia_nota"):
                 print(f"  {k}: {v}")
-    print(f"\nRelatório completo: {REPORT_PATH}")
+    print(f"\nRelatório completo: {report_path}")
 
 
 if __name__ == "__main__":

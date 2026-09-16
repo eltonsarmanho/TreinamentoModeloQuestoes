@@ -16,3 +16,10 @@ DB/questoes.db
 PlanoTreino.md
 Comandos.md
 DOCUMENTACAO_CIENTIFICA.md
+TreinamentoDados/baseline_v1/
+TreinamentoDados/
+*.sh
+
+# Binários grandes (excedem limite do GitHub)
+baseline_v1/lora/adapter_model.safetensors
+baseline_v1/qwen3-1.7b.Q4_K_M.baseline.gguf

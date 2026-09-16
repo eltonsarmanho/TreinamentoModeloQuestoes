@@ -17,7 +17,7 @@ não consegue criar repositório nem subir arquivos). Gere um em:
   (ou fine-grained com "Write access to contents/settings of repos you own").
 
 Uso:
-    python src/push_to_hub.py --repo-id <usuario>/qwen3-1.7b-questoes-matematica
+    python src/push_to_hub.py --repo-id eltonsarmanho/qwen3-1.7b-questoes-matematica
 """
 
 import argparse

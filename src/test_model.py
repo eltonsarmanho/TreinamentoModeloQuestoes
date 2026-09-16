@@ -28,6 +28,7 @@ Modos:
 """
 
 import argparse
+import hashlib
 import json
 import re
 import shutil
@@ -36,13 +37,15 @@ import statistics
 import subprocess
 import sys
 import time
-from collections import Counter
+from collections import Counter, defaultdict
 from pathlib import Path
 
 from extract_data import SYSTEM_PROMPT, USER_TEMPLATE
 from schema_utils import (
     ALTERNATIVE_LETTERS,
+    DIFFICULTY_MAP,
     IMAGE_PATTERN,
+    depende_de_visual_ausente,
     check_consistency,
     check_structure,
     extract_questao,
@@ -136,28 +139,36 @@ def generate(llama_cli, gguf_path, user_prompt, threads, max_new_tokens, seed=No
     return answer, prompt_tps, gen_tps, elapsed
 
 
-def _score_candidato(flags, consistente):
+def _score_candidato(flags, consistente, texto=""):
     """Ordena candidatos do melhor para o pior (maior é melhor).
 
-    3 = estrutura ok + consistência VERIFICADA correta   (entregar direto)
-    2 = estrutura ok, consistência não verificável        (aceitável)
-    1 = estrutura ok, mas resposta_correta inconsistente  (corrigível por fix_gabarito)
-    0 = estrutura quebrada                                (descartar se houver melhor)
+    6 = estrutura ok + consistência VERIFICADA + resolvível sem ver nada
+    5 = idem, mas aponta para um visual ausente
+    4 = estrutura ok, consistência não verificável, resolvível  (aceitável)
+    3 = idem, mas aponta para um visual ausente
+    2 = estrutura ok, resposta_correta inconsistente (corrigível por fix_gabarito)
+    1 = idem, e ainda aponta para um visual ausente
+    0 = estrutura quebrada                           (descartar se houver melhor)
+
+    A penalidade por dependência visual entra como -1 DENTRO de cada faixa, em
+    vez de zerar o candidato: o app é texto puro, então "Observe a imagem
+    abaixo" entrega ao aluno uma questão que ele não tem como resolver. Se
+    existir outro candidato resolvível, ele ganha; se TODOS dependerem de um
+    visual, ainda se entrega o melhor — degradar é melhor que não responder.
+    Ver depende_de_visual_ausente(): detecta a referência dêitica, não a mera
+    palavra "figura" (que aparece legitimamente em "figura plana", geometria).
     """
     estrutura_ok = (flags["json_valido"] and flags["wrapper_valido"] and flags["quantidade_correta"]
                     and flags["schema_completo"] and flags["resposta_valida"]
                     and flags["alternativas_distintas"] and flags["difficulty_valida"])
     if not estrutura_ok:
         return 0
-    if consistente is True:
-        return 3
-    if consistente is None:
-        return 2
-    return 1
+    base = 3 if consistente is True else (2 if consistente is None else 1)
+    return base * 2 - (1 if depende_de_visual_ausente(texto) else 0)
 
 
 def generate_validated(llama_cli, gguf_path, user_prompt, threads, max_new_tokens,
-                       grammar=None, retries=1, quantidade=1):
+                       grammar=None, retries=1, quantidade=1, base_seed=None):
     """Pipeline de produção: best-of-N com verificador determinístico.
 
     1. Gera com grammar GBNF (estrutura garantida por construção, se disponível).
@@ -182,7 +193,14 @@ def generate_validated(llama_cli, gguf_path, user_prompt, threads, max_new_token
     total_elapsed, regeneracoes = 0.0, 0
     melhor = None  # (score, text, top_obj, questao, flags, gen_tps)
     for attempt in range(retries + 1):
-        seed = None if attempt == 0 else 1000 + attempt
+        # base_seed fixa a amostragem por item: dois modelos diferentes recebem
+        # exatamente as mesmas seeds, tornando a comparação PAREADA e
+        # reproduzível. Sem isso, com n=30 e temperature=0.7, a diferença entre
+        # baseline e candidato fica dentro do ruído da amostragem.
+        if base_seed is not None:
+            seed = base_seed * 100 + attempt
+        else:
+            seed = None if attempt == 0 else 1000 + attempt
         text, _, gen_tps, elapsed = generate(
             llama_cli, gguf_path, user_prompt, threads, max_new_tokens,
             seed=seed, grammar=grammar,
@@ -192,23 +210,35 @@ def generate_validated(llama_cli, gguf_path, user_prompt, threads, max_new_token
         flags = check_structure(top_obj, quantidade_esperada=quantidade)
         questao = extract_questao(top_obj, 0)
         consistente, _ = check_consistency(questao)
-        score = _score_candidato(flags, consistente)
+        score = _score_candidato(flags, consistente, text)
 
         if melhor is None or score > melhor[0]:
             melhor = (score, text, top_obj, questao, flags, gen_tps)
 
-        if score >= 2:  # aprovado: para de gastar tempo/tokens
+        # Só os scores PARES estão livres de dependência visual (a penalidade é
+        # -1). Aceitar 5 ("consistente, mas mande o aluno olhar uma imagem que
+        # não existe") entregaria uma questão irresolvível sem sequer tentar
+        # de novo — a conta estar certa não ajuda quem não vê a figura.
+        if score in (4, 6):  # aprovado e resolvível: para de gastar tempo
             return {"text": text, "obj": questao, "flags": flags,
-                    "status": "ok" if score == 3 else "nao_verificavel",
+                    "status": "ok" if score == 6 else "nao_verificavel",
                     "regeneracoes": regeneracoes, "gen_tps": gen_tps,
                     "elapsed": total_elapsed}
         if attempt < retries:
             regeneracoes += 1
 
-    _, text, top_obj, questao, flags, gen_tps = melhor
+    melhor_score, text, top_obj, questao, flags, gen_tps = melhor
     if questao is not None:
         questao, fix_status = fix_gabarito(questao)
-        status = "corrigido" if fix_status == "corrigido" else "falha"
+        if fix_status == "corrigido":
+            status = "corrigido"
+        elif melhor_score in (1, 3, 5):
+            # Nenhum candidato ficou livre de dependência visual. A questão é
+            # estruturalmente válida, mas manda o aluno olhar algo que o app
+            # não tem — quem consome precisa saber para poder descartar.
+            status = "depende_de_visual"
+        else:
+            status = "falha"
     else:
         status = "falha"
     return {"text": text, "obj": questao, "flags": flags, "status": status,
@@ -233,6 +263,8 @@ def print_question(obj, raw_text):
 
 
 STATUS_LABEL = {
+    "depende_de_visual": ("[ATENÇÃO] estrutura ok, mas o enunciado aponta para uma "
+                          "figura/gráfico que o app não tem — descartar"),
     "ok": "[ok] validado: estrutura e consistência aprovadas",
     "nao_verificavel": "[ok] estrutura aprovada (consistência não verificável — sem conta explícita)",
     "corrigido": "[corrigido] resposta_correta trocada deterministicamente para bater com a conta da resolução",
@@ -336,8 +368,9 @@ def interactive(llama_cli, gguf_path, threads, grammar=None, retries=1):
         print()
 
 
-def batch(llama_cli, gguf_path, threads, num_samples, grammar=None, retries=1, raw=False):
-    examples = [json.loads(line) for line in open(VAL_PATH, encoding="utf-8")]
+def batch(llama_cli, gguf_path, threads, num_samples, grammar=None, retries=1, raw=False,
+          val_path=None, report_path=None):
+    examples = [json.loads(line) for line in open(val_path or VAL_PATH, encoding="utf-8")]
     if num_samples:
         examples = examples[:num_samples]
 
@@ -348,23 +381,28 @@ def batch(llama_cli, gguf_path, threads, num_samples, grammar=None, retries=1, r
     print(f"Modo: {modo}\n")
 
     results, gen_tps_list, latencies, respostas_corretas = [], [], [], []
-    image_mentions = 0
+    image_mentions, visual_ausente = 0, 0
     consistencia_ok, consistencia_verificavel = 0, 0
     status_counter, regeneracoes_total = Counter(), 0
+    dif_aderente, dif_avaliavel = 0, 0
+    por_ano = defaultdict(lambda: {"n": 0, "estrutura_ok": 0, "consist_ok": 0,
+                                   "consist_verif": 0, "dif_ok": 0})
     for i, ex in enumerate(examples, 1):
         user_msg = ex["messages"][1]["content"]
         print(f"[{i}/{len(examples)}] {user_msg[:80]}...")
         r = generate_validated(
             llama_cli, gguf_path, user_msg, threads, MAX_NEW_TOKENS,
-            grammar=grammar, retries=retries,
+            grammar=grammar, retries=retries, base_seed=i,
         )
         obj, flags, text = r["obj"], r["flags"], r["text"]
         status_counter[r["status"]] += 1
         regeneracoes_total += r["regeneracoes"]
         if obj:
             respostas_corretas.append(str(obj.get("resposta_correta")))
-        if IMAGE_PATTERN.search(text):
+        achado_figura = IMAGE_PATTERN.search(text)
+        if achado_figura:
             image_mentions += 1
+        visual_ausente += int(depende_de_visual_ausente(text))
         if r["gen_tps"]:
             gen_tps_list.append(r["gen_tps"])
         latencies.append(r["elapsed"])
@@ -374,19 +412,64 @@ def batch(llama_cli, gguf_path, threads, num_samples, grammar=None, retries=1, r
             consistencia_verificavel += 1
             consistencia_ok += int(consistente)
 
+        # G5 — aderência à dificuldade PEDIDA no prompt. O lote incorporado em
+        # 2026-09 é 69% "Fácil"; sem esta métrica, um modelo que passasse a
+        # ignorar o pedido de "Difícil" continuaria pontuando 100% em todas as
+        # flags estruturais, porque `difficulty` seria um enum válido — só que
+        # o errado. É o campo do contrato mais exposto ao desvio do lote.
+        esperado = DIFFICULTY_MAP.get(ex["meta"].get("dificuldade"))
+        aderente = None
+        if esperado and obj:
+            dif_avaliavel += 1
+            aderente = obj.get("difficulty") == esperado
+            dif_aderente += int(aderente)
+
+        # G7 — recorte por ano: 5º e 9º não recebem nenhum item do lote novo,
+        # então é aí que um esquecimento catastrófico apareceria primeiro.
+        ano = ex["meta"].get("ano", "?")
+        estrutura_ok = all(flags[k] for k in (
+            "json_valido", "wrapper_valido", "quantidade_correta",
+            "schema_completo", "resposta_valida", "alternativas_distintas",
+            "difficulty_valida"))
+        por_ano[ano]["n"] += 1
+        por_ano[ano]["estrutura_ok"] += int(estrutura_ok)
+        por_ano[ano]["dif_ok"] += int(bool(aderente))
+        if consistente is not None:
+            por_ano[ano]["consist_verif"] += 1
+            por_ano[ano]["consist_ok"] += int(consistente)
+
         results.append({
             "codigo_item_ref": ex["meta"]["codigo_item"],
+            "ano": ano,
             **flags,
             "status": r["status"],
             "regeneracoes": r["regeneracoes"],
             "consistencia_resposta_correta": consistente,
             "sugestao_resposta_correta": sugestao,
+            "difficulty_pedida": ex["meta"].get("dificuldade"),
+            "difficulty_emitida": obj.get("difficulty") if obj else None,
+            "difficulty_aderente": aderente,
+            # Guardar o trecho permite distinguir menção REAL a uma imagem
+            # inexistente ("conforme a figura abaixo" — questão quebrada) de
+            # falso positivo do IMAGE_PATTERN sobre termo matemático
+            # ("figura plana", em geometria — questão perfeitamente autocontida).
+            # Sem isso, mencoes_figura_pct é um número que não se pode auditar.
+            "trecho_figura": (
+                text[max(0, achado_figura.start() - 90):achado_figura.end() + 90]
+                if achado_figura else None
+            ),
         })
 
     n = len(results)
     pct = lambda key: round(100 * sum(r[key] for r in results) / n, 1)
+    # sha256 do binário avaliado: em 2026-09 três avaliações "de modelos
+    # diferentes" rodaram sobre o mesmo .gguf sem que nada acusasse. Com o
+    # hash no relatório, dois relatórios com o mesmo artefato são detectáveis.
+    artefato_sha256 = hashlib.sha256(Path(gguf_path).read_bytes()).hexdigest()
     report = {
         "artefato": str(gguf_path),
+        "artefato_sha256": artefato_sha256,
+        "conjunto_avaliacao": str(val_path or VAL_PATH),
         "motor": "llama.cpp (llama-cli)",
         "modo": modo,
         "num_amostras": n,
@@ -400,15 +483,44 @@ def batch(llama_cli, gguf_path, threads, num_samples, grammar=None, retries=1, r
             "difficulty_valida_pct": pct("difficulty_valida"),
             "distribuicao_respostas_corretas": dict(Counter(respostas_corretas)),
             "mencoes_figura_pct": round(100 * image_mentions / n, 1),
+            "mencoes_figura_nota": (
+                "conta a PALAVRA figura/imagem/gráfico/desenho/ilustração em "
+                "qualquer contexto — inclui falso positivo legítimo "
+                "('figura plana', 'Desenho' como hobby). Para decidir, use "
+                "depende_de_visual_ausente_pct."
+            ),
+            "depende_de_visual_ausente_pct": round(100 * visual_ausente / n, 1),
             "consistencia_resposta_correta_pct": (
                 round(100 * consistencia_ok / consistencia_verificavel, 1)
                 if consistencia_verificavel else None
             ),
             "consistencia_verificavel_n": consistencia_verificavel,
+            "difficulty_aderente_pct": (
+                round(100 * dif_aderente / dif_avaliavel, 1) if dif_avaliavel else None
+            ),
+            "difficulty_avaliavel_n": dif_avaliavel,
+            "gabarito_letra_mais_frequente_pct": (
+                round(100 * max(Counter(respostas_corretas).values()) / len(respostas_corretas), 1)
+                if respostas_corretas else None
+            ),
+        },
+        "por_ano": {
+            ano: {
+                "n": v["n"],
+                "estrutura_ok_pct": round(100 * v["estrutura_ok"] / v["n"], 1),
+                "difficulty_aderente_pct": round(100 * v["dif_ok"] / v["n"], 1),
+                "consistencia_pct": (
+                    round(100 * v["consist_ok"] / v["consist_verif"], 1)
+                    if v["consist_verif"] else None
+                ),
+                "consistencia_verificavel_n": v["consist_verif"],
+            }
+            for ano, v in sorted(por_ano.items())
         },
         "pos_processamento": {
             **{k: status_counter.get(k, 0)
-               for k in ("ok", "nao_verificavel", "corrigido", "falha")},
+               for k in ("ok", "nao_verificavel", "corrigido",
+                         "depende_de_visual", "falha")},
             "regeneracoes_total": regeneracoes_total,
         },
         "velocidade_cpu_real": {
@@ -423,17 +535,18 @@ def batch(llama_cli, gguf_path, threads, num_samples, grammar=None, retries=1, r
         "detalhes": results,
     }
 
-    REPORT_PATH.parent.mkdir(exist_ok=True)
-    with open(REPORT_PATH, "w", encoding="utf-8") as f:
+    out_path = Path(report_path) if report_path else REPORT_PATH
+    out_path.parent.mkdir(exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=2)
 
     print(f"\n===== Teste real (GGUF via llama.cpp) — {n} amostras =====")
-    for section in ("estrutura", "pos_processamento", "velocidade_cpu_real"):
+    for section in ("estrutura", "por_ano", "pos_processamento", "velocidade_cpu_real"):
         print(f"[{section}]")
         for k, v in report[section].items():
             if k != "nota":
                 print(f"  {k}: {v}")
-    print(f"\nRelatório completo: {REPORT_PATH}")
+    print(f"\nRelatório completo: {out_path}")
 
 
 def main():
@@ -454,6 +567,8 @@ def main():
 
     parser.add_argument("--batch", action="store_true", help="roda sobre data/val.jsonl")
     parser.add_argument("--num-samples", type=int, default=None)
+    parser.add_argument("--val", default=None, help="conjunto de avaliação (padrão: data/val.jsonl)")
+    parser.add_argument("--report", default=None, help="arquivo de saída do relatório")
 
     parser.add_argument("--no-grammar", action="store_true",
                         help="não usar a grammar GBNF (estrutura fica por conta do modelo)")
@@ -475,7 +590,8 @@ def main():
 
     if args.batch:
         batch(llama_cli, gguf_path, args.threads, args.num_samples,
-              grammar=grammar, retries=args.retries, raw=args.raw)
+              grammar=grammar, retries=args.retries, raw=args.raw,
+              val_path=args.val, report_path=args.report)
     elif args.ano and args.habilidade:
         run_one(
             llama_cli, gguf_path, args.ano, args.habilidade,
