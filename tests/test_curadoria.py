@@ -100,3 +100,15 @@ class TestCuradoria(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestGruposAusentes(unittest.TestCase):
+    def test_plano_inclui_habilidade_sem_exemplo_no_treino(self):
+        rel, _ = cd.curar([], incluir_ausentes=True)
+        chaves = {(g["ano"], g["habilidade"]) for g in rel["grupos"]}
+        self.assertIn(("5º", "H21"), chaves)
+        self.assertGreater(rel["n_pedidos_professor"], 0)
+
+    def test_padrao_nao_inclui(self):
+        rel, _ = cd.curar([])
+        self.assertEqual(rel["grupos"], [])

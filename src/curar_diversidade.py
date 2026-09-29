@@ -201,13 +201,20 @@ def relatorio_grupo(ano, hab, regs, tax, limiar=dv.LIMIAR_NEAR_DUP):
     }
 
 
-def curar(exemplos, taxonomia=None, limiar=dv.LIMIAR_NEAR_DUP):
-    """Auditoria completa. Retorna (relatorio, registros)."""
+def curar(exemplos, taxonomia=None, limiar=dv.LIMIAR_NEAR_DUP, incluir_ausentes=False):
+    """Auditoria completa. Retorna (relatorio, registros). `incluir_ausentes`
+    adiciona ao plano os grupos da taxonomia sem nenhum exemplo no treino."""
     tax = taxonomia or dv.carregar_taxonomia()
     regs = auditar(exemplos, tax)
     grupos = defaultdict(list)
     for r in regs:
         grupos[(r["ano"], r["habilidade"])].append(r)
+    # Grupos da taxonomia SEM nenhum exemplo no treino também precisam de plano:
+    # sem isto, uma habilidade ausente do treino (ex.: 5º H21/H22, tabelas e
+    # gráficos) nunca é pedida ao professor e o modelo nunca a aprende.
+    for chave in (tax.get("habilidades", {}) if incluir_ausentes else ()):
+        a, h = chave.split("|", 1)
+        grupos.setdefault((a, h), [])
     por_grupo = [relatorio_grupo(a, h, grupos[(a, h)], tax, limiar) for a, h in sorted(grupos, key=str)]
     remover = sorted(e for g in por_grupo for e in g["remover_ex_idx"])
     rel = {
@@ -325,6 +332,8 @@ def main(argv=None):
     ap.add_argument("--saida", default=str(CURADO_PATH))
     ap.add_argument("--plano", default=str(PLANO_PATH))
     ap.add_argument("--relatorio", default=str(RELATORIO_JSON))
+    ap.add_argument("--so-presentes", action="store_true",
+                    help="plano só para grupos que já têm exemplo no treino (padrão: inclui os ausentes)")
     ap.add_argument("--limiar", type=float, default=dv.LIMIAR_NEAR_DUP)
     a = ap.parse_args(argv)
 
@@ -334,7 +343,7 @@ def main(argv=None):
         ap.error(f"saída proibida: {saida}")
 
     exemplos = carregar_jsonl(a.train)
-    rel, regs = curar(exemplos, limiar=a.limiar)
+    rel, regs = curar(exemplos, limiar=a.limiar, incluir_ausentes=not a.so_presentes)
     rj = Path(a.relatorio)
     rj.parent.mkdir(parents=True, exist_ok=True)
     rj.write_text(json.dumps(rel, ensure_ascii=False, indent=1), encoding="utf-8")

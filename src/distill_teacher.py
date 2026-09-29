@@ -95,7 +95,10 @@ TEACHER_ADDENDUM = (
     "escolhidos para que a conta seja exata; resolucao_passo_a_passo deve "
     "mostrar a conta completa e o resultado deve bater EXATAMENTE com o valor "
     "da alternativa de resposta_correta; cada distrator deve vir de um erro "
-    "específico que um aluno cometeria; escreva o JSON em uma única linha."
+    "específico que um aluno cometeria; escreva o JSON em uma única linha. "
+    "Seja CONCISO: enunciado de no máximo 3 frases, alternativas curtas e "
+    "resolucao_passo_a_passo de no máximo 3 frases (o JSON inteiro deve ter "
+    "menos de 800 caracteres)."
 )
 
 # Mantida por compatibilidade; o eixo de contexto agora vem de diversidade.CONTEXTOS.
@@ -404,7 +407,7 @@ def montar_plano(args):
 
 
 MARITACA_URL = "https://chat.maritaca.ai/api/chat/completions"
-DEFAULT_TEACHER_MARITACA = "sabia-4"
+DEFAULT_TEACHER_MARITACA = "sabiazinho-4"
 
 
 class MaritacaClient:
