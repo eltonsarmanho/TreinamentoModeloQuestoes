@@ -211,6 +211,81 @@ def houve_ganho(base, cand):
     return ganhos
 
 
+# --------------------------------------------------------------------------
+# G11 — diversidade sem regressão de qualidade (OPCIONAL)
+# --------------------------------------------------------------------------
+# Só roda se relatórios de src/avaliar_diversidade.py forem fornecidos. Mede o
+# modo de geração escolhido (padrão "ajustado", o pipeline com plano de
+# subtemas) nos MESMOS prompts/seeds do conjunto fixo data/prompts_diversidade.json.
+#
+# Por que é bloqueante quando presente: forçar subtema/contexto pode aumentar a
+# variedade às custas do que o aluno de fato recebe (JSON quebrado, gabarito
+# errado, questão fora da habilidade). Diversidade só conta como ganho se a
+# qualidade ficar >= à do baseline (tolerância explícita, 0pp por padrão).
+
+# (métrica, sentido): +1 = maior é melhor; -1 = menor é melhor.
+QUALIDADE_DIVERSIDADE = [
+    ("json_valido_pct", 1),
+    ("schema_pct", 1),
+    ("consistencia_inconsistente_pct", -1),
+    ("aderencia_pct", 1),
+]
+TOLERANCIA_QUALIDADE_DIVERSIDADE_PP = 0.0
+
+
+def agregado_diversidade(rel, modo="ajustado"):
+    """Agregado de um modo de um relatório de avaliar_diversidade.py, ou None."""
+    return _get(rel or {}, "modos", modo, "agregado")
+
+
+def gate_diversidade(base_rel, cand_rel, modo_base="ajustado", modo_cand="ajustado",
+                     tolerancia_pp=TOLERANCIA_QUALIDADE_DIVERSIDADE_PP):
+    """G11: diversity_score não pode piorar e nenhuma métrica de qualidade pode
+    piorar além de `tolerancia_pp`. Métrica ausente reprova (mesma regra dos
+    outros gates). Também reprova se os conjuntos de prompts diferirem — sem
+    pareamento a comparação não mede nada."""
+    g = Gate("G11", "Diversidade sem perda de qualidade")
+    b, c = agregado_diversidade(base_rel, modo_base), agregado_diversidade(cand_rel, modo_cand)
+    if b is None or c is None:
+        return g.resolve(False, f"agregado ausente (baseline modo={modo_base}: {b is not None}, "
+                                f"candidato modo={modo_cand}: {c is not None})")
+    ib, ic = base_rel.get("prompt_ids"), cand_rel.get("prompt_ids")
+    if ib is not None and ic is not None and ib != ic:
+        return g.resolve(False, "conjuntos de prompts diferentes — comparação não pareada")
+    problemas, detalhes = [], []
+    for chave, sentido in QUALIDADE_DIVERSIDADE:
+        vb, vc = b.get(chave), c.get(chave)
+        if vb is None or vc is None:
+            # aderência pode faltar legitimamente se só houver habilidades K=1
+            # nos dois lados; nos demais casos é métrica ausente.
+            if vb is None and vc is None and chave == "aderencia_pct":
+                continue
+            problemas.append(f"{chave} ausente")
+            continue
+        detalhes.append(f"{chave} {vb}->{vc}")
+        if (vc - vb) * sentido < -tolerancia_pp:
+            problemas.append(f"{chave} piorou {vb}->{vc}")
+    db, dc = b.get("diversity_score"), c.get("diversity_score")
+    if db is None or dc is None:
+        problemas.append("diversity_score ausente")
+    else:
+        detalhes.insert(0, f"diversity_score {db}->{dc}")
+        if dc < db - 1e-9:
+            problemas.append(f"diversity_score piorou {db}->{dc}")
+    return g.resolve(not problemas, "; ".join(problemas) if problemas else "; ".join(detalhes))
+
+
+def ganho_diversidade(base_rel, cand_rel, modo_base="ajustado", modo_cand="ajustado"):
+    """Lista (0 ou 1 item) de ganho estrito de diversity_score, para houve_ganho.
+    Sem isso, um candidato que só melhora diversidade daria 'NÃO PROMOVIDO'."""
+    b = agregado_diversidade(base_rel, modo_base) or {}
+    c = agregado_diversidade(cand_rel, modo_cand) or {}
+    vb, vc = b.get("diversity_score"), c.get("diversity_score")
+    if vb is not None and vc is not None and vc > vb:
+        return [f"diversity_score: {vb} -> {vc}"]
+    return []
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--baseline-gguf", required=True)
@@ -218,6 +293,14 @@ def main():
     parser.add_argument("--baseline-gpu")
     parser.add_argument("--candidato-gpu")
     parser.add_argument("--saida", help="grava o veredito neste .json")
+    # G11 (opcional): relatórios de src/avaliar_diversidade.py.
+    parser.add_argument("--diversidade-baseline")
+    parser.add_argument("--diversidade-candidato")
+    parser.add_argument("--modo-diversidade-baseline", default="ajustado",
+                        help="modo do relatório baseline (atual|ajustado)")
+    parser.add_argument("--modo-diversidade-candidato", default="ajustado")
+    parser.add_argument("--tolerancia-diversidade-pp", type=float,
+                        default=TOLERANCIA_QUALIDADE_DIVERSIDADE_PP)
     args = parser.parse_args()
 
     carrega = lambda p: json.loads(Path(p).read_text(encoding="utf-8")) if p else None
@@ -235,6 +318,13 @@ def main():
 
     gates = avalia(base, cand, base_gpu, cand_gpu)
     ganhos = houve_ganho(base, cand)
+    div_b, div_c = carrega(args.diversidade_baseline), carrega(args.diversidade_candidato)
+    if (div_b is None) != (div_c is None):
+        raise SystemExit("G11 exige os DOIS relatórios: --diversidade-baseline e --diversidade-candidato")
+    if div_b is not None:
+        md_b, md_c = args.modo_diversidade_baseline, args.modo_diversidade_candidato
+        gates.append(gate_diversidade(div_b, div_c, md_b, md_c, args.tolerancia_diversidade_pp))
+        ganhos += ganho_diversidade(div_b, div_c, md_b, md_c)
 
     print("=" * 78)
     print("GATES DE PROMOÇÃO — conjunto congelado, comparação pareada")

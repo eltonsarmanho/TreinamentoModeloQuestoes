@@ -20,6 +20,12 @@ Modos:
 
       python src/test_model.py --ano "9º" --habilidade H17 --n 5
 
+  Lote de N questões (padrão para N>1: modo PLANEJADO, uma questão por
+  chamada com cobertura de subtemas, todas validadas — ver gerar_lote.py;
+  --sem-planejamento volta ao pedido único antigo):
+
+      python src/test_model.py --ano "9º" --habilidade H17 --quantidade 5
+
   Lote real contra o conjunto de validação (sanity check fim a fim do
   artefato exportado, mesmas métricas estruturais do evaluate.py):
 
@@ -168,7 +174,7 @@ def _score_candidato(flags, consistente, texto=""):
 
 
 def generate_validated(llama_cli, gguf_path, user_prompt, threads, max_new_tokens,
-                       grammar=None, retries=1, quantidade=1, base_seed=None):
+                       grammar=None, retries=1, quantidade=1, base_seed=None, gen_fn=None):
     """Pipeline de produção: best-of-N com verificador determinístico.
 
     1. Gera com grammar GBNF (estrutura garantida por construção, se disponível).
@@ -189,7 +195,11 @@ def generate_validated(llama_cli, gguf_path, user_prompt, threads, max_new_token
     Retorna dict com: text, obj (a PRIMEIRA questão do wrapper, para exibição/
     métricas), flags, status, regeneracoes, gen_tps, elapsed.
     status: "ok" | "nao_verificavel" | "corrigido" | "falha".
+
+    gen_fn: substituto opcional de generate() (mesma assinatura). Existe para
+    que gerar_lote.py e os testes rodem sem llama-cli; em produção fica None.
     """
+    gen = gen_fn or generate
     total_elapsed, regeneracoes = 0.0, 0
     melhor = None  # (score, text, top_obj, questao, flags, gen_tps)
     for attempt in range(retries + 1):
@@ -201,7 +211,7 @@ def generate_validated(llama_cli, gguf_path, user_prompt, threads, max_new_token
             seed = base_seed * 100 + attempt
         else:
             seed = None if attempt == 0 else 1000 + attempt
-        text, _, gen_tps, elapsed = generate(
+        text, _, gen_tps, elapsed = gen(
             llama_cli, gguf_path, user_prompt, threads, max_new_tokens,
             seed=seed, grammar=grammar,
         )
@@ -228,7 +238,11 @@ def generate_validated(llama_cli, gguf_path, user_prompt, threads, max_new_token
             regeneracoes += 1
 
     melhor_score, text, top_obj, questao, flags, gen_tps = melhor
-    if questao is not None:
+    if questao is not None and melhor_score == 0:
+        # estrutura quebrada (ex.: alternativas repetidas): trocar a letra do
+        # gabarito não conserta — não pode sair rotulada como "corrigido"
+        status = "falha"
+    elif questao is not None:
         questao, fix_status = fix_gabarito(questao)
         if fix_status == "corrigido":
             status = "corrigido"
@@ -273,7 +287,15 @@ STATUS_LABEL = {
 
 
 def run_one(llama_cli, gguf_path, ano, habilidade, descricao, dificuldade, threads, n,
-            grammar=None, retries=1, quantidade=1):
+            grammar=None, retries=1, quantidade=1, planejado=True,
+            max_tentativas_diversidade=2):
+    # quantidade>1: por padrão usa o modo PLANEJADO (gerar_lote.py) — uma
+    # questão por chamada, guiada por plano de subtemas, com TODAS as questões
+    # validadas. --sem-planejamento volta ao pedido único "Gere N questões".
+    if quantidade > 1 and planejado:
+        return run_planejado(llama_cli, gguf_path, ano, habilidade, descricao, dificuldade,
+                             threads, n, quantidade, grammar=grammar, retries=retries,
+                             max_tentativas_diversidade=max_tentativas_diversidade)
     user_prompt = USER_TEMPLATE.format(
         quantidade=quantidade, ano=ano, habilidade=habilidade, descricao=descricao,
         dificuldade=dificuldade,
@@ -305,6 +327,38 @@ def run_one(llama_cli, gguf_path, ano, habilidade, descricao, dificuldade, threa
               + (f" | {r['regeneracoes']} regeneração(ões)" if r["regeneracoes"] else ""))
         gen_str = f"{r['gen_tps']:.1f} tok/s" if r["gen_tps"] else "n/d"
         print(f"  Tempo total: {r['elapsed']:.1f}s (inclui carregar o modelo) | Geração: {gen_str}\n")
+
+
+def run_planejado(llama_cli, gguf_path, ano, habilidade, descricao, dificuldade, threads,
+                  n, quantidade, grammar=None, retries=1, max_tentativas_diversidade=2):
+    """Imprime lote(s) gerados por gerar_lote.gerar_lote_planejado."""
+    from gerar_lote import gerar_lote_planejado  # import tardio: gerar_lote importa este módulo
+    for i in range(n):
+        if n > 1:
+            print(f"--- Lote {i + 1}/{n} ---")
+        r = gerar_lote_planejado(
+            llama_cli, gguf_path, ano, habilidade, descricao, dificuldade, quantidade,
+            threads, grammar=grammar, retries=retries,
+            max_tentativas_diversidade=max_tentativas_diversidade, verbose=True,
+        )
+        for q, d in zip(r["questoes"], r["detalhes"]):
+            cls = d["classificacao"] or {}
+            print(f"[{d['indice'] + 1}] planejado={d['subtema_planejado']} "
+                  f"obtido={cls.get('subtema', '?')} status={d['status']} "
+                  f"tentativas={d['tentativas_diversidade']} tempo={d['tempo_s']}s")
+            print_question(q, "")
+            print()
+        restantes = [v for v in r["violacoes"] if v["violacoes"]]
+        m = r["metricas"] or {}
+        print(f"Lote: {len(r['questoes'])}/{quantidade} questões | "
+              f"quantidade_correta={r['flags']['quantidade_correta']} | "
+              f"regenerações por diversidade={r['regeneracoes_diversidade']} | "
+              f"slots com violação remanescente={len(restantes)}")
+        if m:
+            print(f"diversity_score={m['diversity_score']:.3f} coverage={m['coverage_score']:.3f} "
+                  f"duplicate_rate={m['duplicate_rate']:.3f} "
+                  f"subtemas={m['subtema_distribution']}")
+        print(f"Tempo total: {r['tempo_s']}s ({r['tempo_medio_por_questao_s']}s/questão)\n")
 
 
 def load_habilidades():
@@ -563,7 +617,13 @@ def main():
     parser.add_argument("--dificuldade", default="Moderado")
     parser.add_argument("--n", type=int, default=1, help="variações a gerar")
     parser.add_argument("--quantidade", type=int, default=1,
-                        help="quantas questões pedir por chamada (testa o lote 'questoes': [...])")
+                        help="quantas questões no lote. >1 usa o modo PLANEJADO por padrão "
+                             "(uma questão por chamada, cobertura de subtemas; ver gerar_lote.py)")
+    parser.add_argument("--sem-planejamento", action="store_true",
+                        help="com --quantidade>1, volta ao modo antigo: uma única chamada pedindo N "
+                             "questões (só a 1ª é verificada)")
+    parser.add_argument("--max-tentativas-diversidade", type=int, default=2,
+                        help="regenerações extras por slot quando a questão viola a diversidade")
 
     parser.add_argument("--batch", action="store_true", help="roda sobre data/val.jsonl")
     parser.add_argument("--num-samples", type=int, default=None)
@@ -597,6 +657,8 @@ def main():
             llama_cli, gguf_path, args.ano, args.habilidade,
             args.descricao, args.dificuldade, args.threads, args.n,
             grammar=grammar, retries=args.retries, quantidade=args.quantidade,
+            planejado=not args.sem_planejamento,
+            max_tentativas_diversidade=args.max_tentativas_diversidade,
         )
     else:
         interactive(llama_cli, gguf_path, args.threads, grammar=grammar,
