@@ -328,7 +328,13 @@ def filtrar(obj, raw_text, vistos, strict=False, slot=None, ano=None, habilidade
         return "estrutura"
     questao = extract_questao(obj, 0)
     blob = json.dumps(questao, ensure_ascii=False)
-    if IMAGE_PATTERN.search(blob):
+    # Subtemas de dados (tabela/gráfico) citam "gráfico" legitimamente; neles o
+    # filtro por palavra solta rejeitaria TUDO. Troca-se pelo critério que
+    # importa: citar o artefato sem trazer os dados escritos.
+    if slot and diversidade.exige_dados_textuais(slot.get("subtema")):
+        if diversidade.dados_ausentes(questao, slot.get("subtema")):
+            return "dados_ausentes"
+    elif IMAGE_PATTERN.search(blob):
         return "menciona_figura"
     if len(blob) > MAX_ANSWER_CHARS:
         return "muito_longa"

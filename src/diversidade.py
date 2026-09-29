@@ -350,11 +350,65 @@ def planejar_lote(ano, habilidade, quantidade, dificuldade=None, seed=0, histori
     return slots
 
 
+# Subtemas cujo objeto matemático É a representação de dados (tabela, gráfico,
+# histograma, lista). O app é texto puro: sem imagem, a questão só é resolvível
+# se os dados vierem ESCRITOS no enunciado. Decidido por família de subtema,
+# não por habilidade — vale para 2º/5º/9º e para qualquer habilidade nova.
+_PREFIXOS_DADOS = ("tabela_", "grafico_", "histograma", "listas")
+
+INSTRUCAO_DADOS_TEXTUAIS = (
+    " Dados: escreva no enunciado todos os dados da tabela ou do gráfico em texto,"
+    " um item por linha no formato 'rótulo: valor'."
+)
+
+
+def exige_dados_textuais(subtema):
+    """True se o subtema é uma representação de dados (tabela/gráfico/...)."""
+    return bool(subtema) and str(subtema).startswith(_PREFIXOS_DADOS)
+
+
 def sufixo_prompt(slot):
     """Trecho ÚNICO anexado ao USER_TEMPLATE, igual em treino, destilação e
-    inferência: ' Subtema: X. Tipo de raciocínio: Y. Contexto: Z.'"""
-    return (f" Subtema: {slot['subtema_rotulo']}. Tipo de raciocínio: {slot['tipo_raciocinio_rotulo']}."
-            f" Contexto: {slot['contexto_rotulo']}.")
+    inferência: ' Subtema: X. Tipo de raciocínio: Y. Contexto: Z.' — e, para
+    subtemas de dados, a instrução fixa INSTRUCAO_DADOS_TEXTUAIS."""
+    suf = (f" Subtema: {slot['subtema_rotulo']}. Tipo de raciocínio: {slot['tipo_raciocinio_rotulo']}."
+           f" Contexto: {slot['contexto_rotulo']}.")
+    if exige_dados_textuais(slot.get("subtema")):
+        suf += INSTRUCAO_DADOS_TEXTUAIS
+    return suf
+
+
+# "Segunda: 12", "Azul - 15 votos", "Maçã = 8"; ou tabela com pipes.
+_PAR_ROTULO_VALOR = re.compile(r"[A-Za-zÀ-ÿ][\wÀ-ÿ ]{0,30}?\s*[:=\-–]\s*\d+(?:[.,]\d+)?")
+_ARTEFATO_CITADO = re.compile(r"\b(tabela|gr[áa]fico|histograma|quadro)s?\b", re.I)
+
+
+def tem_dados_textuais(questao, minimo=3):
+    """True se o enunciado traz os dados escritos: >= `minimo` pares
+    'rótulo: valor' ou uma tabela com pipes. Números soltos numa frase
+    ('12 azuis e 6 vermelhos') não contam como TABELA — mas contam como
+    dados; por isso também aceita >= `minimo` números no enunciado (cobre
+    '12 alunos gostam de X; 10 de Y; 8 de Z', formato valor-rótulo)."""
+    en = _enunciado(questao) if isinstance(questao, dict) else str(questao or "")
+    if en.count("|") >= 4:
+        return True
+    if len(_PAR_ROTULO_VALOR.findall(en)) >= minimo:
+        return True
+    return len(re.findall(r"\d+(?:[.,]\d+)?", en)) >= minimo
+
+
+def dados_ausentes(questao, subtema=None):
+    """True se a questão depende de uma tabela/gráfico que não está escrito.
+
+    Casos: (a) o slot é de subtema de dados e o enunciado não traz os dados;
+    (b) qualquer slot, o enunciado cita tabela/gráfico ('No gráfico, qual
+    cor...') e não traz os dados. Complementa
+    schema_utils.depende_de_visual_ausente, que só pega a referência dêitica
+    explícita ('observe o gráfico abaixo')."""
+    if tem_dados_textuais(questao):
+        return False
+    en = _enunciado(questao) if isinstance(questao, dict) else str(questao or "")
+    return exige_dados_textuais(subtema) or bool(_ARTEFATO_CITADO.search(en))
 
 
 # --------------------------------------------------------------------------
@@ -536,6 +590,8 @@ def violacoes_diversidade(lote_aceito, candidato, slot, ano, habilidade, quantid
         if ja >= math.ceil(n / k):
             v.append({"tipo": "subtema_saturado", "subtema": c["subtema"],
                       "subtema_rotulo": rot.get(c["subtema"], c["subtema"]), "quantidade": ja})
+    if dados_ausentes(candidato, slot.get("subtema")):
+        v.append({"tipo": "dados_ausentes"})
     if c["contexto"] != SEM_CONTEXTO and len(lote_aceito) < len(CONTEXTOS) \
             and any(a["contexto"] == c["contexto"] for a in aceitos_cls):
         v.append({"tipo": "contexto_repetido", "contexto": c["contexto"],
@@ -556,6 +612,10 @@ def montar_restricao(violacoes, habilidade, slot):
         elif v["tipo"] == "near_duplicata":
             frases.append("A questão ficou quase idêntica a uma já gerada; trocar apenas os números não "
                           "conta como questão nova. Mude a situação e o que é perguntado.")
+        elif v["tipo"] == "dados_ausentes":
+            frases.append("A questão cita uma tabela ou gráfico que o aluno não vê. Escreva no "
+                          "enunciado todos os dados em texto, um item por linha no formato "
+                          "'rótulo: valor'.")
         elif v["tipo"] == "contexto_repetido":
             frases.append(f"O contexto '{v['contexto_rotulo']}' já foi usado no lote; "
                           f"use o contexto: {slot['contexto_rotulo']}.")

@@ -66,10 +66,16 @@ def montar_prompt(ano, habilidade, descricao, dificuldade, slot, restricao=None)
     return p
 
 
+# Peso das violações no desempate entre candidatos de mesma qualidade.
+# dados_ausentes torna a questão irresolvível no app (texto puro), então pesa
+# mais que as violações de diversidade, que só empobrecem o lote.
+PESO_VIOLACAO = {"dados_ausentes": 3}
+
+
 def _chave(cand):
-    """Ordenação de candidatos: qualidade primeiro, depois menos violações."""
+    """Ordenação de candidatos: qualidade primeiro, depois menor peso de violações."""
     return (RANK_STATUS.get(cand["status"], 0) if cand["obj"] is not None else -1,
-            -len(cand["violacoes"]))
+            -sum(PESO_VIOLACAO.get(v["tipo"], 1) for v in cand["violacoes"]))
 
 
 def gerar_lote_planejado(llama_cli, gguf_path, ano, habilidade, descricao, dificuldade,
