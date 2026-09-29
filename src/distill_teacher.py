@@ -506,7 +506,10 @@ def dry_run(args):
     return plano
 
 
-def merge():
+def merge(train_path=TRAIN_PATH):
+    """Mescla data/distill.jsonl em `train_path` (padrão data/train.jsonl; use
+    --merge-into data/train_curado.jsonl para o conjunto curado)."""
+    train_path = Path(train_path)
     if not DISTILL_PATH.exists():
         raise SystemExit(f"{DISTILL_PATH} não existe — rode a geração primeiro.")
     destilados = [json.loads(l) for l in open(DISTILL_PATH, encoding="utf-8")]
@@ -521,10 +524,10 @@ def merge():
             vistos.add(chave)
             unicos.append(ex)
 
-    base = [json.loads(l) for l in open(TRAIN_PATH, encoding="utf-8")] if TRAIN_PATH.exists() else []
+    base = [json.loads(l) for l in open(train_path, encoding="utf-8")] if train_path.exists() else []
     base_sem_destilado = [ex for ex in base if not ex.get("meta", {}).get("destilado")]
     combinado = base_sem_destilado + unicos
-    with open(TRAIN_PATH, "w", encoding="utf-8") as f:
+    with open(train_path, "w", encoding="utf-8") as f:
         for ex in combinado:
             f.write(json.dumps(ex, ensure_ascii=False) + "\n")
 
@@ -533,7 +536,7 @@ def merge():
     print(f"Treino real:      {n_real}")
     print(f"Treino sintético: {n_sint}")
     print(f"Treino destilado: {len(unicos)} ({len(destilados) - len(unicos)} duplicatas removidas)")
-    print(f"Total escrito em {TRAIN_PATH}: {len(combinado)}")
+    print(f"Total escrito em {train_path}: {len(combinado)}")
     print("\ndata/val.jsonl não foi tocado — validação continua 100% com questões reais.")
 
 
@@ -557,6 +560,8 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--max-errors", type=int, default=10)
     parser.add_argument("--retry-wait", type=float, default=5.0)
+    parser.add_argument("--merge-into", default=str(TRAIN_PATH),
+                        help="arquivo de treino que recebe a mesclagem (padrão: data/train.jsonl)")
     parser.add_argument("--merge", action="store_true",
                         help="mescla data/distill.jsonl no data/train.jsonl e sai")
     parser.add_argument("--dry-run", action="store_true",
@@ -566,7 +571,7 @@ def main():
     args = parser.parse_args()
 
     if args.merge:
-        merge()
+        merge(args.merge_into)
         return
 
     if args.dry_run:
