@@ -229,6 +229,24 @@ def _computed_result(text):
     return r if abs(computed - r) < 1e-6 else None
 
 
+def _computed_results(text):
+    """Resultados de TODAS as contas 'a op b = r' corretas do texto, em ordem.
+
+    Resoluções de vários passos ("6 + 7 = 13. Depois, 13 + 5 = 18") têm a
+    resposta na ÚLTIMA conta; olhar só a primeira (13) reprovava questões
+    corretas e fazia fix_gabarito trocar o gabarito certo por um errado."""
+    out = []
+    for match in _EXPR_PATTERN.finditer(normalize_math(text)):
+        a_str, op, b_str, r_str = match.groups()
+        a, b, r = _to_number(a_str), _to_number(b_str), _to_number(r_str)
+        if a is None or b is None or r is None:
+            continue
+        computed = _OPS[op](a, b)
+        if computed is not None and abs(computed - r) < 1e-6:
+            out.append(r)
+    return out
+
+
 def _leading_number(text):
     match = _NUM_PATTERN.search(normalize_math(text))
     return _to_number(match.group()) if match else None
@@ -257,13 +275,17 @@ def check_consistency(questao):
     if not isinstance(alternativas, dict) or gabarito not in alternativas:
         return None, None
 
-    resultado = _computed_result(questao.get("resolucao_passo_a_passo", ""))
-    if resultado is None:
+    # Consistente se o valor do gabarito é resultado de ALGUMA conta correta
+    # da resolução (cobre passos intermediários e respostas como "4/6", em que
+    # o primeiro número casa a primeira conta). Inconsistente só quando nenhuma
+    # conta bate com o gabarito; a sugestão vem da ÚLTIMA conta (resultado final).
+    resultados = _computed_results(questao.get("resolucao_passo_a_passo", ""))
+    if not resultados:
         return None, None
-    if _leading_number(alternativas.get(gabarito)) == resultado:
+    if _leading_number(alternativas.get(gabarito)) in resultados:
         return True, None
     for letra, texto in alternativas.items():
-        if _leading_number(texto) == resultado:
+        if _leading_number(texto) == resultados[-1]:
             return False, letra
     return False, None
 

@@ -407,7 +407,7 @@ def montar_plano(args):
 
 
 MARITACA_URL = "https://chat.maritaca.ai/api/chat/completions"
-DEFAULT_TEACHER_MARITACA = "sabiazinho-4"
+DEFAULT_TEACHER_MARITACA = "sabia-4-thinking"
 
 
 class MaritacaClient:
