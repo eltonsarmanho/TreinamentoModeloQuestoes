@@ -403,12 +403,51 @@ def montar_plano(args):
     return itens, plano, hist
 
 
+MARITACA_URL = "https://chat.maritaca.ai/api/chat/completions"
+DEFAULT_TEACHER_MARITACA = "sabia-4"
+
+
+class MaritacaClient:
+    """Cliente mínimo da API da Maritaca (compatível com OpenAI) exposto com a
+    mesma interface usada do InferenceClient — `chat_completion(...)` devolvendo
+    `.choices[0].message.content` — para o resto do gerar() não mudar.
+    Só `requests` (já instalado), sem o pacote `openai`. Chave: MARITALK_API_KEY."""
+
+    def __init__(self, model, api_key=None, timeout=120):
+        import os
+        self.model = model
+        self.api_key = api_key or os.environ.get("MARITALK_API_KEY")
+        if not self.api_key:
+            raise SystemExit("MARITALK_API_KEY ausente no .env")
+        self.timeout = timeout
+
+    def chat_completion(self, messages, max_tokens, temperature):
+        import requests
+        from types import SimpleNamespace
+        r = requests.post(
+            MARITACA_URL,
+            headers={"Authorization": f"Bearer {self.api_key}"},
+            json={"model": self.model, "messages": messages,
+                  "max_tokens": max_tokens, "temperature": temperature},
+            timeout=self.timeout,
+        )
+        r.raise_for_status()  # erro HTTP (crédito, quota) cai no contador de erros de API
+        content = r.json()["choices"][0]["message"]["content"]
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
+
+
+def criar_cliente(args):
+    if args.backend == "maritaca":
+        return MaritacaClient(args.teacher)
+    from huggingface_hub import InferenceClient
+    return InferenceClient(model=args.teacher, provider=args.provider)
+
+
 def gerar(args, client=None):
     """Gera com o professor seguindo o plano. `client` permite injetar um
     cliente falso nos testes (precisa só de chat_completion)."""
     if client is None:
-        from huggingface_hub import InferenceClient
-        client = InferenceClient(model=args.teacher, provider=args.provider)
+        client = criar_cliente(args)
     itens, plano, hist = montar_plano(args)
 
     vistos = set()
@@ -427,7 +466,7 @@ def gerar(args, client=None):
 
     rejeicoes = Counter()
     aceitos, erros_api, idx = 0, 0, aceitos_previos
-    print(f"Professor: {args.teacher} (provider: {args.provider})")
+    print(f"Professor: {args.teacher} (backend: {getattr(args, 'backend', 'hf')}, provider: {args.provider})")
     print(f"{len(itens)} itens de plano -> {len(plano)} chamadas planejadas\n")
 
     with open(DISTILL_PATH, "a", encoding="utf-8") as saida:
@@ -484,7 +523,7 @@ def gerar(args, client=None):
 def dry_run(args):
     """Mostra o plano de cobertura por (ano, habilidade) sem chamar a API."""
     itens, plano, _ = montar_plano(args)
-    print(f"Professor: {args.teacher} (provider: {args.provider})")
+    print(f"Professor: {args.teacher} (backend: {args.backend}, provider: {args.provider})")
     print(f"Itens de plano: {len(itens)} | chamadas planejadas: {len(plano)}"
           + (f" | plano: {args.plano}" if args.plano else " | plano: todas as tuplas do banco"))
     print("Filtros: schema completo + 5 alternativas distintas + sem figura + "
@@ -544,8 +583,11 @@ def main():
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("--teacher", default=DEFAULT_TEACHER,
-                        help=f"modelo professor (padrão: {DEFAULT_TEACHER})")
+    parser.add_argument("--backend", choices=("hf", "maritaca"), default="hf",
+                        help="hf = HF Inference Providers (HF_TOKEN); maritaca = API da "
+                             f"Maritaca (MARITALK_API_KEY, professor padrão {DEFAULT_TEACHER_MARITACA})")
+    parser.add_argument("--teacher", default=None,
+                        help=f"modelo professor (padrão: {DEFAULT_TEACHER} no hf, {DEFAULT_TEACHER_MARITACA} na maritaca)")
     parser.add_argument("--provider", default="auto",
                         help="HF Inference Provider (padrão: auto)")
     parser.add_argument("--per-tuple", type=int, default=DEFAULT_PER_TUPLE,
@@ -569,6 +611,8 @@ def main():
     parser.add_argument("--plano", default=None,
                         help="JSON de plano (ex.: data/plano_destilacao.json); formato no topo")
     args = parser.parse_args()
+    if args.teacher is None:
+        args.teacher = DEFAULT_TEACHER_MARITACA if args.backend == "maritaca" else DEFAULT_TEACHER
 
     if args.merge:
         merge(args.merge_into)
