@@ -1,0 +1,190 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% JLA Article Template — LAK27 submission (double-blind)
+% VERSÃO FINAL (corte adicional de ~1 página):
+% 1) Tabela 1 (catálogo) convertida em frase no texto;
+% 2) Tabela 2: 8 linhas inferiores resumidas em texto;
+% 3) Introduction: parágrafos 2–3 fundidos;
+% 4) §5.4 (QLoRA) comprimida;
+% 5) §4.3: figura reduzida e parágrafo do exemplo enxuto;
+% 6) §3.5 Metrics e §3.1 comprimidos; Limitations fundidas.
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\documentclass[fleqn,10pt]{JLA_article}
+\usepackage[english]{babel}
+\addbibresource{sample.bib}
+%----------------------------------------------------------------------------------------
+\usepackage{hyperref}
+\hypersetup{hidelinks,colorlinks,breaklinks=true,urlcolor=color2,citecolor=color1,linkcolor=color1,bookmarksopen=false,
+pdftitle={On-Device Small LLMs for Offline Question Generation in Brazilian Elementary Math: A Reproducibility-Oriented Benchmark},
+pdfauthor={}}
+%----------------------------------------------------------------------------------------
+\PaperTitle{On-Device Small LLMs for Offline Question Generation in Brazilian Elementary Math: A Reproducibility-Oriented Benchmark}
+\Authors{}
+\Keywords{Learning Analytics, Large Language Models, On-Device AI, Question Generation, Equity, Assessment, Reproducibility}
+\Submitted{10/11/12}
+\Accepted{10/11/12}
+\Published{10/11/12}
+\Volume{1}
+\Number{1}
+\Pages{1---10}
+\Doi{xxx-xxx-xxx}
+%----------------------------------------------------------------------------------------
+\Notesname{Notes for Practice}
+\note{\textbf{What was already known.} Offline and unplugged learning analytics can reduce dependence on school connectivity. Cloud LLMs have been studied for answering and scoring in Brazilian Portuguese. Small open-weight models can run locally with \texttt{llama.cpp}; curriculum-aligned item generation on constrained hardware has received less attention.}
+\note{\textbf{What this paper adds.} A reproducible on-device benchmark of 16 open-weight models (two sampling profiles, ten fixed seeds, CPU-only Q4\_K\_M). Usable rates reach 70.0\%; answer correctness reaches 36.5\% (Qwen3-1.7B, balanced). Peak RAM stays within 0.24--3.20\,GB, with no memory-exhaustion cell. JSON success and a correct marked key come apart (e.g., Gemma-2-2B, balanced: 66.0\% usable, 3.4\% answer correctness). Six independent computing-domain evaluators confirmed that no generated exam was ready for unsupervised application, with answer-key errors under both cloud and on-device generation.}
+\note{\textbf{Implications for practice.} Treat every generated item as a draft for expert review; never publish without a human check of the key. Do not treat the balanced profile as a default for every family. A math-specialized, earlier-generation, or very small checkpoint does not guarantee valid JSON (Qwen2.5-Math-1.5B, Qwen1.5-1.8B, TinyLlama-1.1B, SmolLM2-135M, and Phi-2 produced none).}
+%----------------------------------------------------------------------------------------
+\Abstract{Teachers of mathematics in Brazilian grades 1--9 spend substantial time writing and scoring exams, while diagnostic decisions often rest on intuition rather than skill-level evidence. Large language models can draft multiple-choice items, but published work concentrates on proprietary cloud systems that assume reliable connectivity and affordable tokens. This study asks whether small open-weight models can generate BNCC-aligned items entirely on-device. We benchmark 16 instruction models from six families (Qwen, Llama, SmolLM, Gemma, DeepSeek, Phi) under balanced and creative sampling, with ten fixed seeds, on a laptop (Intel Core i5-1235U, about 8\,GB RAM, CPU-only, GGUF Q4\_K\_M, \texttt{llama.cpp}). Usable rates range from 0.0\% to 70.0\% (Wilson 95\% CIs). The highest answer-correctness rate is 36.5\% [30.4--43.1] for Qwen3-1.7B (balanced). Peak RAM stays between 0.24\,GB and 3.20\,GB, with no out-of-memory cell. JSON success and a correct marked key come apart, so the evidence supports a review-in-the-loop workflow with mandatory verification. An independent evaluation by six computing-domain experts of exams generated under both a cloud LLM and the on-device configurations found that no exam was deemed ready for application without changes, four of six would apply it with small corrections, with answer-key errors reported in both regimes, triangulating the deterministic audit with human judgment.}
+%----------------------------------------------------------------------------------------
+\begin{document}
+\flushbottom
+\maketitle
+\thispagestyle{fancy}
+% ----------------------------------------------------------------------------
+% 1. Introduction (parágrafos 2–3 fundidos)
+% ----------------------------------------------------------------------------
+\section{Introduction}
+Teachers of mathematics in Brazilian grades 1--9 routinely spend hours preparing and scoring exams, much of that time mechanical: counting, transcribing, and recalculating. The pedagogically substantive task is diagnostic: identifying \emph{which} skill of the Brazilian National Curriculum Base (BNCC) a class has not yet mastered. When that reading rests on intuition rather than item-level evidence, workload and decision quality remain coupled, a problem already noted in analytics-enabled assessment~\autocite{gasevic2022towards,portela2024equity}.
+
+Large language models (LLMs) can answer and generate educational content~\autocite{minaee2024llms,mello2024wordsofwisdom}, but the literature concentrates on proprietary, cloud-hosted, English-centric systems. Brazilian Portuguese studies have argued that equity for non-English, socioeconomically diverse learners requires evaluating native-language and smaller models~\autocite{pires2023sabia,rodrigues2025llms}, and that LLM scoring can raise fairness issues~\autocite{rodrigues2025gpt4fair,lobo2025scoring}. Cloud inference also assumes reliable connectivity and affordable tokens, an assumption that fails in many public schools where internet access is intermittent during instructional hours~\autocite{portela2024unplugged,mello2023offline,freitas2022learning}. Offline AI in education has therefore been proposed as a more inclusive path~\autocite{mello2023offline,portela2023aied,portela2024unplugged}, and Brazilian stakeholders have already rated lightweight, resource-constrained models on accuracy, completeness, and readability~\autocite{barros2025resourceconstrained}. Software--hardware benchmarks in adjacent document tasks show that local versus cloud execution changes latency, cost, and autonomy~\autocite{sarmanho2026ocr}. Yet curriculum-aligned generation by small open-weight models on constrained hardware has received comparatively less empirical attention.
+
+Open-weight models in the 0.1--3 billion parameter range now run under modest memory budgets~\autocite{minaee2024llms,monteiro2025smalldevice}. A classroom assessment platform can, in principle, embed such a model so that the teacher drafts questions and keys offline, without per-request cloud inference fees. In this benchmark, model weights were downloaded in advance and all prompts and outputs remained on the local machine~\autocite{portela2024gdpr}. That is the requirement of the target platform: a learning analytics system for mathematics in grades 1--9 (BNCC-aligned) with generation, administration, scoring, and skill-level diagnosis, including modes designed to work without internet. Related teacher-centered systems treat review as part of the design, not as an optional extra~\autocite{guerino2025mathaide,rosa2026automated}.
+
+Usable generation in that setting is an operational claim, not a single lucky sample. This study therefore uses a reproducibility-first protocol: 16 open-weight models, two sampling profiles, ten fixed seeds, and end-to-end metrics on one laptop, complemented by an independent expert evaluation of generated exams under both cloud and on-device regimes.
+
+The contributions of this study are threefold:
+\begin{itemize}
+  \item a \textbf{reproducibility-oriented protocol} for on-device, CPU-only item generation (fixed seeds, frozen sampling except temperature, four load scenarios);
+  \item \textbf{empirical rates} of usable outputs, JSON compliance, answer correctness, throughput, time-to-first-token, and peak RAM across the catalog;
+  \item \textbf{implications for learning analytics} in connectivity-constrained settings: local generation is operationally feasible, with mandatory human verification of the marked key, a requirement confirmed by independent expert evaluation under both regimes.
+\end{itemize}
+Following prior LAK and AIED practice~\autocite{rodrigues2025llms,rosa2026automated}, we ask:
+\begin{enumerate}
+  \item \textbf{RQ1.} What proportion of structured mathematics items generated by small on-device LLMs is end-to-end \emph{usable} (parseable JSON in the requested quantity, internally consistent key fields, no engine failure) across ten seeds?
+  \item \textbf{RQ2.} How do sampling profiles (balanced vs.\ creative) affect usable rate and operational speed under on-device inference?
+  \item \textbf{RQ3.} How do independent evaluators with computing expertise assess exams generated under cloud and on-device regimes, and to what extent do their judgments align with the operational indicators surfaced by the benchmark?
+\end{enumerate}
+% ----------------------------------------------------------------------------
+% 2. Background and Related Work
+% ----------------------------------------------------------------------------
+\section{Background and Related Work}
+\subsection{LLMs in Educational Assessment}
+A systematic review of NLP for learning analytics documents a rapid shift toward generative models across assessment workflows~\autocite{mello2024wordsofwisdom}. In the Brazilian Portuguese context, GPT-4 and the native-language Sabi\'a~\autocite{pires2023sabia} achieved near-ceiling teacher-assigned scores in answering elementary questions, with distinct error profiles per model~\autocite{rodrigues2025llms}; follow-up studies examined GPT-4's fairness in educational testing~\autocite{rodrigues2025gpt4fair} and compared four cloud LLMs (Gemini, GPT-4o, Claude, Mistral) in scoring elementary essays~\autocite{lobo2025scoring}. Collectively, these studies evaluate \emph{large, predominantly cloud-hosted} models; on-device item generation is underrepresented in this evidence base.
+
+\subsection{Offline and Equity-Oriented AI in Education}
+Offline artificial intelligence has been proposed as a path to a more inclusive field~\autocite{mello2023offline}, operationalized in Brazilian public policy through AIED-unplugged case studies~\autocite{portela2023aied,portela2024unplugged} and disconnected learning analytics~\autocite{freitas2022learning}, with survey evidence supporting lightweight models as a viable offline strategy~\autocite{barros2025resourceconstrained}. Data-driven analyses of school inequity in Brazil~\autocite{portela2024equity} and LLM support for low-resource contexts~\autocite{mello2025equitable} ground the equity argument, and constrained resources are a recognized concern in educational question processing~\autocite{rodrigues2023question}. Our study connects these threads: it treats \emph{on-device inference} as the concrete mechanism through which offline, equity-oriented assessment becomes deployable, with teacher-supervised review as part of the design~\autocite{guerino2025mathaide,rosa2026automated}.
+
+\subsection{Software--Hardware Benchmarks as Evidence}
+Prior benchmarking of open-source versus proprietary tools across local and cloud deployments in a document-processing domain showed that accuracy favors proprietary cloud services while throughput and autonomy favor local open-source alternatives, particularly under unstable connectivity~\autocite{sarmanho2026ocr}. Evidence on local LLM inference with \texttt{llama.cpp} and GGUF on small devices jointly measures computational cost and output quality~\autocite{monteiro2025smalldevice}. That work demonstrates CPU-only feasibility, but without an educational assessment workload. Our benchmark brings these two perspectives together: an educational generation workload, evaluated with the software--hardware rigor that adoption decisions require.
+% ----------------------------------------------------------------------------
+% 3. Method
+% ----------------------------------------------------------------------------
+\section{Method}
+\subsection{Study Context}
+The benchmark evaluates on-device generation of mathematics items for grades 1--9 aligned with skills from the Brazilian National Curriculum Base (BNCC), for a learning analytics assessment platform that must run without cloud services. The task is fixed: given a BNCC skill, its thematic unit, a prerequisite list, and worked examples, the model must return a JSON object with $N$ five-option multiple-choice items (A--E), a marked key, and a step-by-step solution. The system prompt is identical across models and requires JSON-only output. The models without a system-message channel receive the same text in the user turn, and models with an explicit reasoning mode receive a suffix that disables it, keeping the prompt surface comparable across families. Expert review remains part of the intended generate--review--approve cycle.
+
+\subsection{Hardware, Quantization, and Inference Framework}
+All runs used one machine: a Windows~11 laptop with an Intel Core i5-1235U (10 physical cores, 12 logical threads), approximately 8\,GB of RAM, and \emph{CPU-only} inference (no layers offloaded to a GPU). Every checkpoint was evaluated as 4-bit GGUF \textbf{Q4\_K\_M}, a quantization class that SLM reasoning benchmarks report as largely preserving capability relative to pruning~\autocite{srivastava2025thinkslm}. Inference used \texttt{llama.cpp} through \texttt{llama-cpp-python}, with \texttt{n\_gpu\_layers}${}={}$0, \texttt{n\_ctx}${}={}$2048, and \texttt{n\_threads}${}={}$8, following prior evidence on local offline inference~\autocite{monteiro2025smalldevice}. Weights were downloaded in advance and the benchmark itself ran without network access. Hardware, quantization, and engine were protocol constants. The manipulated factors were the model, the sampling profile, and the random seed.
+
+\subsection{Model Catalog}
+We evaluated 16 open-weight instruction models from six families, with parameter counts from 135 million to 3 billion: Qwen (Qwen1.5-1.8B-Chat; Qwen2.5-0.5B/1.5B/3B-Instruct; Qwen2.5-Math-1.5B-Instruct; Qwen3-0.6B; Qwen3-1.7B)~\autocite{bai2023qwen,qwen2024qwen25,yang2024qwen25math,yang2025qwen3}; Llama (Llama-3.2-1B/3B-Instruct; TinyLlama-1.1B-Chat)~\autocite{grattafiori2024llama3,meta2024llama32,zhang2024tinyllama}; SmolLM (SmolLM2-135M-Instruct; SmolLM2-1.7B-Instruct; SmolLM3-3B)~\autocite{benallal2025smollm2,bakouch2025smollm3}; Gemma-2-2B-it~\autocite{gemmateam2024gemma2}; DeepSeek-R1-Distill-Qwen-1.5B~\autocite{deepseekai2025deepseekr1}; and Phi-2~\autocite{javaheripi2023phi2}. Inclusion used three criteria adapted from SLM benchmarking practice: size, recognized family, and open weights~\autocite{pham2025slmbench}. The project cap is below 5 billion parameters, inside the operational SLM range used in that literature. Every reported cell uses all ten protocol seeds; the platform-oriented adaptation of the selected base model is evaluated separately after the catalog comparison.
+
+\subsection{Sampling Profiles and Protocol}
+Each model was run under two sampling profiles. The \emph{balanced} profile uses temperature 0.7; the \emph{creative} profile uses temperature 1.3. Those two values sit in the range where temperature effects on small models (1B--4B) are known to be task-dependent, with structured and instruction-following work more fragile than open-ended generation~\autocite{li2025temperature}. All other sampling parameters stay frozen (\texttt{top\_p}${}={}$0.80, \texttt{top\_k}${}={}$20, repetition penalty 1.00, \texttt{min\_p}${}={}$0, presence and frequency penalties 0, at most 1024 generated tokens), so temperature is the only manipulated sampling factor.
+
+The replication block is the triple model $\times$ profile $\times$ seed. Ten fixed seeds were used in every completed cell: 42, 7, 13, 21, 33, 55, 89, 123, 256, and 777~\autocite{anonymous2026benchmark}. Each execution loads the model once and then runs four scenarios:
+\begin{itemize}
+  \item \textbf{A, cold start:} one question; load cost and time-to-first-token are recorded (180\,s timeout).
+  \item \textbf{B, main load:} ten rounds of three questions each, with skills drawn from the execution seed (120\,s per round). This three-question load is the reference workload of the protocol.
+  \item \textbf{C, format pressure:} five questions in one response, with up to three attempts until valid JSON (120\,s per attempt).
+  \item \textbf{D, no examples:} two skills presented without examples and without prerequisites, one question each (120\,s).
+\end{itemize}
+
+\subsection{Metrics}
+Table~\ref{tab:main} reports Scenario~B, the protocol's reference workload. Each complete cell contains ten seeds and ten three-item rounds per seed, for 100 pooled rounds. \textbf{Usable rate} is the share of rounds whose output is valid JSON in the requested quantity, passes a \emph{structural} key check (the marked letter exists among A--E, the five option texts are distinct and non-empty, and the solution field is non-empty), and has no engine failure. \textbf{JSON rate} isolates format compliance. \textbf{Answer correctness} is a separate deterministic, post-hoc audit applied to every item in valid three-item JSON outputs; its denominator varies with JSON success (from 6 to 219 evaluated items across the reported cells). The rule checks whether the marked alternative solves the generated stem, the answer-correctness criterion used when judging generated math multiple-choice keys~\autocite{lee2024hedge}; it is not exact match against a curated gold set~\autocite{anonymous2026benchmark}. The grader ships with the accompanying repository.\footnote{\texttt{benchmark\_slms.evaluation.answer\_correctness}; CLI \texttt{regradar-gabarito}.} Operational cost is the median tokens per second, the median and 95th percentile of time-to-first-token, and peak RAM over the same rounds. Descriptive Wilson 95\% confidence intervals~\autocite{brown2001interval} are computed over pooled rounds for usable and JSON rates and over evaluated items for answer correctness. Seed remains the replication block; profile comparisons are reported descriptively. Peak RAM follows prior software--hardware comparisons~\autocite{sarmanho2026ocr}; memory exhaustion, if it occurs, is recorded inside that RAM cell rather than as a separate column.
+
+\subsection{Independent Expert Evaluation Protocol}
+To complement the operational metrics, six independent evaluators with computing backgrounds assessed complete AI-generated exams for BNCC skills under both regimes, a state-of-the-art cloud LLM (GPT) and the on-device configurations benchmarked above, through a structured questionnaire covering four dimensions: answer-key correctness (with request for documented examples), distractor plausibility, statement adequacy on a 1--5 scale, and deployment decision (apply without changes / with small corrections / only after substantial revision / discard). Evaluators were external to the development team, which reduces self-assessment bias; their technical background means the defects they report cannot be attributed to unfamiliarity with AI systems.
+% ----------------------------------------------------------------------------
+% 4. Results
+% ----------------------------------------------------------------------------
+\section{Results}
+Table~\ref{tab:main} reports one row per model $\times$ inference profile for the 14 cells with the highest usable rates (10 seeds and 100 Scenario~B rounds per cell). The remaining eight cells ranged from 2.0\% (DeepSeek-R1-1.5B, balanced) to 39.0\% (SmolLM2-1.7B, creative) usable, with answer correctness between 0.0\% and 14.8\%; full rows are available in the accompanying repository. Five checkpoints produced no valid JSON in either profile (Qwen1.5-1.8B, Qwen2.5-Math-1.5B, SmolLM2-135M, TinyLlama-1.1B, and Phi-2) and are summarized in \S4.1.
+
+\begin{table}[ht]
+\centering
+\caption{On-device Scenario~B results, top 14 cells by usable rate. Usable and JSON rates use 100 rounds per cell. Answer correctness uses all items from valid three-item JSON outputs. Proportions are Wilson 95\% CIs. TTFT is in seconds and peak RAM in GB.}
+\label{tab:main}
+\small
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{llccccccc}
+\toprule
+\textbf{Model} & \textbf{Profile} & \textbf{Usable \%} & \textbf{JSON \%} &
+\textbf{Answer correctness \%} & \textbf{TPS} & \textbf{TTFT} & \textbf{p95} & \textbf{RAM} \\
+\midrule
+Qwen2.5-1.5B & creative & 70.0\% [60.4--78.1] & 72.0\% [62.5--79.9] & 15.3\% [11.1--20.7] & 13.7 & 2.34 & 3.70 & 1.72\,GB \\
+Qwen3-1.7B & balanced & 70.0\% [60.4--78.1] & 73.0\% [63.6--80.7] & 36.5\% [30.4--43.1] & 12.6 & 2.48 & 3.63 & 2.04\,GB \\
+Qwen3-1.7B & creative & 69.0\% [59.4--77.2] & 73.0\% [63.6--80.7] & 31.5\% [25.7--37.9] & 12.6 & 2.47 & 3.67 & 2.04\,GB \\
+Gemma-2-2B & balanced & 66.0\% [56.3--74.5] & 68.0\% [58.3--76.3] & 3.4\% [1.7--6.9] & 8.6 & 3.29 & 4.77 & 2.87\,GB \\
+SmolLM3-3B & balanced & 64.0\% [54.2--72.7] & 64.0\% [54.2--72.7] & 19.8\% [14.8--26.0] & 7.7 & 4.61 & 6.81 & 3.16\,GB \\
+Qwen2.5-3B & creative & 61.0\% [51.2--70.0] & 63.0\% [53.2--71.8] & 11.1\% [7.4--16.4] & 7.1 & 4.93 & 8.89 & 2.37\,GB \\
+Qwen2.5-1.5B & balanced & 59.0\% [49.2--68.1] & 60.0\% [50.2--69.1] & 13.3\% [9.1--19.1] & 14.6 & 2.19 & 3.28 & 1.73\,GB \\
+Qwen2.5-3B & balanced & 59.0\% [49.2--68.1] & 59.0\% [49.2--68.1] & 13.6\% [9.3--19.4] & 7.2 & 5.03 & 7.74 & 2.76\,GB \\
+SmolLM2-1.7B & balanced & 59.0\% [49.2--68.1] & 64.0\% [54.2--72.7] & 10.9\% [7.3--16.1] & 10.9 & 4.09 & 6.02 & 2.20\,GB \\
+Qwen3-0.6B & balanced & 58.0\% [48.2--67.2] & 61.0\% [51.2--70.0] & 10.4\% [6.7--15.6] & 25.5 & 1.05 & 1.55 & 0.94\,GB \\
+Gemma-2-2B & creative & 54.0\% [44.3--63.4] & 55.0\% [45.2--64.4] & 6.1\% [3.3--10.8] & 8.2 & 3.52 & 5.45 & 2.61\,GB \\
+SmolLM3-3B & creative & 50.0\% [40.4--59.6] & 51.0\% [41.3--60.6] & 15.0\% [10.2--21.5] & 7.7 & 4.63 & 6.98 & 3.20\,GB \\
+Qwen3-0.6B & creative & 48.0\% [38.5--57.7] & 65.0\% [55.3--73.6] & 16.9\% [12.3--22.8] & 25.2 & 1.04 & 1.66 & 0.94\,GB \\
+Llama-3.2-3B & balanced & 45.0\% [35.6--54.8] & 56.0\% [46.2--65.3] & 13.7\% [9.3--19.7] & 6.3 & 5.16 & 7.86 & 2.47\,GB \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{RQ1: Usable-Item Rates}
+Usable rates spanned 0.0\% to 70.0\%. Two cells share the highest observed usable rate of 70.0\% [60.4--78.1]: Qwen2.5-1.5B (creative) and Qwen3-1.7B (balanced). Answer correctness differentiates their output profiles: 15.3\% [11.1--20.7] versus 36.5\% [30.4--43.1]. Gemma-2-2B (balanced) reached 66.0\% usable and 3.4\% answer correctness. Five checkpoints, Qwen1.5-1.8B, Qwen2.5-Math-1.5B, SmolLM2-135M, TinyLlama-1.1B, and Phi-2, produced no valid JSON in either profile. No cell recorded an out-of-memory failure. Peak RAM ranged from 0.24\,GB (SmolLM2-135M, balanced) to 3.20\,GB (SmolLM3-3B, creative).
+
+\subsection{RQ2: Sampling Profiles and Operational Cost}
+The observed usable rate was higher under the balanced profile for Gemma-2-2B (66.0\% vs.\ 54.0\%), SmolLM3-3B (64.0\% vs.\ 50.0\%), SmolLM2-1.7B (59.0\% vs.\ 39.0\%), and Llama-3.2-3B (45.0\% vs.\ 24.0\%). Qwen2.5-1.5B showed the reverse descriptive pattern (creative 70.0\% vs.\ balanced 59.0\%). For Qwen3-1.7B the profiles were close on usable rate (70.0\% vs.\ 69.0\%) and both kept answer correctness above 30\%. Among cells with non-zero usable rate, the highest median throughput was Qwen2.5-0.5B (balanced, 29.4 tokens/s) and the lowest median TTFT was Qwen3-0.6B (1.04--1.05\,s). TTFT p95 remained below 10\,s in every cell except Phi-2 (12.07--13.51\,s), which also recorded frequent timeouts.
+
+\subsection{RQ3: Independent Expert Evaluation of Generated Exams}
+The expert evaluation establishes the qualitative counterpart of the benchmark's central distinction: \emph{usable (structural) does not imply ready-to-apply (human judgment)}. No evaluator (0/6) deemed a generated exam ready for application without changes; four (4/6) would apply it \emph{with small corrections} and two (2/6) only after substantial revision. This consensus emerged from evaluators technically equipped to test the pipeline themselves, so the reported defects are not artifacts of unfamiliarity with AI systems.
+
+Answer-key errors were the dominant defect: five of six evaluators reported items whose marked key was wrong, four with documented examples. One evaluator described an item generated by the \emph{cloud} model (skill EF06MA01) whose key pointed to alternative E (86{.}246) although the correct difference (73{.}953) appeared in no alternative; another reported an area-computation item in which the generated solution omitted the division by two in the triangle area formula (72 instead of 84); a third recalled a percentage-discount item whose key was off by two orders of magnitude. That key errors surfaced under \emph{both} regimes, and were caught by technically proficient reviewers, indicates they are not an artifact of small on-device models but a property of LLM-based generation itself, consistent with the deterministic audit of Table~\ref{tab:main} (best cell: 36.5\%) and with documented fairness pitfalls in LLM-based scoring~\autocite{rodrigues2025gpt4fair}.
+
+All three of its items passed every automated structural check, placing them within the usable band of Table~\ref{tab:main}, yet exhibit teacher-relevant defects: (1) distractors derived from arithmetic manipulation of the statement (e.g., $30 \times 30$) rather than plausible student errors, forcing the key onto ``None of the above'' although the correct value is R\$~21; (2) a marked key of 1.5 for a ratio that rounds to 1.43, an answer-key error invisible to structural validation; and (3) a numerically correct item (240/6~$=$~40) written entirely in capital letters with redundant phrasing.
+
+Distractor judgments split evenly: three evaluators judged that few alternatives represent errors students would actually make, while three judged most of them plausible, consistent with the statement-derived distractors of the illustrative exam. Statement adequacy averaged 2.83 on a 1--5 scale, with complaints centering on clarity rather than content. Taken together, these findings triangulate with the benchmark: structural soundness captures format, not correctness; the deterministic audit captures correctness, not pedagogical adequacy; and expert review remains the decisive quality gate in the generate--review--approve cycle.
+% ----------------------------------------------------------------------------
+% 5. Discussion
+% ----------------------------------------------------------------------------
+\section{Discussion}
+\subsection{Implications for Learning Analytics}
+On-device generation is operationally feasible on the evaluated laptop and supports a supervised deployment model. Peak RAM stayed between 0.24\,GB and 3.20\,GB, no cell failed by memory exhaustion, and p95 time-to-first-token stayed below 10\,s except for Phi-2. These figures address the connectivity and cost conditions that motivate offline AI in education~\autocite{mello2023offline,portela2023aied,portela2024unplugged,portela2024gdpr}: benchmark prompts and outputs remained local, and inference incurred no per-request cloud fee. The highest observed usable rate is 70.0\%, and the highest answer-correctness rate is 36.5\%. Together, these results define the deployment boundary: the system can generate locally, while human verification remains a necessary step before publication.
+
+Relative to prior evidence, Brazilian assessment studies evaluate large cloud models on answering and scoring~\autocite{rodrigues2025llms,lobo2025scoring}, whereas this benchmark establishes the operating profile of small open-weight models on the local generation workload; relative to resource-constrained question processing~\autocite{rodrigues2023question} and local \texttt{llama.cpp} inference~\autocite{monteiro2025smalldevice}, the evaluated 8\,GB CPU-only configuration loaded every checkpoint in the 0.6B--3B range. The operational question therefore moves from model loading to the quality and cost of human review.
+
+\subsection{Supervised Workflows as the Production Design}
+Gemma-2-2B (balanced) reached 66.0\% usable and 3.4\% answer correctness, whereas Qwen3-1.7B (balanced) reached the shared 70.0\% usable ceiling with 36.5\% answer correctness. Format success and key correctness therefore capture different properties. The productive design is a human-in-the-loop cycle: the model proposes, and a reviewer accepts, edits, or rejects~\autocite{guerino2025mathaide,rosa2026automated}. The expert evaluation strengthens this argument empirically: no generated exam was deemed ready for unsupervised application, even by reviewers technically equipped to operate the pipeline, and answer-key errors appeared in both the cloud and the on-device regime. Supervision therefore cannot be framed as compensation for small models; it is a structural requirement of LLM-based item generation, consistent with the hybrid-architecture logic of concentrating human attention on flagged cases~\autocite{sarmanho2026ocr}. Sampling profile is also model-dependent: the balanced profile had higher observed usable rates for Gemma, SmolLM, and Llama-3.2-3B, whereas Qwen2.5-1.5B showed the reverse pattern. Profile choice therefore belongs inside the review workflow.
+
+\subsection{Adaptation of the selected catalog leader}
+Qwen3-1.7B was the catalog model with the highest answer correctness (36.5\%, balanced) at the shared 70.0\% usable ceiling. It was adapted to the platform's JSON item contract through QLoRA supervised fine-tuning~\autocite{dettmers2023qlora} on 963 examples (719 reviewed real items and 244 programmatically generated arithmetic examples; rank 16, alpha 32, effective batch 16, learning rate $2\times10^{-4}$, up to three epochs with early stopping), exported as GGUF Q4\_K\_M. Under the same benchmark protocol and hardware, the adaptation reached 56.0\% [46.2--65.3] usable and 35.4\% [29.0--42.5] answer correctness in the balanced profile, and 60.0\% [50.2--69.1] and 23.1\% [17.7--29.5] in the creative profile, a downstream fit to the platform workflow while retaining the base catalog comparison in Table~\ref{tab:main}.
+% ----------------------------------------------------------------------------
+% 6. Limitations and Future Work
+% ----------------------------------------------------------------------------
+\section{Limitations and Future Work}
+The evidence reported here is defined by a controlled on-device protocol: ten fixed seeds and 100 main-load rounds per cell, one Windows laptop (Intel Core i5-1235U, about 8\,GB RAM, CPU-only), and a generation workload. Answer correctness adds a deterministic content audit of the marked option against its stem. The design intentionally isolates on-device behavior rather than comparing the same prompt with cloud models such as GPT-4o or Gemini~\autocite{lobo2025scoring}; scoring, skill diagnosis, additional device classes, and cloud comparison provide direct extensions of this baseline. The expert evaluation has its own boundary: the six evaluators have computing backgrounds rather than mathematics-teaching experience, so their judgments are well-grounded on technical correctness but carry limited authority on pedagogical dimensions such as grade-level language and BNCC alignment. The evaluation was also self-reported rather than a controlled blind protocol, and inter-rater reliability analysis and a larger, blinded, teacher-based sample are planned.
+
+A further boundary concerns the prompt. Because the catalog comparison had to be fair, every model received the same benchmark prompt, including the adapted Qwen3-1.7B. Consequently, the results reported for the adaptation of the selected catalog leader (\S5.2) describe that model outside the input format it was actually fine-tuned on, so Table~\ref{tab:main} and the adaptation figures should not be read as an upper bound on what the deployed checkpoint can do.
+
+A preliminary, out-of-protocol run gives an early indication of the gap. In the platform's own pipeline, the same Q4\_K\_M file receives the structured training prompt, which specifies grade, BNCC skill, difficulty, and number of items, decoding is constrained by a JSON grammar, and a generate--check--regenerate loop recomputes the key whenever the stem can be verified arithmetically. This configuration is separate from the benchmark protocol and was checked on two small internal sets rather than the ten-seed design used in Table~\ref{tab:main}, so the two are not directly comparable. On a frozen validation set of 30 items, generation produced structurally valid JSON for all 30 cases, and among the items whose answer could be checked arithmetically, all recomputed answers matched the marked key. On a held-out set of 30 grades 1--4 items, structural validity also reached 30 of 30, against 23 of 30 for a control model trained without the latest data batch (paired McNemar, $p = 0.016$). However, this comparison concerns JSON/structural validity, not answer correctness, because only 7 of the 30 frozen-set items were arithmetically checkable, mostly because algebra and geometry items fall outside the current regex-based checker. Read together with caution, these preliminary numbers are consistent with the possibility that the shared benchmark prompt understates the deployed model, and they motivate running the adapted model through the full ten-seed protocol with its structured prompt, extending the automatic checker (e.g., with a symbolic solver such as SymPy) to cover algebra and geometry items, and reporting answer correctness, not just structural validity, under both prompts.
+
+The next stage moves the adapted Qwen3-1.7B into the generate--review--approve cycle of the target classroom platform~\autocite{guerino2025mathaide,rosa2026automated}: a classroom deployment will log how many drafts are approved, edited, or discarded and how long review takes, while pedagogical validation by in-service mathematics teachers, the platform's end users, whose judgment the present expert evaluation deliberately does not substitute, will extend RQ3 from expert-confirmed technical readiness to instructional quality.
+% Acknowledgments and Funding: omitted in the review copy (JLA / LAK27 double-blind).
+% Restore both after acceptance.
+\section*{Declaration of Conflicting Interest}
+\addcontentsline{toc}{section}{Declaration of Conflicting Interest}
+The author(s) declared no potential conflicts of interest with respect to the research, authorship, and/or publication of this article.
+%----------------------------------------------------------------------------------------
+\phantomsection
+\printbibliography
+%----------------------------------------------------------------------------------------
+\end{document}
