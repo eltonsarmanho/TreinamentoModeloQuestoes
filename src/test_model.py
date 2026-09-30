@@ -127,7 +127,14 @@ def generate(llama_cli, gguf_path, user_prompt, threads, max_new_tokens, seed=No
         cmd += ["-s", str(seed)]
 
     start = time.perf_counter()
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    # errors="replace": o llama-cli ocasionalmente corta um caractere UTF-8
+    # multibyte no limite do buffer de saída (mais provável em lotes longos,
+    # com muitas chamadas independentes). Sem isto, decode() explode com
+    # UnicodeDecodeError e derruba a avaliação inteira depois de já ter
+    # gerado várias dezenas de questões. O byte truncado vira "�" só na
+    # resposta daquela chamada; parse_json/check_structure tratam isso como
+    # JSON inválido normalmente, sem mascarar nenhum outro erro.
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300, errors="replace")
     elapsed = time.perf_counter() - start
 
     stdout = result.stdout
