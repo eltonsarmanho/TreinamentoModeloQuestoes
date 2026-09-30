@@ -286,6 +286,13 @@ def _rotulo(lista, id_):
     return id_
 
 
+def rotulo_contexto(contexto_id, taxonomia=None):
+    """Rótulo em português de um id de contexto (função pública para quem
+    monta slot fora deste módulo, ex.: gerar_lote ao trocar o contexto de
+    um slot numa regeneração)."""
+    return _rotulo((taxonomia or {}).get("contextos", CONTEXTOS) if taxonomia else CONTEXTOS, contexto_id)
+
+
 def _contagem_historico(historico, ano, habilidade, taxonomia):
     """historico: lista de classificações (dict com 'subtema'), questões ou textos."""
     sub, ctx = Counter(), Counter()
@@ -592,10 +599,21 @@ def violacoes_diversidade(lote_aceito, candidato, slot, ano, habilidade, quantid
                       "subtema_rotulo": rot.get(c["subtema"], c["subtema"]), "quantidade": ja})
     if dados_ausentes(candidato, slot.get("subtema")):
         v.append({"tipo": "dados_ausentes"})
-    if c["contexto"] != SEM_CONTEXTO and len(lote_aceito) < len(CONTEXTOS) \
+    ctx_pool = [x["id"] for x in (taxonomia or {}).get("contextos", CONTEXTOS)] or [x["id"] for x in CONTEXTOS]
+    if c["contexto"] != SEM_CONTEXTO and len(lote_aceito) < len(ctx_pool) \
             and any(a["contexto"] == c["contexto"] for a in aceitos_cls):
+        usados = {a["contexto"] for a in aceitos_cls} | {c["contexto"]}
+        # Contexto ainda não usado no lote; se o próprio slot planejado já é o
+        # repetido (o modelo seguiu o prompt e AINDA ASSIM colidiu com outro
+        # aceito), a sugestão não pode ser o mesmo — senão a restrição vira
+        # "use X" logo após "Contexto: X" no mesmo prompt, uma instrução
+        # contraditória que o modelo não tem como seguir.
+        livres = [cid for cid in ctx_pool if cid not in usados] or \
+                 [cid for cid in ctx_pool if cid != c["contexto"]]
+        sugerido = livres[0] if livres else c["contexto"]
         v.append({"tipo": "contexto_repetido", "contexto": c["contexto"],
-                  "contexto_rotulo": _rotulo(CONTEXTOS, c["contexto"])})
+                  "contexto_rotulo": _rotulo(CONTEXTOS, c["contexto"]),
+                  "sugerido": sugerido, "sugerido_rotulo": _rotulo(CONTEXTOS, sugerido)})
     return v
 
 
@@ -618,7 +636,7 @@ def montar_restricao(violacoes, habilidade, slot):
                           "'rótulo: valor'.")
         elif v["tipo"] == "contexto_repetido":
             frases.append(f"O contexto '{v['contexto_rotulo']}' já foi usado no lote; "
-                          f"use o contexto: {slot['contexto_rotulo']}.")
+                          f"use o contexto: {v.get('sugerido_rotulo', slot['contexto_rotulo'])}.")
     # dedup preservando ordem (subtema saturado e fora do plano podem repetir a ideia)
     return " ".join(dict.fromkeys(frases))
 

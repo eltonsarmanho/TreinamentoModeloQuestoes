@@ -106,9 +106,10 @@ def gerar_lote_planejado(llama_cli, gguf_path, ano, habilidade, descricao, dific
 
     aceitas, detalhes, violacoes_final = [], [], []
     regen_div = 0
-    for slot in plano:
+    for slot_original in plano:
         t_slot = time.perf_counter()
         melhor, restricao, candidatos = None, None, []
+        slot = slot_original  # pode virar cópia com contexto trocado (ver abaixo)
         for tent in range(max_tentativas_diversidade + 1):
             prompt = montar_prompt(ano, habilidade, descricao, dificuldade, slot, restricao)
             # Seed distinta por (lote, slot, tentativa de diversidade);
@@ -140,6 +141,14 @@ def gerar_lote_planejado(llama_cli, gguf_path, ano, habilidade, descricao, dific
             if tent < max_tentativas_diversidade:
                 regen_div += 1
                 restricao = dv.montar_restricao(viol, habilidade, slot)
+                # Se a violação sugeriu um contexto diferente, o PRÓPRIO slot da
+                # próxima tentativa passa a usar esse contexto — senão
+                # sufixo_prompt continua emitindo "Contexto: X" logo acima da
+                # restrição "use o contexto: Y", uma instrução contraditória.
+                ctx_novo = next((v.get("sugerido") for v in viol if v["tipo"] == "contexto_repetido"), None)
+                if ctx_novo and ctx_novo != slot.get("contexto"):
+                    slot = {**slot, "contexto": ctx_novo,
+                            "contexto_rotulo": dv.rotulo_contexto(ctx_novo, taxonomia)}
                 if verbose:
                     print(f"  [slot {slot['indice']}] regenerando: {restricao}")
 

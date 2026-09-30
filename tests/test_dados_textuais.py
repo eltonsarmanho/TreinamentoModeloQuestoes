@@ -96,3 +96,48 @@ class TestFormatosReais(unittest.TestCase):
     def test_dois_valores_e_insuficiente_para_grafico(self):
         self.assertTrue(dv.dados_ausentes(
             _q("Uma loja vendeu 12 carrinhos e 10 bonecos. Qual gráfico mostra isso?"), "grafico_barras"))
+
+
+class TestContextoSugeridoNaoCircular(unittest.TestCase):
+    """Bug real visto em produção (rodada avaliar_diversidade, P08-5º-H16):
+    a restrição sugeria o MESMO contexto que acabara de ser rejeitado, porque
+    montar_restricao usava slot['contexto_rotulo'] (o contexto planejado, que
+    é justamente o repetido) em vez de um contexto ainda livre no lote."""
+
+    def test_sugestao_difere_do_contexto_repetido(self):
+        tax = dv.carregar_taxonomia()
+        slot = {**dv.planejar_lote("5º", "H16", 1, "Difícil", seed=0, taxonomia=tax)[0],
+                "contexto": "esporte", "contexto_rotulo": "campeonato esportivo"}
+        aceito = _q("Num campeonato esportivo, a quadra tem 8m x 5m. Área?")
+        candidato = _q("No campeonato esportivo, um trapézio tem bases 4 e 6, altura 3. Área?")
+        viol = dv.violacoes_diversidade([aceito], candidato, slot, "5º", "H16", 5, taxonomia=tax)
+        ctx_viol = next(v for v in viol if v["tipo"] == "contexto_repetido")
+        self.assertNotEqual(ctx_viol["sugerido"], ctx_viol["contexto"])
+        restricao = dv.montar_restricao(viol, "H16", slot)
+        self.assertNotIn(f"use o contexto: {ctx_viol['contexto_rotulo']}", restricao)
+
+    def test_gerar_lote_muda_contexto_do_slot_na_regeneracao(self):
+        """O prompt da PRÓXIMA tentativa deve refletir o contexto sugerido
+        (sufixo_prompt), não só a restrição — senão o prompt final contradiz
+        a si mesmo ('Contexto: X. Restrição: ... use o contexto: X.')."""
+        import json
+        tax = dv.carregar_taxonomia()
+        prompts = []
+
+        def gen_fn(llama_cli, gguf_path, prompt, threads, max_new_tokens, seed=None, grammar=None):
+            prompts.append(prompt)
+            q = _q(f"Questão {len(prompts)} no campeonato esportivo sobre trapézio.")
+            return json.dumps({"questoes": [q]}, ensure_ascii=False), 10.0, 10.0, 0.1
+
+        gl.gerar_lote_planejado(None, None, "5º", "H16", "desc", "Difícil", 3,
+                                threads=4, base_seed=1, gen_fn=gen_fn, taxonomia=tax,
+                                max_tentativas_diversidade=2)
+        for p in prompts:
+            trecho = p[p.index("Contexto:"):]
+            ctx_prompt = trecho.split(".")[0].removeprefix("Contexto: ")
+            if "já foi usado no lote" in trecho:
+                # invariante: o contexto que a restrição diz "já usado" nunca
+                # pode ser o mesmo que o prompt está pedindo agora em "Contexto:"
+                ctx_repetido = trecho.split("O contexto '")[1].split("'")[0]
+                self.assertNotEqual(ctx_prompt, ctx_repetido,
+                                   f"prompt contraditório (pede o contexto que diz estar repetido): {trecho}")
