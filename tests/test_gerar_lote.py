@@ -12,6 +12,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
+# test_model.py está neste mesmo diretório (tests/), não em src/ — necessário
+# para os "import test_model" tardios mais abaixo (mocks de gen_fn).
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import diversidade as dv  # noqa: E402
 import gerar_lote as gl  # noqa: E402
@@ -190,6 +193,21 @@ class TestQualidadeAntesDeDiversidade(unittest.TestCase):
         self.assertTrue(r["flags"]["alternativas_distintas"])
         self.assertNotEqual(r["detalhes"][0]["status"], "falha")
         self.assertEqual(r["detalhes"][0]["tentativa_escolhida"], 1)
+
+
+
+class TestTimeoutLlamaCli(unittest.TestCase):
+    """Rodada real exp_E_s0: um llama-cli travado > 300s derrubava a avaliação."""
+
+    def test_timeout_vira_geracao_invalida(self):
+        import subprocess
+        from unittest import mock
+        import test_model as tm
+        exc = subprocess.TimeoutExpired(cmd="llama-cli", timeout=300)
+        with mock.patch.object(tm.subprocess, "run", side_effect=exc):
+            texto, _, _, elapsed = tm.generate("cli", "m.gguf", "Gere 1", 4, 512, seed=1)
+        self.assertEqual(texto, "")
+        self.assertGreaterEqual(elapsed, 0)
 
 if __name__ == "__main__":
     unittest.main()

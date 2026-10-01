@@ -45,6 +45,9 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+# test_model.py mora em tests/ (é a CLI de inferência de produção, não um
+# teste pytest), importada mais abaixo por GeradorReal e main().
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tests"))
 
 import diversidade as dv  # noqa: E402
 from extract_data import USER_TEMPLATE  # noqa: E402
@@ -391,11 +394,16 @@ def main(argv=None):
     ap.add_argument("--modo-atual", choices=MODOS_ATUAL, default="unico",
                     help="unico = 1 chamada com N questões; independente = N chamadas sem plano")
     ap.add_argument("--max-tentativas-diversidade", type=int, default=dv.MAX_TENTATIVAS_DIVERSIDADE)
+    ap.add_argument("--seed-offset", type=int, default=0,
+                    help="réplica: soma 7919*offset às seeds dos prompts")
     ap.add_argument("--dry-run", action="store_true", help="gerador simulado; não chama o modelo")
     ap.add_argument("--out-dir", default=str(OUT_DIR))
     args = ap.parse_args(argv)
 
     prompts = carregar_prompts(args.prompts, args.num_prompts)
+    if args.seed_offset:
+        # réplicas com outras seeds; mesmo offset => mesmas seeds em todos os braços (pareado).
+        prompts = [{**p, "seed": int(p["seed"]) + 7919 * args.seed_offset} for p in prompts]
     modos = tuple(m.strip() for m in args.modos.split(",") if m.strip())
     if not re.fullmatch(r"[\w.\-]+", args.rotulo):
         raise SystemExit("--rotulo deve conter só letras, números, '.', '_' ou '-'")
@@ -418,6 +426,8 @@ def main(argv=None):
     relatorio = {
         "rotulo": args.rotulo, "artefato": artefato, "artefato_sha256": sha,
         "dry_run": args.dry_run, "modo_atual": args.modo_atual,
+        "seed_offset": args.seed_offset,
+        "max_tentativas_diversidade": args.max_tentativas_diversidade,
         "conjunto_prompts": str(args.prompts), "num_prompts": len(prompts),
         "prompt_ids": [p["id"] for p in prompts],
         "pesos_diversidade": dv.PESOS_DIVERSIDADE, "modos": resultado,

@@ -33,8 +33,8 @@ python src/train.py                   # 2. fine-tuning QLoRA na RTX 3060 6GB
 python src/evaluate.py                # 3. métricas de qualidade + tempo de resposta (GPU, dev)
 python src/evaluate.py --baseline     # (opcional) comparação A/B com o modelo base
 python src/export_gguf.py             # 4. GGUF Q4_K_M (~1.1GB) para o app
-python src/test_model.py              # 5. teste real: gera questões com o .gguf via llama.cpp
-python src/test_model.py --batch      # ou valida em lote contra data/val.jsonl
+python tests/test_model.py              # 5. teste real: gera questões com o .gguf via llama.cpp
+python tests/test_model.py --batch      # ou valida em lote contra data/val.jsonl
 ```
 
 ### Aumentando o dataset com aritmética sintética (`generate_synthetic.py`)
@@ -121,11 +121,11 @@ de verificação sobre o artefato real (`generate_validated()`):
    descarta a questão (`status="falha"`) se nem isso resolver.
 
 ```bash
-python src/test_model.py --ano "5º" --habilidade H08 --descricao "..." --dificuldade Fácil
-python src/test_model.py --quantidade 5             # pede um lote de 5 questões numa chamada
-python src/test_model.py --batch                    # pipeline completo (grammar + verificação)
-python src/test_model.py --batch --raw              # mede o modelo cru, sem grammar/verificação (comparação)
-python src/test_model.py --no-grammar               # só o verificador, sem a grammar
+python tests/test_model.py --ano "5º" --habilidade H08 --descricao "..." --dificuldade Fácil
+python tests/test_model.py --quantidade 5             # pede um lote de 5 questões numa chamada
+python tests/test_model.py --batch                    # pipeline completo (grammar + verificação)
+python tests/test_model.py --batch --raw              # mede o modelo cru, sem grammar/verificação (comparação)
+python tests/test_model.py --no-grammar               # só o verificador, sem a grammar
 ```
 
 `evaluate.py` mede o modelo em 4-bit via `bitsandbytes`/HF na GPU — um caminho
