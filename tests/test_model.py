@@ -65,6 +65,7 @@ from schema_utils import (
     fix_gabarito,
     parse_json,
 )
+from verificador_geometria import GEO_REJEITA, MODO_GEOMETRIA, MODOS_GEOMETRIA, verificar_geometria
 
 ROOT = Path(__file__).resolve().parent.parent
 DB_PATH = ROOT / "DB" / "questoes.db"
@@ -227,25 +228,81 @@ SCORE_ESTRUTURA_QUEBRADA = 0
 SCORES_APROVADOS = (6, 8)          # estrutura ok + resolvível (retorno antecipado)
 SCORES_COM_VISUAL_AUSENTE = (1, 3, 5, 7)
 
+# VERIFICADOR DE GEOMETRIA (src/verificador_geometria.py) no best-of-N.
+#
+# Caso que motivou (teste real do usuário, 2026-10-01): 20 questões de 9º H17
+# ("classificar triângulos ou quadriláteros"), auditoria humana aprovou só 5 —
+# e o verificador aritmético de schema_utils devolveu "sem_conta" nas 20, ou
+# seja, todas saíram como "nao_verificavel" (score 6) e pararam na 1ª amostra.
+# Classificação não tem conta "a op b = r"; quem enxerga premissa impossível
+# (triângulo com dois ângulos retos), resposta não única por hierarquia
+# (quadrado x retângulo) e gabarito errado (5, 7, 9 -> "acutângulo") é o
+# verificador simbólico de geometria.
+#
+#   "ativo"  um veredito em verificador_geometria.GEO_REJEITA derruba o
+#            candidato para a faixa de "resposta fora das alternativas" (abaixo
+#            de "não verificável") e dispara a re-amostragem; veredito "ok" conta
+#            como consistência VERIFICADA (score 8, status "ok").
+#   "sombra" (padrão) o veredito é calculado e devolvido em r["geometria"], mas NÃO
+#            muda score nem status: o comportamento anterior, para comparações
+#            pareadas contra relatórios antigos (ver o efeito nos gates em
+#            generate_validated).
+#
+# Padrão e opções vêm de verificador_geometria (FONTE ÚNICA; antes havia aqui
+# um MODO_GEOMETRIA="ativo" contraditório com o "sombra" de lá). O padrão é
+# "sombra" desde a revisão adversarial de 2026-10-01: com o modelo atual o
+# ativo custa ~3,3 chamadas por questão de 9º H17 e 17-45% dos slots saem
+# "falha" (ver o comentário em verificador_geometria.MODO_GEOMETRIA). Ligar:
+# modo_geometria="ativo" (CLI: --geometria ativo), depois de medir.
+# (MODO_GEOMETRIA e MODOS_GEOMETRIA são importados no topo do módulo.)
+
+
+def geometria_bloqueia(veredito, consistente=None):
+    """True se o veredito de geometria proíbe entregar o candidato como está
+    E proíbe consertá-lo com fix_gabarito.
+
+    Dois casos:
+      1. veredito em GEO_REJEITA (gabarito_errado, nao_unica,
+         premissa_impossivel, dados_insuficientes);
+      2. CONTRADIÇÃO: a geometria provou que o gabarito é o garantido ("ok"),
+         mas a conta da resolução bate com OUTRA letra (consistente False).
+         fix_gabarito trocaria a letra justamente para uma que a geometria
+         acabou de provar errada. Nas 20 auditadas, nos 198 itens únicos do
+         corpus gerado e em data/*.jsonl isto aconteceu 0 vezes; a regra existe
+         para que, se acontecer, a saída seja regenerar e não "corrigir".
+    """
+    if veredito in GEO_REJEITA:
+        return True
+    return veredito == "ok" and consistente is False
+
 
 def _score_candidato(flags, consistente, texto="", fora_das_alternativas=False,
-                     questao=None):
+                     questao=None, geometria=None):
     """Ordena candidatos do melhor para o pior (maior é melhor).
 
-    ESCALA (revista na Fase 1 — antes ia de 0 a 6):
+    ESCALA (revista na Fase 1 — antes ia de 0 a 6; geometria entrou em
+    2026-10-01 SEM criar faixa nova, só decidindo em qual faixa o candidato cai):
 
     8 = estrutura ok + consistência VERIFICADA + resolvível sem ver nada
+        (consistência aritmética True OU, sem conta, geometria = "ok")
     7 = idem, mas aponta para um visual ausente
     6 = estrutura ok, consistência não verificável, resolvível  (aceitável)
+        (sem conta e geometria "nao_aplicavel" ou não informada)
     5 = idem, mas aponta para um visual ausente
     4 = estrutura ok, gabarito inconsistente mas CORRIGÍVEL por fix_gabarito
         (a conta da resolução bate com OUTRA alternativa: existe letra a sugerir)
     3 = idem, e ainda aponta para um visual ausente
-    2 = estrutura ok, mas a resposta da resolução NÃO ESTÁ EM ALTERNATIVA NENHUMA
-        (schema_utils.MOTIVO_FORA_DAS_ALTERNATIVAS) — questão IRRESPONDÍVEL
+    2 = estrutura ok, mas a questão é IRRESPONDÍVEL ou ERRADA SEM CONSERTO:
+        a resposta da resolução NÃO ESTÁ EM ALTERNATIVA NENHUMA
+        (schema_utils.MOTIVO_FORA_DAS_ALTERNATIVAS), OU o verificador de
+        geometria reprovou (gabarito_errado, nao_unica, premissa_impossivel,
+        dados_insuficientes — ver geometria_bloqueia)
     1 = idem, e ainda aponta para um visual ausente
     0 = estrutura quebrada, incluindo alternativas degeneradas
                                                      (descartar se houver melhor)
+
+    `geometria`: veredito de verificador_geometria.verificar_geometria, ou None
+    (modo "sombra" / não calculado) — com None a escala é exatamente a antiga.
 
     POR QUE 2 FICA ABAIXO DE 6 ("não verificável"). Uma questão cuja resposta
     certa não está entre as alternativas não tem como ser acertada: o aluno
@@ -255,6 +312,20 @@ def _score_candidato(flags, consistente, texto="", fora_das_alternativas=False,
     lugar da não verificável é trocar erro certo por dúvida. Ex. real
     (diversidade_exp_C_s2 / P12-5º-H21-N5 q#4): alternativas 60/100/110/120/130,
     gabarito C=110, resolução "150 - 80 = 70".
+
+    POR QUE A REPROVAÇÃO DE GEOMETRIA CAI NA MESMA FAIXA 2 (e não na 4,
+    "corrigível"). Mesmo quando o veredito é gabarito_errado com UMA única
+    alternativa garantida (detalhe["sugestao"]), trocar a letra não conserta a
+    questão: a resolução continua defendendo a letra errada. Casos reais
+    (9º H17, 2026-10-01): R1-Q3 (lados 5, 7, 9, gabarito "Acutângulo", a
+    resolução afirma que é acutângulo; o certo é C, obtusângulo, porque
+    25 + 49 < 81), R2-Q2 e R2-Q10 (4 ângulos retos, gabarito "Quadrado", a
+    resolução diz "quatro ângulos retos, então é quadrado"; o garantido é
+    "Retângulo"). fix_gabarito troca só `resposta_correta`; entregar "C" com uma
+    resolução que conclui "acutângulo" ensina o erro ao aluno. Reescrever a
+    resolução exigiria gerar texto — isso é papel do modelo, não de uma regra.
+    Por isso: regenerar, nunca corrigir pela geometria (ver também
+    generate_validated, que não chama fix_gabarito nesses candidatos).
 
     POR QUE 4 FICA ACIMA DE 2. Na escala antiga as duas valiam 2, e como a
     comparação em generate_validated é `score > melhor` (estrita), a PRIMEIRA
@@ -281,7 +352,9 @@ def _score_candidato(flags, consistente, texto="", fora_das_alternativas=False,
         return SCORE_ESTRUTURA_QUEBRADA
     if questao is not None and alternativas_degeneradas(questao):
         return SCORE_ESTRUTURA_QUEBRADA
-    if consistente is True:
+    if geometria_bloqueia(geometria, consistente):
+        base = 1  # mesma faixa de "fora das alternativas": só regenerar resolve
+    elif consistente is True or (consistente is None and geometria == "ok"):
         base = 4
     elif consistente is None:
         base = 3
@@ -292,20 +365,38 @@ def _score_candidato(flags, consistente, texto="", fora_das_alternativas=False,
     return base * 2 - (1 if depende_de_visual_ausente(texto) else 0)
 
 
+def _geometria(questao):
+    """(veredito, resumo) do verificador de geometria para o candidato. O resumo
+    é o que vai para o resultado (aditivo, não entra em gate nenhum)."""
+    if questao is None:
+        return "nao_aplicavel", {"veredito": "nao_aplicavel", "motivo": "sem_questao",
+                                 "sugestao": None}
+    veredito, det = verificar_geometria(questao)
+    return veredito, {"veredito": veredito, "motivo": det.get("motivo"),
+                      "sugestao": det.get("sugestao"),
+                      "explicacao": det.get("explicacao")}
+
+
 def generate_validated(llama_cli, gguf_path, user_prompt, threads, max_new_tokens,
-                       grammar=None, retries=1, quantidade=1, base_seed=None, gen_fn=None):
+                       grammar=None, retries=1, quantidade=1, base_seed=None, gen_fn=None,
+                       modo_geometria=None):
     """Pipeline de produção: best-of-N com verificador determinístico.
 
     1. Gera com grammar GBNF (estrutura garantida por construção, se disponível).
-    2. Valida estrutura (check_structure, no wrapper {"questoes": [...]}) e
+    2. Valida estrutura (check_structure, no wrapper {"questoes": [...]}),
        consistência resposta_correta<->resolucao_passo_a_passo da primeira
-       questão (check_consistency).
+       questão (check_consistency) e, para classificação de triângulos/
+       quadriláteros, o verificador de geometria (verificar_geometria).
     3. Amostra até `retries`+1 candidatos, **parando assim que um passa** na
        verificação; entre os que reprovam, guarda o melhor (ver _score_candidato)
        em vez do último — é a diferença entre best-of-N e retry sequencial.
     4. Se nenhum passou, aplica fix_gabarito() sobre a primeira questão do
        melhor candidato: se a conta da resolução bate com outra alternativa,
        corrige a letra deterministicamente em vez de entregar uma questão errada.
+       EXCEÇÃO: se o melhor candidato foi reprovado pela geometria
+       (geometria_bloqueia), fix_gabarito NÃO roda e o status é "falha" — trocar
+       a letra deixaria a resolução defendendo a letra errada (R1-Q3, R2-Q2,
+       R2-Q10; ver _score_candidato).
 
     A seleção por verificador (em vez de voto majoritário simples) é o que a
     literatura reporta como mais eficaz para modelos pequenos — ver
@@ -317,19 +408,52 @@ def generate_validated(llama_cli, gguf_path, user_prompt, threads, max_new_token
     Junto com o orçamento de qualidade de gerar_lote.TENTATIVAS_QUALIDADE, é o
     que faz essas questões serem regeneradas em vez de repassadas ao app.
 
+    GUARDA DE GEOMETRIA (2026-10-01; padrão "sombra" — ver MODO_GEOMETRIA): em
+    modo "ativo", mesma mecânica da guarda 1.1, com o veredito de
+    verificar_geometria. EFEITO NAS MÉTRICAS QUE OS GATES LEEM (test_model.batch
+    -> promover_checkpoint), só no modo ativo:
+      * pos_processamento.ok SOBE e nao_verificavel DESCE: questão de
+        classificação com veredito "ok" passa a ser VERIFICADA (antes era
+        "sem_conta" -> nao_verificavel). Nenhum gate lê esses dois números.
+      * pos_processamento.falha (G2 exige 0) pode SUBIR: candidato reprovado
+        pela geometria em todas as amostras sai "falha", como já saía o de
+        resposta fora das alternativas. Em data/val.jsonl há 1 prompt de 9º
+        H17 (o único em que a geometria se aplica com frequência), então G2 só
+        muda se esse item esgotar as amostras com questão defeituosa.
+      * pos_processamento.regeneracoes_total SOBE. houve_ganho() o lê como
+        critério de ganho; por isso promover_checkpoint o ignora quando os dois
+        relatórios têm modos de geometria diferentes (report["geometria"]["modo"]).
+      * custo: ~3,3 chamadas por questão de 9º H17 com o modelo atual (15/20
+        reprovadas na auditoria de 2026-10-01), teto de retries+1 por chamada.
+      * estrutura.consistencia_resposta_correta_pct (G3) NÃO muda: continua
+        sendo a régua aritmética de check_consistency, para que baseline e
+        candidato antigos continuem comparáveis. O detalhe de geometria vai em
+        report["geometria"], seção nova.
+    Ao comparar contra um baseline medido antes desta guarda, rode os dois
+    braços com o mesmo modo (modo_geometria="sombra" reproduz o antigo).
+
     Retorna dict com: text, obj (a PRIMEIRA questão do wrapper, para exibição/
-    métricas), flags, status, motivo_consistencia, regeneracoes, gen_tps, elapsed.
+    métricas), flags, status, motivo_consistencia, geometria, regeneracoes,
+    reprovacoes_geometria, gen_tps, elapsed.
     status: "ok" | "nao_verificavel" | "corrigido" | "depende_de_visual" | "falha".
     motivo_consistencia (aditivo): o motivo de check_consistency_detalhado do
     candidato escolhido — vale schema_utils.MOTIVO_FORA_DAS_ALTERNATIVAS quando
     a falha foi por resposta fora das alternativas.
+    geometria (aditivo): {"veredito", "motivo", "sugestao", "explicacao", "modo"}
+    do candidato escolhido; reprovacoes_geometria: quantos candidatos AMOSTRADOS
+    nesta chamada a geometria reprovou (custo da guarda, para medição).
 
     gen_fn: substituto opcional de generate() (mesma assinatura). Existe para
     que gerar_lote.py e os testes rodem sem llama-cli; em produção fica None.
+    modo_geometria: "ativo" | "sombra" | None (= MODO_GEOMETRIA).
     """
+    modo_geo = modo_geometria or MODO_GEOMETRIA
+    if modo_geo not in MODOS_GEOMETRIA:
+        raise ValueError(f"modo_geometria inválido: {modo_geo!r} (use {MODOS_GEOMETRIA})")
+    ativo = modo_geo == "ativo"
     gen = gen_fn or generate
-    total_elapsed, regeneracoes = 0.0, 0
-    melhor = None  # (score, text, top_obj, questao, flags, gen_tps, motivo)
+    total_elapsed, regeneracoes, reprov_geo = 0.0, 0, 0
+    melhor = None  # (score, text, top_obj, questao, flags, gen_tps, motivo, consistente, geo)
     for attempt in range(retries + 1):
         # base_seed fixa a amostragem por item: dois modelos diferentes recebem
         # exatamente as mesmas seeds, tornando a comparação PAREADA e
@@ -353,11 +477,16 @@ def generate_validated(llama_cli, gguf_path, user_prompt, threads, max_new_token
         # sugerir, só regenerar resolve). Ver _score_candidato.
         consistente, _sug, motivo = check_consistency_detalhado(questao)
         fora = motivo == MOTIVO_FORA_DAS_ALTERNATIVAS
+        # Geometria SEMPRE calculada (0,06 ms): em "sombra" só é relatada.
+        veredito_geo, geo = _geometria(questao)
+        geo["modo"] = modo_geo
+        reprov_geo += int(veredito_geo in GEO_REJEITA)
         score = _score_candidato(flags, consistente, text,
-                                 fora_das_alternativas=fora, questao=questao)
+                                 fora_das_alternativas=fora, questao=questao,
+                                 geometria=veredito_geo if ativo else None)
 
         if melhor is None or score > melhor[0]:
-            melhor = (score, text, top_obj, questao, flags, gen_tps, motivo)
+            melhor = (score, text, top_obj, questao, flags, gen_tps, motivo, consistente, geo)
 
         # Só os scores PARES estão livres de dependência visual (a penalidade é
         # -1). Aceitar 7 ("consistente, mas mande o aluno olhar uma imagem que
@@ -366,16 +495,25 @@ def generate_validated(llama_cli, gguf_path, user_prompt, threads, max_new_token
         if score in SCORES_APROVADOS:  # aprovado e resolvível: para de gastar tempo
             return {"text": text, "obj": questao, "flags": flags,
                     "status": "ok" if score == 8 else "nao_verificavel",
-                    "motivo_consistencia": motivo,
-                    "regeneracoes": regeneracoes, "gen_tps": gen_tps,
-                    "elapsed": total_elapsed}
+                    "motivo_consistencia": motivo, "geometria": geo,
+                    "regeneracoes": regeneracoes, "reprovacoes_geometria": reprov_geo,
+                    "gen_tps": gen_tps, "elapsed": total_elapsed}
         if attempt < retries:
             regeneracoes += 1
 
-    melhor_score, text, top_obj, questao, flags, gen_tps, motivo = melhor
+    melhor_score, text, top_obj, questao, flags, gen_tps, motivo, consistente, geo = melhor
     if questao is not None and melhor_score == SCORE_ESTRUTURA_QUEBRADA:
         # estrutura quebrada (ex.: alternativas repetidas): trocar a letra do
         # gabarito não conserta — não pode sair rotulada como "corrigido"
+        status = "falha"
+    elif questao is not None and ativo and geometria_bloqueia(geo["veredito"], consistente):
+        # Reprovada pela geometria em TODAS as amostras. NÃO passa por
+        # fix_gabarito: mesmo com uma única alternativa garantida, a resolução
+        # continuaria defendendo a letra errada (R1-Q3, R2-Q2, R2-Q10). E não
+        # vira "depende_de_visual" (rank 1, utilizável em gerar_lote) mesmo
+        # que também aponte para uma figura: a questão está errada de qualquer
+        # jeito. "falha" pelo mesmo motivo do caso fora das alternativas
+        # abaixo: não afrouxar G2.
         status = "falha"
     elif questao is not None:
         questao, fix_status = fix_gabarito(questao)
@@ -397,9 +535,9 @@ def generate_validated(llama_cli, gguf_path, user_prompt, threads, max_new_token
     else:
         status = "falha"
     return {"text": text, "obj": questao, "flags": flags, "status": status,
-            "motivo_consistencia": motivo,
-            "regeneracoes": regeneracoes, "gen_tps": gen_tps,
-            "elapsed": total_elapsed}
+            "motivo_consistencia": motivo, "geometria": geo,
+            "regeneracoes": regeneracoes, "reprovacoes_geometria": reprov_geo,
+            "gen_tps": gen_tps, "elapsed": total_elapsed}
 
 
 def print_question(obj, raw_text):
@@ -424,20 +562,22 @@ STATUS_LABEL = {
     "ok": "[ok] validado: estrutura e consistência aprovadas",
     "nao_verificavel": "[ok] estrutura aprovada (consistência não verificável — sem conta explícita)",
     "corrigido": "[corrigido] resposta_correta trocada deterministicamente para bater com a conta da resolução",
-    "falha": "[FALHA] reprovado mesmo após regenerar — descartar esta questão",
+    "falha": ("[FALHA] reprovado mesmo após regenerar (estrutura, resposta fora das "
+              "alternativas ou geometria) — descartar esta questão"),
 }
 
 
 def run_one(llama_cli, gguf_path, ano, habilidade, descricao, dificuldade, threads, n,
             grammar=None, retries=1, quantidade=1, planejado=True,
-            max_tentativas_diversidade=2):
+            max_tentativas_diversidade=2, modo_geometria=None):
     # quantidade>1: por padrão usa o modo PLANEJADO (gerar_lote.py) — uma
     # questão por chamada, guiada por plano de subtemas, com TODAS as questões
     # validadas. --sem-planejamento volta ao pedido único "Gere N questões".
     if quantidade > 1 and planejado:
         return run_planejado(llama_cli, gguf_path, ano, habilidade, descricao, dificuldade,
                              threads, n, quantidade, grammar=grammar, retries=retries,
-                             max_tentativas_diversidade=max_tentativas_diversidade)
+                             max_tentativas_diversidade=max_tentativas_diversidade,
+                             modo_geometria=modo_geometria)
     user_prompt = USER_TEMPLATE.format(
         quantidade=quantidade, ano=ano, habilidade=habilidade, descricao=descricao,
         dificuldade=dificuldade,
@@ -452,6 +592,7 @@ def run_one(llama_cli, gguf_path, ano, habilidade, descricao, dificuldade, threa
         r = generate_validated(
             llama_cli, gguf_path, user_prompt, threads, MAX_NEW_TOKENS,
             grammar=grammar, retries=retries, quantidade=quantidade,
+            modo_geometria=modo_geometria,
         )
         print_question(r["obj"], r["text"])
         flags = r["flags"]
@@ -467,12 +608,16 @@ def run_one(llama_cli, gguf_path, ano, habilidade, descricao, dificuldade, threa
         )
         print(f"  {STATUS_LABEL[r['status']]}"
               + (f" | {r['regeneracoes']} regeneração(ões)" if r["regeneracoes"] else ""))
+        geo = r.get("geometria") or {}
+        if geo.get("veredito") not in (None, "nao_aplicavel"):
+            print(f"  [geometria/{geo.get('modo')}] {geo['veredito']}: {geo.get('explicacao')}")
         gen_str = f"{r['gen_tps']:.1f} tok/s" if r["gen_tps"] else "n/d"
         print(f"  Tempo total: {r['elapsed']:.1f}s (inclui carregar o modelo) | Geração: {gen_str}\n")
 
 
 def run_planejado(llama_cli, gguf_path, ano, habilidade, descricao, dificuldade, threads,
-                  n, quantidade, grammar=None, retries=1, max_tentativas_diversidade=2):
+                  n, quantidade, grammar=None, retries=1, max_tentativas_diversidade=2,
+                  modo_geometria=None):
     """Imprime lote(s) gerados por gerar_lote.gerar_lote_planejado."""
     from gerar_lote import gerar_lote_planejado  # import tardio: gerar_lote importa este módulo
     for i in range(n):
@@ -482,12 +627,14 @@ def run_planejado(llama_cli, gguf_path, ano, habilidade, descricao, dificuldade,
             llama_cli, gguf_path, ano, habilidade, descricao, dificuldade, quantidade,
             threads, grammar=grammar, retries=retries,
             max_tentativas_diversidade=max_tentativas_diversidade, verbose=True,
+            modo_geometria=modo_geometria,
         )
         for q, d in zip(r["questoes"], r["detalhes"]):
             cls = d["classificacao"] or {}
             print(f"[{d['indice'] + 1}] planejado={d['subtema_planejado']} "
                   f"obtido={cls.get('subtema', '?')} status={d['status']} "
-                  f"tentativas={d['tentativas_diversidade']} tempo={d['tempo_s']}s")
+                  f"tentativas={d['tentativas_diversidade']} tempo={d['tempo_s']}s"
+                  f" geometria={d.get('geometria', '?')}")
             print_question(q, "")
             print()
         restantes = [v for v in r["violacoes"] if v["violacoes"]]
@@ -517,7 +664,7 @@ def load_habilidades():
     return [r for r in rows if r[0] and r[0].lower() != "nan"]
 
 
-def interactive(llama_cli, gguf_path, threads, grammar=None, retries=1):
+def interactive(llama_cli, gguf_path, threads, grammar=None, retries=1, modo_geometria=None):
     opcoes = load_habilidades()
     print(f"llama-cli: {llama_cli}")
     print(f"modelo:    {gguf_path}\n")
@@ -532,7 +679,8 @@ def interactive(llama_cli, gguf_path, threads, grammar=None, retries=1):
             descricao = input("Descrição da habilidade: ").strip()
             dificuldade = input("Dificuldade (Fácil/Moderado/Difícil): ").strip()
             run_one(llama_cli, gguf_path, ano, habilidade, descricao, dificuldade,
-                    threads, 1, grammar=grammar, retries=retries)
+                    threads, 1, grammar=grammar, retries=retries,
+                    modo_geometria=modo_geometria)
         return
 
     anos = sorted({o[0] for o in opcoes})
@@ -560,12 +708,13 @@ def interactive(llama_cli, gguf_path, threads, grammar=None, retries=1):
         n = int(n) if n.isdigit() and int(n) > 0 else 1
 
         run_one(llama_cli, gguf_path, ano, habilidade, descricao, dificuldade,
-                threads, n, grammar=grammar, retries=retries)
+                threads, n, grammar=grammar, retries=retries,
+                modo_geometria=modo_geometria)
         print()
 
 
 def batch(llama_cli, gguf_path, threads, num_samples, grammar=None, retries=1, raw=False,
-          val_path=None, report_path=None):
+          val_path=None, report_path=None, modo_geometria=None):
     examples = [json.loads(line) for line in open(val_path or VAL_PATH, encoding="utf-8")]
     if num_samples:
         examples = examples[:num_samples]
@@ -580,6 +729,10 @@ def batch(llama_cli, gguf_path, threads, num_samples, grammar=None, retries=1, r
     image_mentions, visual_ausente = 0, 0
     consistencia_ok, consistencia_verificavel = 0, 0
     status_counter, regeneracoes_total = Counter(), 0
+    # Vereditos de geometria da questão ENTREGUE e reprovações entre todas as
+    # amostras: seção nova do relatório, fora de qualquer gate (ver o docstring
+    # de generate_validated sobre o que muda nas métricas que os gates leem).
+    geo_entregue, geo_reprov_amostras = Counter(), 0
     dif_aderente, dif_avaliavel = 0, 0
     por_ano = defaultdict(lambda: {"n": 0, "estrutura_ok": 0, "consist_ok": 0,
                                    "consist_verif": 0, "dif_ok": 0})
@@ -589,10 +742,14 @@ def batch(llama_cli, gguf_path, threads, num_samples, grammar=None, retries=1, r
         r = generate_validated(
             llama_cli, gguf_path, user_msg, threads, MAX_NEW_TOKENS,
             grammar=grammar, retries=retries, base_seed=i,
+            modo_geometria=modo_geometria,
         )
         obj, flags, text = r["obj"], r["flags"], r["text"]
         status_counter[r["status"]] += 1
         regeneracoes_total += r["regeneracoes"]
+        geo = r.get("geometria") or {}
+        geo_entregue[geo.get("veredito", "nao_aplicavel")] += 1
+        geo_reprov_amostras += r.get("reprovacoes_geometria", 0)
         if obj:
             respostas_corretas.append(str(obj.get("resposta_correta")))
         achado_figura = IMAGE_PATTERN.search(text)
@@ -645,6 +802,8 @@ def batch(llama_cli, gguf_path, threads, num_samples, grammar=None, retries=1, r
             "difficulty_pedida": ex["meta"].get("dificuldade"),
             "difficulty_emitida": obj.get("difficulty") if obj else None,
             "difficulty_aderente": aderente,
+            "geometria": geo.get("veredito"),
+            "geometria_motivo": geo.get("motivo"),
             # Guardar o trecho permite distinguir menção REAL a uma imagem
             # inexistente ("conforme a figura abaixo" — questão quebrada) de
             # falso positivo do IMAGE_PATTERN sobre termo matemático
@@ -719,6 +878,18 @@ def batch(llama_cli, gguf_path, threads, num_samples, grammar=None, retries=1, r
                          "depende_de_visual", "falha")},
             "regeneracoes_total": regeneracoes_total,
         },
+        "geometria": {
+            "modo": modo_geometria or MODO_GEOMETRIA,
+            "ok": geo_entregue.get("ok", 0),
+            "reprovada": {v: geo_entregue.get(v, 0) for v in sorted(GEO_REJEITA)},
+            "nao_aplicavel": geo_entregue.get("nao_aplicavel", 0),
+            "reprovacoes_nas_amostras": geo_reprov_amostras,
+            "nota": (
+                "vereditos de verificador_geometria sobre a questão ENTREGUE; "
+                "reprovacoes_nas_amostras conta todas as amostras do best-of-N. "
+                "Fora de gate: G3 continua lendo a consistência aritmética."
+            ),
+        },
         "velocidade_cpu_real": {
             "tokens_por_segundo_geracao": round(statistics.mean(gen_tps_list), 1) if gen_tps_list else None,
             "latencia_media_total_s": round(statistics.mean(latencies), 2),
@@ -737,7 +908,8 @@ def batch(llama_cli, gguf_path, threads, num_samples, grammar=None, retries=1, r
         json.dump(report, f, ensure_ascii=False, indent=2)
 
     print(f"\n===== Teste real (GGUF via llama.cpp) — {n} amostras =====")
-    for section in ("estrutura", "por_ano", "pos_processamento", "velocidade_cpu_real"):
+    for section in ("estrutura", "por_ano", "pos_processamento", "geometria",
+                    "velocidade_cpu_real"):
         print(f"[{section}]")
         for k, v in report[section].items():
             if k != "nota":
@@ -778,6 +950,10 @@ def main():
                         help="regenerações máximas quando a validação reprova (padrão: 1)")
     parser.add_argument("--raw", action="store_true",
                         help="batch sem grammar nem verificação: mede o modelo cru")
+    parser.add_argument("--geometria", choices=MODOS_GEOMETRIA, default=MODO_GEOMETRIA,
+                        help="verificador de geometria: 'ativo' regenera questões de "
+                             "classificação reprovadas; 'sombra' só relata (comportamento "
+                             "anterior, para comparar com baselines antigos)")
     args = parser.parse_args()
 
     llama_cli = find_llama_cli(args.llama_cli)
@@ -793,7 +969,7 @@ def main():
     if args.batch:
         batch(llama_cli, gguf_path, args.threads, args.num_samples,
               grammar=grammar, retries=args.retries, raw=args.raw,
-              val_path=args.val, report_path=args.report)
+              val_path=args.val, report_path=args.report, modo_geometria=args.geometria)
     elif args.ano and args.habilidade:
         run_one(
             llama_cli, gguf_path, args.ano, args.habilidade,
@@ -801,10 +977,11 @@ def main():
             grammar=grammar, retries=args.retries, quantidade=args.quantidade,
             planejado=not args.sem_planejamento,
             max_tentativas_diversidade=args.max_tentativas_diversidade,
+            modo_geometria=args.geometria,
         )
     else:
         interactive(llama_cli, gguf_path, args.threads, grammar=grammar,
-                    retries=args.retries)
+                    retries=args.retries, modo_geometria=args.geometria)
 
 
 if __name__ == "__main__":

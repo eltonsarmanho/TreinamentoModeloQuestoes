@@ -492,9 +492,21 @@ def avalia(base, cand, base_gpu=None, cand_gpu=None):
     return gates
 
 
+def _modo_geometria(rel):
+    # Relatório anterior à guarda de geometria não tem a seção: equivale a "sombra".
+    return _get(rel or {}, "geometria", "modo") or "sombra"
+
+
 def houve_ganho(base, cand):
-    """Empate técnico em tudo não justifica trocar o modelo em produção."""
+    """Empate técnico em tudo não justifica trocar o modelo em produção.
+
+    "regenerações" só vale entre relatórios com o MESMO modo de geometria: no
+    modo ativo a guarda regenera as questões de 9º H17 reprovadas, então o
+    número mede o pipeline, não o modelo (baseline em ativo x candidato em
+    sombra dava ganho espúrio; o inverso escondia ganho real — revisão
+    adversarial de 2026-10-01)."""
     ganhos = []
+    mesmo_modo = _modo_geometria(base) == _modo_geometria(cand)
     pares = [
         ("consistência", _get(base, "estrutura", "consistencia_resposta_correta_pct"),
          _get(cand, "estrutura", "consistencia_resposta_correta_pct"), 1),
@@ -509,6 +521,8 @@ def houve_ganho(base, cand):
     ]
     for nome, b, c, sentido in pares:
         if b is None or c is None:
+            continue
+        if nome == "regenerações" and not mesmo_modo:
             continue
         if (c - b) * sentido > 0:
             ganhos.append(f"{nome}: {b} -> {c}")
@@ -618,6 +632,20 @@ def gate_diversidade(base_rel, cand_rel, modo_base="ajustado", modo_cand="ajusta
     ib, ic = base_rel.get("prompt_ids"), cand_rel.get("prompt_ids")
     if ib is not None and ic is not None and ib != ic:
         return g.resolve(False, "conjuntos de prompts diferentes — comparação não pareada")
+    # Mesma RÉGUA e mesmo pipeline. Revisão adversarial de 2026-10-01: com a
+    # taxonomia nova, as MESMAS questões gravadas perderam até 0,033 de
+    # diversity_score por lote (agregado -0,0014 a -0,0056, dez vezes o ganho
+    # medido no dry-run); com tolerância zero, um baseline antigo reprovaria o
+    # G11 sem o modelo ter mudado. Relatório sem os campos (anterior a esta
+    # data) só compara com outro também sem eles: a falta de um lado reprova.
+    rb, rc = base_rel.get("regua_sha256"), cand_rel.get("regua_sha256")
+    if (rb or rc) and rb != rc:
+        return g.resolve(False, f"régua de diversidade diferente (baseline {str(rb)[:12]}, "
+                                f"candidato {str(rc)[:12]}): regere o baseline com o pipeline atual")
+    mb, mc = base_rel.get("modo_geometria"), cand_rel.get("modo_geometria")
+    if (mb or mc) and mb != mc:
+        return g.resolve(False, f"modo_geometria diferente (baseline {mb}, candidato {mc}): "
+                                "rode os dois braços com o mesmo --geometria")
     problemas, detalhes = [], []
     for chave, sentido in QUALIDADE_DIVERSIDADE:
         vb, vc = b.get(chave), c.get(chave)

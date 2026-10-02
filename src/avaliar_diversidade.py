@@ -23,7 +23,10 @@ ok/nao_verificavel/inconsistente), difficulty correta, aderência à habilidade
 (classificador léxico: subtema ∈ taxonomia da (ano, habilidade), não "outros"),
 dependência de visual ausente, coverage_score, duplicate_rate,
 semantic_similarity, structural_diversity, context_diversity,
-diversity_score e tempo por questão.
+diversity_score e tempo por questão. Desde 2026-10-01 também a contagem de
+vereditos do verificador de geometria (geometria_ok / geometria_reprovada por
+tipo / geometria_nao_aplicavel) — SÓ MEDIÇÃO: nenhuma métrica existente muda e
+nenhum gate lê esses campos.
 
 Agregação: métricas de qualidade são contadas por QUESTÃO (somando lotes);
 métricas de diversidade são a média por LOTE, só sobre lotes com N>=2 (um lote
@@ -50,6 +53,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tests"))
 
 import diversidade as dv  # noqa: E402
+import verificador_geometria as vg  # noqa: E402
 from extract_data import USER_TEMPLATE  # noqa: E402
 from schema_utils import (  # noqa: E402
     check_consistency, check_structure, depende_de_visual_ausente, extract_questoes, parse_json,
@@ -119,6 +123,7 @@ def metricas_lote(questoes, prompt, json_validos, chamadas, tempo_s, taxonomia=N
         "chamadas": chamadas, "json_validos": json_validos,
         "schema_ok": schema, "alternativas_distintas": alts, "difficulty_correta": dif_ok,
         "consistencia": cons, "aderentes": aderente, "depende_de_visual": visual,
+        "geometria": vereditos_geometria(qs),
         "tempo_s": round(tempo_s, 3),
         "tempo_por_questao_s": round(tempo_s / max(len(qs), 1), 3),
     }
@@ -140,6 +145,45 @@ def _pct(a, b):
 def _media(xs):
     xs = [x for x in xs if x is not None]
     return round(sum(xs) / len(xs), 4) if xs else None
+
+
+def vereditos_geometria(questoes):
+    """{veredito: n} de verificador_geometria sobre as questões entregues.
+
+    Por que medir aqui: no teste real de 2026-10-01 (9º H17, 20 questões, só 5
+    corretas na auditoria humana) a consistência aritmética deste relatório
+    dizia "nao_verificavel" para as 20 — o relatório não tinha como enxergar o
+    problema. Contagem pura, todos os vereditos presentes (zeros inclusive),
+    para que dois relatórios sejam comparáveis campo a campo.
+    """
+    cont = {v: 0 for v in vg.VEREDITOS}
+    for q in questoes:
+        if isinstance(q, dict):
+            cont[vg.verificar_geometria(q)[0]] += 1
+    return cont
+
+
+def _geometria_lote(l):
+    """Contagem do lote; relatórios anteriores a 2026-10-01 não têm o campo,
+    então recalcula a partir das questões gravadas (o verificador é
+    determinístico, então o número é o mesmo que teria sido gravado)."""
+    if isinstance(l.get("geometria"), dict):
+        return l["geometria"]
+    return vereditos_geometria(l.get("questoes") or [])
+
+
+def _agregar_geometria(lotes):
+    tot = {v: 0 for v in vg.VEREDITOS}
+    for l in lotes:
+        for v, n in _geometria_lote(l).items():
+            tot[v] = tot.get(v, 0) + n
+    reprov = {v: tot.get(v, 0) for v in sorted(vg.GEO_REJEITA)}
+    return {
+        "geometria_ok": tot.get("ok", 0),
+        "geometria_reprovada": reprov,
+        "geometria_reprovada_total": sum(reprov.values()),
+        "geometria_nao_aplicavel": tot.get("nao_aplicavel", 0),
+    }
 
 
 def agregar(lotes):
@@ -179,6 +223,8 @@ def agregar(lotes):
         "lotes_diversidade_n": len(multi),
         "tempo_total_s": round(tempo, 2),
         "tempo_por_questao_s": round(tempo / nq, 3) if nq else None,
+        # Só medição (fora dos gates): ver vereditos_geometria.
+        **_agregar_geometria(lotes),
     }
 
 
@@ -195,18 +241,24 @@ def _user_prompt(prompt, quantidade):
 class GeradorReal:
     """Envolve test_model.generate_validated (best-of-N + validações de produção)."""
 
-    def __init__(self, llama_cli, gguf, threads, grammar, retries):
+    def __init__(self, llama_cli, gguf, threads, grammar, retries, modo_geometria=None):
         import test_model  # importação tardia: --dry-run não precisa do llama.cpp
         self.tm = test_model
         self.llama_cli, self.gguf, self.threads = llama_cli, gguf, threads
         self.grammar, self.retries = grammar, retries
+        # O modo da guarda de geometria muda o conjunto ENTREGUE (no ativo as
+        # reprovadas são trocadas por regenerações): exposto e gravado no
+        # relatório para que baseline e candidato do G11 sejam pareáveis
+        # (revisão adversarial de 2026-10-01).
+        self.modo_geometria = modo_geometria or vg.MODO_GEOMETRIA
 
     def chamada(self, prompt, quantidade, base_seed):
         """Retorna (questoes, json_valido, tempo_s)."""
         r = self.tm.generate_validated(
             self.llama_cli, self.gguf, _user_prompt(prompt, quantidade), self.threads,
             MAX_NEW_TOKENS_POR_QUESTAO * quantidade, grammar=self.grammar,
-            retries=self.retries, quantidade=quantidade, base_seed=base_seed)
+            retries=self.retries, quantidade=quantidade, base_seed=base_seed,
+            modo_geometria=self.modo_geometria)
         top = parse_json(r["text"])
         qs = extract_questoes(top)
         # generate_validated já aplicou fix_gabarito na 1ª questão (r["obj"]):
@@ -220,7 +272,8 @@ class GeradorReal:
         r = gerar_lote.gerar_lote_planejado(
             self.llama_cli, self.gguf, prompt["ano"], prompt["habilidade"], prompt["descricao"],
             prompt["dificuldade"], int(prompt["quantidade"]), self.threads, grammar=self.grammar,
-            retries=self.retries, base_seed=base_seed, max_tentativas_diversidade=max_tentativas)
+            retries=self.retries, base_seed=base_seed, max_tentativas_diversidade=max_tentativas,
+            modo_geometria=self.modo_geometria)
         qs = r.get("questoes") or extract_questoes(r.get("obj"))
         extra = {"regeneracoes_diversidade": r.get("regeneracoes_diversidade"),
                  "violacoes_finais": r.get("violacoes"), "plano": r.get("plano")}
@@ -355,6 +408,14 @@ def tabela_markdown(relatorio):
     for nome, chave, suf, sentido in linhas:
         out.append(f"| {nome} | " + " | ".join(_fmt(ag[m].get(chave), suf) for m in modos)
                    + f" | {sentido} |")
+    geo = [m for m in modos if "geometria_ok" in ag[m]]
+    if geo:
+        out += ["", "Verificador de geometria (só medição, fora dos gates): "
+                + "; ".join(f"{m}: ok={ag[m]['geometria_ok']}, reprovadas="
+                            f"{ag[m]['geometria_reprovada_total']} "
+                            + str({k: v for k, v in ag[m]['geometria_reprovada'].items() if v})
+                            + f", nao_aplicavel={ag[m]['geometria_nao_aplicavel']}"
+                            for m in geo)]
     for m, v in relatorio["modos"].items():
         if "erro" in v:
             out.append(f"\n> modo `{m}` indisponível: {v['erro']}")
@@ -396,6 +457,8 @@ def main(argv=None):
     ap.add_argument("--max-tentativas-diversidade", type=int, default=dv.MAX_TENTATIVAS_DIVERSIDADE)
     ap.add_argument("--seed-offset", type=int, default=0,
                     help="réplica: soma 7919*offset às seeds dos prompts")
+    ap.add_argument("--geometria", choices=vg.MODOS_GEOMETRIA, default=vg.MODO_GEOMETRIA,
+                    help="modo da guarda de geometria (baseline e candidato precisam do mesmo)")
     ap.add_argument("--dry-run", action="store_true", help="gerador simulado; não chama o modelo")
     ap.add_argument("--out-dir", default=str(OUT_DIR))
     args = ap.parse_args(argv)
@@ -417,7 +480,8 @@ def main(argv=None):
         gguf = test_model.find_gguf(args.model)
         grammar = None if args.no_grammar else (test_model.GRAMMAR_PATH
                                                 if test_model.GRAMMAR_PATH.exists() else None)
-        gerador = GeradorReal(llama, gguf, args.threads, grammar, args.retries)
+        gerador = GeradorReal(llama, gguf, args.threads, grammar, args.retries,
+                              modo_geometria=args.geometria)
         artefato, sha = str(gguf), _sha256(gguf)
 
     print(f"Avaliando {len(prompts)} prompts, modos={modos}, atual={args.modo_atual}"
@@ -430,7 +494,11 @@ def main(argv=None):
         "max_tentativas_diversidade": args.max_tentativas_diversidade,
         "conjunto_prompts": str(args.prompts), "num_prompts": len(prompts),
         "prompt_ids": [p["id"] for p in prompts],
-        "pesos_diversidade": dv.PESOS_DIVERSIDADE, "modos": resultado,
+        "pesos_diversidade": dv.PESOS_DIVERSIDADE,
+        # Régua e pipeline: o G11 (promover_checkpoint.gate_diversidade) recusa
+        # comparar relatórios com régua ou modo de geometria diferentes.
+        "regua_sha256": dv.versao_regua(), "modo_geometria": args.geometria,
+        "modos": resultado,
     }
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)

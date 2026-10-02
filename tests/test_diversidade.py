@@ -121,9 +121,14 @@ class TestPlanejador(unittest.TestCase):
         c = Counter(s["subtema"] for s in p)
         self.assertEqual(c["triangulo"], 5)
         self.assertEqual(c["quadrilatero"], 5)
-        # raciocínio também alterna (lados/ângulos) dentro de cada subtema
-        for sub in ("triangulo", "quadrilatero"):
-            self.assertEqual(len({s["tipo_raciocinio"] for s in p if s["subtema"] == sub}), 2)
+        # Raciocínio: triângulo alterna lados/ângulos; quadrilátero só tem
+        # 'classificacao_propriedades' desde 2026-10-01 (quadrilátero x
+        # ângulos deu 0/5 corretas na auditoria real e nenhum item do banco
+        # classifica quadrilátero por um eixo só).
+        self.assertEqual({s["tipo_raciocinio"] for s in p if s["subtema"] == "triangulo"},
+                         {"classificacao_lados", "classificacao_angulos"})
+        self.assertEqual({s["tipo_raciocinio"] for s in p if s["subtema"] == "quadrilatero"},
+                         {"classificacao_propriedades"})
 
     def test_determinismo_por_seed(self):
         self.assertEqual(plano("9º", "H16", 10, seed=7), plano("9º", "H16", 10, seed=7))
@@ -138,7 +143,9 @@ class TestPlanejador(unittest.TestCase):
     def test_sufixo_prompt_formato_unico(self):
         s = plano("9º", "H17", 1)[0]
         suf = dv.sufixo_prompt(s)
-        self.assertRegex(suf, r"^ Subtema: [^.]+\. Tipo de raciocínio: [^.]+\. Contexto: [^.]+\.$")
+        # As três frases treinadas continuam idênticas; desde 2026-10-01 tipos
+        # de classificação acrescentam " Eixo: ..." no FIM (como "Dados:").
+        self.assertRegex(suf, r"^ Subtema: [^.]+\. Tipo de raciocínio: [^.]+\. Contexto: [^.]+\.( Eixo: .+)?$")
 
 
 class TestClassificador(unittest.TestCase):

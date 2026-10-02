@@ -21,8 +21,18 @@ ano, então a chave é sempre (ano, habilidade) e a fonte é descricao_item):
   (c) validação contra o banco: conta quantos itens reais caem em cada subtema
       (n_exemplos_db) usando o mesmo classificador de src/diversidade.py.
 
+  (d) compatibilidade subtema x tipo de raciocínio: cada subtema recebe só os
+      tipos cujo `aplica_a` (diversidade.TIPOS_RACIOCINIO) casa o id dele.
+  (e) habilidade CONCEITUAL (classificar/reconhecer/nomear/relacionar figura,
+      sem verbo de cálculo): não recebe estruturas `procedimental` ('cálculo')
+      e, se SEM_CONTEXTO_EM_CONCEITUAIS estiver ligado, ganha SEM_CONTEXTO no
+      pool de contextos.
+
 Override manual opcional: data/taxonomia_overrides.json no formato
-  {"9º|H17": {"remover": ["id"], "adicionar": [{subtema...}], "tipos_raciocinio": [...]}}
+  {"9º|H17": {"remover": ["id"], "adicionar": [{subtema...}], "tipos_raciocinio": [...],
+              "tipos_por_subtema": {"subtema_id": ["tipo", ...]},
+              "contextos": ["sem_contexto", "horta", ...], "conceitual": true}}
+Chaves que começam com "_" (ex.: "_nota") são comentário e ficam de fora.
 
 Todas as regex estão em texto NORMALIZADO (minúsculas, sem acento) — ver
 diversidade.normalizar_texto.
@@ -39,7 +49,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
-from diversidade import normalizar_texto, CONTEXTOS, ESTRUTURAS, TIPOS_RACIOCINIO  # noqa: E402
+from diversidade import (normalizar_texto, CONTEXTOS, ESTRUTURAS, TIPOS_RACIOCINIO,  # noqa: E402
+                         SEM_CONTEXTO, tipo_aplica_a_subtema)
 
 DB_PATH = ROOT / "DB" / "questoes.db"
 OUT_PATH = ROOT / "data" / "taxonomia_subtemas.json"
@@ -53,12 +64,15 @@ LEXICO = [
     # geometria plana
     ("triangulo", "triângulos", r"triangul", r"triangul|isosceles|escaleno|equilater|acutangul|obtusangul"),
     ("quadrilatero", "quadriláteros", r"quadrilater",
-     r"quadrilater|quadrado|(?<!triangulo )retangul|losango|trapezio|paralelogramo"),
+     # "retangul" sem lookbehind: "triângulo retângulo" é mascarado no texto
+     # antes do casamento (diversidade.texto_para_palavras_chave). As
+     # palavras_chave vão para o app (TypeScript) e não podem ter lookbehind.
+     r"quadrilater|quadrado|retangul|losango|trapezio|paralelogramo"),
     ("paralelogramo", "paralelogramos", r"paralelogram", r"paralelogram"),
     ("trapezio", "trapézios", r"trapezi", r"trapezi"),
     ("losango", "losangos", r"losang", r"losang"),
     ("retangulo_quadrado", "retângulos e quadrados", r"(?<!triangulo )retangulo(?!s? ret)|quadrado(?! magico)",
-     r"(?<!triangulo )retangul|quadrado|comprimento e .{0,30}largura"),
+     r"retangul|quadrado|comprimento e .{0,30}largura"),
     ("circulo", "círculo e circunferência", r"circul|circunferen", r"circul|circunferen|\braio\b|diametro"),
     ("poligono", "polígonos", r"poligon", r"poligon|pentagon|hexagon|octogon"),
     # elementos da circunferência
@@ -128,12 +142,27 @@ LEXICO = [
     ("chance_maior_menor", "eventos com maior/menor chance", r"(maior|menor).{0,30}chances", r"mais (chance|provavel)|menos (chance|provavel)|maior chance|menor chance|qual (e )?a chance|chance de"),
     ("chance_igual", "eventos com chances iguais", r"iguais chances", r"mesma chance|iguais chances|igualmente|equiprovav"),
     ("eventos_independentes", "eventos independentes", r"independentes", r"independen|com reposicao|lanca.*e.*lanca"),
-    ("eventos_dependentes", "eventos dependentes", r"(?<!in)dependentes", r"(?<!in)dependen|sem reposicao|retira.*depois"),
+    # palavras_chave sem lookbehind (vão para o app): "\bdependen" não casa
+    # dentro de "independen", que era o papel do antigo "(?<!in)dependen". A
+    # regex da descrição (3º campo) roda só aqui, no build, e fica como está.
+    ("eventos_dependentes", "eventos dependentes", r"(?<!in)dependentes", r"\bdependen|sem reposicao|retira.*depois"),
     # números e operações
     ("adicao", "adição", r"adic", r"adic|som[ae]|\+|mais|total|junt"),
     ("subtracao", "subtração", r"subtra", r"subtra|diferen|\-|menos|rest|sobr"),
-    ("multiplicacao", "multiplicação", r"multiplica", r"multiplic|vezes|produto|\bx\b|×"),
-    ("divisao", "divisão", r"divis(ao|oes)", r"divi|reparti|÷|cada um|igualmente"),
+    # Multiplicação x divisão pela ESTRUTURA do problema, não por uma palavra
+    # solta (P2, 2026-10-01). No piloto 1 da injeção, 4 de 11 candidatas do
+    # 5º H04 pedidas como multiplicação ("248 alunos juntaram 125 latinhas
+    # cada um. Quantas ao todo?") foram rejeitadas como subtema_divergente:
+    # "cada um" e "divi" (de "dividida em 8 grupos") eram palavras-chave de
+    # divisão, e a multiplicação não tinha nenhuma que casasse com o texto.
+    #   multiplicação: "cada" num DADO e o TOTAL na pergunta ("cada ... ao
+    #     todo/no total/total") — o valor por unidade é dado, o total é pedido;
+    #   divisão: "cada" DENTRO da pergunta, sem número até o "?" ("quantas
+    #     balas cada um recebeu?") — o valor por unidade é a incógnita.
+    # Sem lookbehind (as palavras-chave vão para o app, TypeScript/Hermes).
+    ("multiplicacao", "multiplicação", r"multiplica",
+     r"multiplic|vezes|produto|\bx\b|×|\bcada\b[^?]*\b(ao todo|no total|total)\b"),
+    ("divisao", "divisão", r"divis(ao|oes)", r"divi|reparti|÷|igualmente|\bcada\b[^\d.?!]*\?"),
     ("potenciacao", "potenciação", r"potenciacao", r"potencia|\^|ao quadrado|ao cubo|expoente"),
     ("radiciacao", "radiciação", r"radicia", r"raiz|radic|√"),
     ("notacao_cientifica", "notação científica", r"notacao cientifica", r"notacao cientifica|x ?10\^|10 elevado"),
@@ -210,6 +239,56 @@ SUBSUMIDO_POR = {
 # `objetos_portadores` quando há >=2 outros subtemas e vieram do léxico direto
 # (não de enumeração nem de expansão de hiperônimo).
 OBJETOS_PORTADORES = ("triangulo", "quadrilatero", "circulo", "poligono", "perimetro", "area", "volume_medida")
+
+# --------------------------------------------------------------------------
+# Habilidade CONCEITUAL: o descritor pede para classificar/reconhecer/nomear/
+# relacionar uma FIGURA, sem verbo de cálculo. Nelas a "conta" não existe e o
+# contexto narrativo é quase sempre forçado.
+#
+# Caso que motivou (9º H17, teste real de 2026-10-01): 'cálculo' em 26/150
+# slots planejados e 0/600 slots sem contexto, enquanto os 7 itens reais da
+# habilidade no banco são TODOS sem contexto; os contextos sem forma natural
+# (ônibus, bolo/tampa, biscoito, cofrinho, garrafas PET, carrinho) deram 0/6
+# corretas. Critério genérico (nada por código H), e override "conceitual"
+# no data/taxonomia_overrides.json para os casos de fronteira.
+# Hoje casa: 2º H11, 2º H12, 5º H12, 5º H13, 5º H14, 9º H14, 9º H17.
+# --------------------------------------------------------------------------
+VERBO_CONCEITUAL = r"classific|reconhec|nomear|relacionar"
+VERBO_PROCEDIMENTAL = r"calcul|resolver|\bmedir\b|determinar|compar|estim|ordenar|inferir"
+SUBTEMAS_GEOMETRICOS = {
+    "triangulo", "quadrilatero", "paralelogramo", "trapezio", "losango", "retangulo_quadrado",
+    "circulo", "poligono", "prisma", "piramide", "cilindro", "cone", "esfera", "planificacao", "vistas",
+}
+
+# SEM_CONTEXTO como contexto PLANEJADO nas habilidades conceituais.
+# DESLIGADO por padrão — decisão pendente para humano. Medido em 2026-10-01
+# (ver o relato do item 2): no plano, com 17 opções e N<=17, SEM_CONTEXTO
+# só entra como mais uma categoria distinta e o context_diversity planejado não
+# muda; mas o modelo promovido já descarta o contexto pedido em 5/20 slots, e
+# esses saem classificados como SEM_CONTEXTO — colidem com o slot planejado sem
+# contexto e baixam o context_diversity medido do lote. O gate G11 reprova
+# qualquer queda do diversity_score, então ligar isto exige regerar o baseline
+# do G11 com o pipeline novo. Para ligar só numa habilidade, use o override
+# "contextos" (que pode incluir "sem_contexto").
+SEM_CONTEXTO_EM_CONCEITUAIS = False
+
+
+def e_conceitual(descricoes, subtemas):
+    """True se o descritor pede só classificar/reconhecer/nomear/relacionar e
+    todos os subtemas são figuras geométricas."""
+    d = " ".join(normalizar_texto(x) for x in descricoes)
+    if not re.search(VERBO_CONCEITUAL, d) or re.search(VERBO_PROCEDIMENTAL, d):
+        return False
+    ids = [s["id"] for s in subtemas]
+    return bool(ids) and all(i in SUBTEMAS_GEOMETRICOS for i in ids)
+
+
+def tipos_do_subtema(subtema_id, tipos):
+    """Tipos da habilidade compatíveis com o subtema (aplica_a). Se nenhum for
+    compatível, devolve todos: um subtema nunca fica sem tipo."""
+    compat = [t for t in tipos if tipo_aplica_a_subtema(t, subtema_id)]
+    return compat or list(tipos)
+
 
 STOP = set("a o as os de da do das dos e ou em um uma uns umas com sem por para que se no na nos nas "
            "ao aos ate entre outros outras etc suas seus sua seu the".split())
@@ -327,8 +406,18 @@ def carregar_itens(db):
     return [dict(zip(campos + extras, r)) for r in rows]
 
 
-def construir(db=DB_PATH, overrides_path=OVERRIDES_PATH):
+def _validar_contextos(chave, ids):
+    validos = {c["id"] for c in CONTEXTOS} | {SEM_CONTEXTO}
+    ruins = [c for c in ids if c not in validos]
+    if ruins:
+        raise ValueError(f"override {chave}: contextos desconhecidos {ruins}")
+    return list(dict.fromkeys(ids))
+
+
+def construir(db=DB_PATH, overrides_path=OVERRIDES_PATH, sem_contexto_conceitual=None):
     import diversidade
+    if sem_contexto_conceitual is None:
+        sem_contexto_conceitual = SEM_CONTEXTO_EM_CONCEITUAIS
     itens = carregar_itens(db)
     grupos = OrderedDict()
     for it in sorted(itens, key=lambda x: (x["ano"] or "", x["habilidade"] or "")):
@@ -339,6 +428,7 @@ def construir(db=DB_PATH, overrides_path=OVERRIDES_PATH):
     overrides = {}
     if Path(overrides_path).exists():
         overrides = json.loads(Path(overrides_path).read_text(encoding="utf-8") or "{}")
+    overrides = {k: v for k, v in overrides.items() if not k.startswith("_")}
 
     habilidades = OrderedDict()
     for (ano, hab), its in grupos.items():
@@ -357,12 +447,50 @@ def construir(db=DB_PATH, overrides_path=OVERRIDES_PATH):
             # K=1: a habilidade inteira é o subtema (o planejador diversifica os outros eixos)
             subtemas = [OrderedDict(id="geral", rotulo=normalizar_texto(descricoes[0]).rstrip(". "),
                                     palavras_chave=[r"."], origem="descricao")]
+        # Compatibilidade subtema x tipo. Antes CADA subtema recebia a lista
+        # inteira (produto cartesiano) e até os tipos de um subtema vindo de
+        # 'adicionar' eram sobrescritos. Em 9º H17 isso planejava
+        # "quadrilátero x classificação quanto aos ângulos" (36/150 slots), a
+        # célula com 0/5 corretas no teste real de 2026-10-01. Prioridade:
+        # override 'tipos_por_subtema' > tipos do próprio 'adicionar' > aplica_a.
+        # RISCO DE ADERÊNCIA ACEITO (revisão adversarial de 2026-10-01): o
+        # descritor de 9º H17 pede quadriláteros "em relação aos lados ou aos
+        # ângulos internos", e o plano não gera mais quadrilátero x lados nem
+        # quadrilátero x ângulos (0 slots em 9.480 planos). Os ângulos de
+        # quadrilátero entram só como "ângulos retos" no tipo
+        # classificacao_propriedades — que é como os 3 itens reais do banco
+        # (MT9050, MT9082, MT9084) os cobram; "trapézio retângulo" ou "quatro
+        # ângulos obtusos -> não existe" ficam sem slot próprio. E, com N
+        # ímpar maior que K e sem histórico, a vaga extra vai sempre para
+        # triângulo (o subtema com mais tipos). Para reabrir a célula, use o
+        # override 'tipos_por_subtema' (sem mudar código), medindo antes.
+        por_sub = ov.get("tipos_por_subtema", {})
         for s in subtemas:
-            s["tipos_raciocinio"] = list(tipos)
+            if s["id"] in por_sub:
+                s["tipos_raciocinio"] = list(por_sub[s["id"]])
+            elif s.get("origem") == "override" and s.get("tipos_raciocinio"):
+                s["tipos_raciocinio"] = list(s["tipos_raciocinio"])
+            else:
+                s["tipos_raciocinio"] = tipos_do_subtema(s["id"], tipos)
+        # Tipos da habilidade = os que algum subtema de fato usa, na ordem
+        # original. Em habilidade sem `aplica_a` é a mesma lista de antes; em
+        # 9º H17 ganha 'classificacao_propriedades' (quadriláteros).
+        usados = {t for s in subtemas for t in s["tipos_raciocinio"]}
+        tipos = [t for t in tipos if t in usados] + sorted(usados - set(tipos))
         entrada = OrderedDict(ano=ano, habilidade=hab, descricoes=descricoes,
                               objetos_portadores=objetos,
                               graus_resolucao=sorted({i["grau_resolucao"] for i in its if i.get("grau_resolucao")}),
                               tipos_raciocinio=tipos, subtemas=subtemas, n_itens_db=len(its))
+        # (e) habilidade conceitual. As chaves novas só são gravadas quando
+        # valem algo: habilidade sem elas gera exatamente o plano de antes.
+        conceitual = bool(ov["conceitual"]) if "conceitual" in ov else e_conceitual(descricoes, subtemas)
+        if conceitual:
+            entrada["conceitual"] = True
+            entrada["estruturas"] = [e["id"] for e in ESTRUTURAS if not e.get("procedimental")]
+        if ov.get("contextos"):
+            entrada["contextos"] = _validar_contextos(chave, ov["contextos"])
+        elif conceitual and sem_contexto_conceitual:
+            entrada["contextos"] = [SEM_CONTEXTO] + [c["id"] for c in CONTEXTOS]
         # (c) validação contra o banco
         tax_local = {"habilidades": {chave: entrada}}
         cont = Counter()
@@ -380,6 +508,11 @@ def construir(db=DB_PATH, overrides_path=OVERRIDES_PATH):
         fonte="DB/questoes.db (disciplina=Matemática)",
         nota="Regex em texto normalizado (minúsculas, sem acentos). Chave = 'ano|habilidade'.",
         contextos=CONTEXTOS, estruturas=ESTRUTURAS,
+        # exportado para o porte em TypeScript: o app lê o rótulo daqui em vez
+        # de duplicar a frase (ver diversidade.ROTULO_SEM_CONTEXTO)
+        sem_contexto=OrderedDict(id=SEM_CONTEXTO, rotulo=diversidade.ROTULO_SEM_CONTEXTO),
+        # aplica_a, instrucao e exige_dados vão junto: são o que o app precisa
+        # para montar o mesmo sufixo e a mesma checagem de dados insuficientes
         tipos_raciocinio=[{k: v for k, v in t.items() if k != "habilita"} for t in TIPOS_RACIOCINIO],
         habilidades=habilidades,
     )
@@ -390,11 +523,15 @@ def main():
     ap.add_argument("--db", default=str(DB_PATH))
     ap.add_argument("--out", default=str(OUT_PATH))
     ap.add_argument("--overrides", default=str(OVERRIDES_PATH))
+    ap.add_argument("--sem-contexto-conceitual", action="store_true",
+                    help="planeja SEM_CONTEXTO nas habilidades conceituais (padrão: desligado; "
+                         "ver SEM_CONTEXTO_EM_CONCEITUAIS)")
     args = ap.parse_args()
-    tax = construir(args.db, args.overrides)
+    tax = construir(args.db, args.overrides, sem_contexto_conceitual=args.sem_contexto_conceitual or None)
     Path(args.out).write_text(json.dumps(tax, ensure_ascii=False, indent=1), encoding="utf-8")
     for chave, h in tax["habilidades"].items():
         print(f"{chave:14s} K={len(h['subtemas']):2d} sem_subtema={h['n_sem_subtema_db']}/{h['n_itens_db']} "
+              + ("[conceitual] " if h.get("conceitual") else "")
               + ", ".join(f"{s['id']}({s['n_exemplos_db']})" for s in h["subtemas"]))
     print(f"-> {args.out}")
 

@@ -18,7 +18,13 @@ Peças (todas determinísticas):
   - violacoes_diversidade / montar_restricao / gerar_lote_diverso: regeneração
     guiada por restrição textual, com limite de tentativas.
   - sufixo_prompt: formato ÚNICO anexado ao USER_TEMPLATE (treino, destilação e
-    inferência usam o mesmo texto, para não quebrar a paridade).
+    inferência usam o mesmo texto, para não quebrar a paridade); tipos de
+    classificação acrescentam no FIM a instrução do eixo.
+  - compatibilidade subtema x tipo (`aplica_a`), estruturas por habilidade
+    conceitual e pool de contextos por habilidade: tudo vem da taxonomia
+    (dados), nenhuma regra por código H aqui.
+  - dados_insuficientes_classificacao: slot de classificação cujo enunciado
+    não dá medida nem propriedade nenhuma (ônibus/garrafas PET, 2026-10-01).
 
 A chave é sempre (ano, habilidade): o mesmo código H muda de sentido por ano.
 Nada aqui altera o schema {"questoes":[...]} nem substitui as validações de
@@ -75,30 +81,92 @@ CONTEXTOS = [
     {"id": "construcao", "rotulo": "reforma de uma casa", "palavras_chave": r"terreno|constru|\bobra\b|parede|\bpiso\b|calcada|\bmuro\b|reforma|pedreiro"},
 ]
 SEM_CONTEXTO = "sem_contexto"
+# Texto IDÊNTICO ao que o treino já viu ("Contexto: sem contexto narrativo."
+# aparece 299x em data/train_curado.jsonl, gravado por
+# curar_diversidade.slot_de_classificacao). Inventar outra frase aqui seria um
+# rótulo que o modelo nunca viu, justamente no slot que deveria ser o mais fácil.
+ROTULO_SEM_CONTEXTO = "sem contexto narrativo"
 
+# Campos opcionais (todos lidos por build_taxonomia e exportados no JSON, para
+# o porte em TypeScript não precisar duplicar regra):
+#   procedimental=True  -> a estrutura pressupõe conta; habilidades marcadas como
+#                          `conceitual` na taxonomia não a recebem no plano.
+#   requer_contexto=True -> não combina com o contexto planejado SEM_CONTEXTO.
+# Caso que motivou (teste real de 2026-10-01, 9º H17): 26/150 slots planejados
+# de "classificar triângulos ou quadriláteros" saíam com estrutura 'cálculo'.
 ESTRUTURAS = [
     {"id": "verdadeiro_falso_implicito", "rotulo": "julgamento de afirmações",
      "palavras_chave": r"afirma|\bcorreta\b|incorreta|verdadeir|\bfals[ao]\b"},
     {"id": "identificacao_propriedade", "rotulo": "identificação de propriedade",
      "palavras_chave": r"classific|chamad|recebe o nome|propriedade|qual (e|das|dos) .{0,20}(tipo|nome)|pode ser"},
     {"id": "comparacao", "rotulo": "comparação", "palavras_chave": r"\bmaior\b|\bmenor\b|compar|mais .{0,20}do que"},
-    {"id": "problema_contextualizado", "rotulo": "problema contextualizado", "palavras_chave": None},
-    {"id": "calculo", "rotulo": "cálculo", "palavras_chave": r"calcul|resultado|quant[oa]s?\b|valor"},
+    {"id": "problema_contextualizado", "rotulo": "problema contextualizado", "palavras_chave": None,
+     "requer_contexto": True},
+    {"id": "calculo", "rotulo": "cálculo", "palavras_chave": r"calcul|resultado|quant[oa]s?\b|valor",
+     "procedimental": True},
     {"id": "pergunta_direta", "rotulo": "pergunta direta", "palavras_chave": None},
 ]
 
 # `habilita`: regex sobre a DESCRIÇÃO da habilidade (usada por build_taxonomia);
 # `palavras_chave`: regex sobre a QUESTÃO (usada pelo classificador).
+#
+# Campos OPCIONAIS (só os tipos de classificação usam hoje):
+#   aplica_a  -> regex sobre o ID do subtema. build_taxonomia só dá o tipo aos
+#                subtemas que casam: é a compatibilidade subtema x tipo.
+#   instrucao -> texto fixo que sufixo_prompt anexa no FIM do sufixo (mesmo
+#                mecanismo de INSTRUCAO_DADOS_TEXTUAIS).
+#   exige_dados -> o enunciado precisa trazer medida ou propriedade da figura;
+#                ver dados_insuficientes_classificacao.
+#
+# POR QUE (teste real de 2026-10-01, 9º H17, 20 questões, 5 corretas na
+# auditoria humana de outputs/testes_locais/Log.txt): a taxonomia dava a CADA
+# subtema todos os tipos da habilidade (produto cartesiano), e 36/150 slots
+# planejados eram "quadrilátero x classificação quanto aos ângulos" — a célula
+# que deu 0/5 corretas, com premissas impossíveis ("os ângulos do espelho são
+# todos obtusos") e respostas não únicas ("90°, 90°, 90° e 90°" -> "quadrado",
+# com "retângulo" na lista). Os 3 itens reais de quadrilátero do banco (MT9050,
+# MT9082, MT9084) nunca classificam só por ângulos nem só por lados: nomeiam a
+# figura COMBINANDO lados iguais/opostos, lados paralelos e ângulos retos. Daí
+# o tipo próprio `classificacao_propriedades` para quadriláteros, e lados/ângulos
+# restritos a triângulos.
+#
+# Convenção de classes (BNCC EF06MA20, "reconhecer a inclusão e a intersecção
+# de classes"): quadrado ⊂ retângulo ⊂ paralelogramo; quadrado ⊂ losango ⊂
+# paralelogramo; equilátero ⊂ isósceles no sentido inclusivo. É UMA convenção
+# só, a de verificador_geometria (CONVENCAO_GABARITO =
+# "mais_especifico_garantido"): o gabarito é a classe MAIS ESPECÍFICA garantida
+# pelos dados; a superclasse do mesmo eixo pode aparecer como distrator (a
+# auditoria humana aprovou R2-Q5, "Equilátero" com "Isósceles" na lista, e
+# MT9050/MT9081/MT9084 do banco fazem o mesmo); outra classe garantida em
+# OUTRO eixo ou outro ramo invalida a questão (o "90°, 45°, 45° -> retângulo"
+# da R2 tinha "isósceles" na lista). Até a revisão adversarial de 2026-10-01 o
+# plano dizia "nenhuma outra alternativa pode servir, nem superclasse",
+# enquanto o verificador aprovava o distrator superclasse: duas regras
+# incompatíveis para o porte TypeScript. A instrução agora pede só o que as
+# duas pontas exigem.
+#
+# Os rótulos já nomeavam o eixo ("classificação quanto aos lados") e mesmo
+# assim só 4/20 enunciados o nomearam e 8/10 questões de triângulo misturaram
+# alternativas dos dois eixos (R1 Q3: slot de lados que virou "5, 7 e 9 ->
+# acutângulo", conta errada pelo outro eixo). Por isso a instrução repete o
+# eixo como ordem explícita e pede os dados que tornam a resposta única.
 TIPOS_RACIOCINIO = [
     {"id": "identificacao", "rotulo": "identificação/reconhecimento",
      "habilita": r"identificar|reconhecer|nomear|\bler\b|ler/",
      "palavras_chave": r"identifi|reconhec|chamad|qual (figura|objeto|solido)|qual (e|das|dos) .{0,20}(nome|representa)"},
     {"id": "classificacao_lados", "rotulo": "classificação quanto aos lados",
      "habilita": r"classific.{0,60}lados",
-     "palavras_chave": r"quanto aos lados|lados? (iguais|diferentes|congruentes)|isosceles|escaleno|equilater"},
+     "palavras_chave": r"quanto aos lados|lados? (iguais|diferentes|congruentes)|isosceles|escaleno|equilater",
+     "aplica_a": r"triangul",
+     "instrucao": " Eixo: pergunte quanto aos lados e dê a medida dos três lados; a resposta é a classe mais específica.",
+     "exige_dados": True},
     {"id": "classificacao_angulos", "rotulo": "classificação quanto aos ângulos",
      "habilita": r"classific.{0,80}angulos",
-     "palavras_chave": r"quanto aos angulos|angulos? (reto|agudo|obtuso)s?|acutangul|obtusangul|angulos? internos"},
+     "palavras_chave": r"quanto aos angulos|angulos? (reto|agudo|obtuso)s?|acutangul|obtusangul|angulos? internos",
+     "aplica_a": r"triangul",
+     "instrucao": (" Eixo: pergunte quanto aos ângulos e dê a medida dos três ângulos, somando 180°;"
+                   " só uma alternativa pode servir."),
+     "exige_dados": True},
     {"id": "classificacao_atributos", "rotulo": "classificação por atributos",
      "habilita": r"classific.{0,60}atribut",
      "palavras_chave": r"classific|grupo|mesma (cor|forma)|atribut"},
@@ -135,11 +203,22 @@ TIPOS_RACIOCINIO = [
     {"id": "leitura_dados", "rotulo": "leitura e interpretação de dados",
      "habilita": r"dados|tabela|grafico",
      "palavras_chave": r"tabela|grafico|dados|pesquisa"},
+    # NO FIM da lista de propósito: a ordem dos tipos de cada habilidade segue
+    # esta lista, e inserir no meio mudaria o plano de habilidades que não têm
+    # nada a ver com quadriláteros. `habilita` hoje só casa 9º H17.
+    {"id": "classificacao_propriedades",
+     "rotulo": "classificação por lados, paralelismo e ângulos retos",
+     "habilita": r"classific.{0,40}quadrilater",
+     "palavras_chave": r"paralel|lados opostos|angulos? retos|todos os lados|pares? de lados",
+     "aplica_a": r"quadrilater|paralelogram|trapezi|losang|retangulo_quadrado",
+     "instrucao": (" Eixo: informe os lados iguais, os lados paralelos e os ângulos retos; a resposta é"
+                   " o nome mais específico garantido por eles."),
+     "exige_dados": True},
 ]
 
 # Objeto matemático principal (informativo; não guia o planejador).
 OBJETOS = [
-    ("triangulo", r"triangul"), ("quadrilatero", r"quadrilater|quadrado|(?<!triangulo )retangulo|losango|trapezio|paralelogramo"),
+    ("triangulo", r"triangul"), ("quadrilatero", r"quadrilater|quadrado|retangulo|losango|trapezio|paralelogramo"),
     ("circulo", r"circul|circunferen"), ("poligono", r"poligon|pentagon|hexagon"),
     ("solido", r"prisma|cilindr|piramide|\bcone|esfera|\bcubo|paralelepiped"),
     ("relogio", r"relogio|ponteiro|\bhoras?\b"), ("calendario", r"calendario|\bmes\b|semana"),
@@ -207,6 +286,40 @@ def obter_habilidade(ano, habilidade, taxonomia=None):
     return tax["habilidades"].get(f"{ano}|{habilidade}")
 
 
+# "triângulo retângulo" não é quadrilátero. Antes isto era um lookbehind
+# "(?<!triangulo )retangul" nas palavras-chave (taxonomia e OBJETOS), que o
+# Hermes/JSC antigos do app não compilam (revisão adversarial de 2026-10-01).
+# Agora o texto é MASCARADO antes do casamento: "triangulo retangul" vira
+# "triangulo r#tangul", que nenhum padrão com "retang" casa e que mantém
+# "triangul"/"tangul"/"angul" intactos. Contagem idêntica à do lookbehind
+# (conferida sobre data/, DB e outputs/). Só "triangulo " no singular, como o
+# lookbehind. Porte TS: t.split("triangulo retangul").join("triangulo r#tangul").
+_MASCARA_TRI_RET = ("triangulo retangul", "triangulo r#tangul")
+
+
+def texto_para_palavras_chave(texto_normalizado):
+    """Texto (já normalizado) pronto para casar palavras_chave de subtema e OBJETOS."""
+    return texto_normalizado.replace(*_MASCARA_TRI_RET)
+
+
+def versao_regua(taxonomia=None):
+    """sha256 da RÉGUA de diversidade: taxonomia (sem a data de geração) e as
+    tabelas de código que classificar_questao/diversity_score usam. Gravada nos
+    relatórios de avaliar_diversidade; o G11 só compara relatórios com a mesma
+    régua. Motivo (revisão de 2026-10-01): a taxonomia nova mudou n_tipos de
+    9º H17 (2 -> 3) e o classificador de tipo, e as MESMAS questões gravadas
+    perderam até 0,033 por lote — um baseline antigo reprovaria o G11 sem o
+    modelo ter mudado."""
+    import hashlib
+    tax = dict(taxonomia or carregar_taxonomia())
+    tax.pop("gerado_em", None)
+    conteudo = {"taxonomia": tax, "tipos": TIPOS_RACIOCINIO, "contextos": CONTEXTOS,
+                "estruturas": ESTRUTURAS, "objetos": OBJETOS, "pesos": PESOS_DIVERSIDADE,
+                "mascara": _MASCARA_TRI_RET}
+    bruto = json.dumps(conteudo, sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha256(bruto.encode("utf-8")).hexdigest()
+
+
 def _conta(padrao, texto):
     return len(re.findall(padrao, texto)) if padrao else 0
 
@@ -241,13 +354,25 @@ def classificar_questao(questao, ano, habilidade, taxonomia=None):
     tipos_ids = hab["tipos_raciocinio"] if hab else [x["id"] for x in TIPOS_RACIOCINIO]
     tipos = [x for x in TIPOS_RACIOCINIO if x["id"] in tipos_ids]
 
-    subtema = _melhor(subtemas, t, "palavras_chave", "outros")
-    tipo = _melhor(tipos, t, "palavras_chave", "indefinido")
+    t_pc = texto_para_palavras_chave(t)
+    subtema = _melhor(subtemas, t_pc, "palavras_chave", "outros")
+    # O tipo é escolhido primeiro entre os tipos COMPATÍVEIS com o subtema
+    # classificado (fallback: todos os da habilidade). Sem isso, uma questão de
+    # quadrilátero com "ângulos retos" no texto viraria 'classificação quanto
+    # aos ângulos', um tipo que a taxonomia não dá mais a quadriláteros. Em
+    # habilidade sem restrição, os tipos do subtema são os da habilidade e o
+    # resultado é idêntico ao de antes.
+    tipos_sub = next((s.get("tipos_raciocinio") for s in subtemas if s["id"] == subtema), None)
+    tipo = "indefinido"
+    if tipos_sub:
+        tipo = _melhor([x for x in tipos if x["id"] in tipos_sub], t, "palavras_chave", "indefinido")
+    if tipo == "indefinido":
+        tipo = _melhor(tipos, t, "palavras_chave", "indefinido")
     contexto = _melhor(CONTEXTOS, t, "palavras_chave", SEM_CONTEXTO)
 
     objeto = "indefinido"
     for oid, rx in OBJETOS:
-        if re.search(rx, t):
+        if re.search(rx, t_pc):
             objeto = oid
             break
 
@@ -283,14 +408,40 @@ def _rotulo(lista, id_):
     for x in lista:
         if x["id"] == id_:
             return x["rotulo"]
+    if id_ == SEM_CONTEXTO:
+        return ROTULO_SEM_CONTEXTO
     return id_
 
 
 def rotulo_contexto(contexto_id, taxonomia=None):
     """Rótulo em português de um id de contexto (função pública para quem
     monta slot fora deste módulo, ex.: gerar_lote ao trocar o contexto de
-    um slot numa regeneração)."""
+    um slot numa regeneração). SEM_CONTEXTO -> ROTULO_SEM_CONTEXTO."""
     return _rotulo((taxonomia or {}).get("contextos", CONTEXTOS) if taxonomia else CONTEXTOS, contexto_id)
+
+
+def _por_id(lista, id_):
+    return next((x for x in lista if x["id"] == id_), {})
+
+
+def tipo_aplica_a_subtema(tipo_id, subtema_id):
+    """Compatibilidade subtema x tipo de raciocínio: True se o tipo não declara
+    `aplica_a` ou se a regex casa o id do subtema. Usada por build_taxonomia
+    para montar os tipos de cada subtema e por sufixo_prompt para nunca anexar
+    a instrução de um eixo a um subtema que não é dele (ex.: slot montado a
+    partir de uma questão antiga em curar_diversidade)."""
+    rx = _por_id(TIPOS_RACIOCINIO, tipo_id).get("aplica_a")
+    return not rx or bool(re.search(rx, str(subtema_id or "")))
+
+
+def contextos_da_habilidade(hab, taxonomia=None):
+    """Ids dos contextos que o plano pode usar para a habilidade: a lista
+    própria da taxonomia (override ou habilidade conceitual com SEM_CONTEXTO
+    ligado) ou, sem ela, a lista global. Sem lista própria o resultado é
+    idêntico ao de antes (mesma ordem, mesmo consumo do rng)."""
+    if hab and hab.get("contextos"):
+        return list(hab["contextos"])
+    return [c["id"] for c in (taxonomia or {}).get("contextos", CONTEXTOS)] or [c["id"] for c in CONTEXTOS]
 
 
 def _contagem_historico(historico, ano, habilidade, taxonomia):
@@ -327,15 +478,40 @@ def planejar_lote(ano, habilidade, quantidade, dificuldade=None, seed=0, histori
 
     subtemas = list(hab["subtemas"])
     desempate = {s["id"]: rng.random() for s in subtemas}
-    ordem = sorted(subtemas, key=lambda s: (hist_sub.get(s["id"], 0), desempate[s["id"]]))
-    k = len(ordem)
+    k = len(subtemas)
+    # Quando N > K, as vagas que sobram depois da primeira volta vão primeiro
+    # para os subtemas que admitem MAIS tipos de raciocínio (entre os de mesmo
+    # uso no histórico): só eles podem repetir o subtema sem repetir o tipo.
+    # Caso que motivou: com a compatibilidade subtema x tipo, 9º H17 tem
+    # triângulo com 2 tipos e quadrilátero com 1; um lote de 3 na ordem
+    # quadrilátero, triângulo, quadrilátero cobria 2 dos 3 tipos, e na ordem
+    # inversa cobre os 3. Com N <= K nada muda (o sorteio continua decidindo
+    # quem entra) e, em habilidade cujos subtemas têm todos o mesmo número de
+    # tipos, o critério empata e a ordem é exatamente a de antes.
+    n_tipos_sub = {s["id"]: len(s.get("tipos_raciocinio") or hab["tipos_raciocinio"]) for s in subtemas}
+    ordem = sorted(subtemas, key=lambda s: (hist_sub.get(s["id"], 0),
+                                            -n_tipos_sub[s["id"]] if n > k else 0,
+                                            desempate[s["id"]]))
 
-    ctx_ids = [c["id"] for c in tax.get("contextos", CONTEXTOS)]
+    # Pool de contextos da HABILIDADE quando a taxonomia declara um (override
+    # ou habilidade conceitual com SEM_CONTEXTO); senão o global, como antes.
+    ctx_ids = contextos_da_habilidade(hab, tax)
     ctx_desemp = {c: rng.random() for c in ctx_ids}
     ctx_ordem = sorted(ctx_ids, key=lambda c: (hist_ctx.get(c, 0), ctx_desemp[c]))
-    est_ids = [e["id"] for e in tax.get("estruturas", ESTRUTURAS)]
+    estruturas = tax.get("estruturas", ESTRUTURAS)
+    est_ids = [e["id"] for e in estruturas]
     rng.shuffle(est_ids)
     tipos_off = rng.randrange(1000)
+    # O shuffle acima continua sobre a lista GLOBAL e só DEPOIS se filtra pela
+    # lista da habilidade: o consumo do rng não muda, e habilidades sem lista
+    # própria recebem exatamente o mesmo plano de antes (subtema, tipo,
+    # contexto e estrutura). Caso que motivou: 9º H17 recebia 'cálculo' em
+    # 26/150 slots de uma habilidade que só pede classificar.
+    if hab.get("estruturas"):
+        est_ids = [e for e in est_ids if e in hab["estruturas"]] or est_ids
+
+    def _requer_contexto(eid):
+        return bool(_por_id(estruturas, eid).get("requer_contexto") or _por_id(ESTRUTURAS, eid).get("requer_contexto"))
 
     slots, ocorr = [], Counter()
     for i in range(n):
@@ -347,6 +523,11 @@ def planejar_lote(ano, habilidade, quantidade, dificuldade=None, seed=0, histori
         ocorr[s["id"]] += 1
         ctx = ctx_ordem[i % len(ctx_ordem)]
         est = est_ids[i % len(est_ids)]
+        if ctx == SEM_CONTEXTO and _requer_contexto(est):
+            # "problema contextualizado" sem contexto é contradição: avança na
+            # MESMA rotação até a próxima estrutura compatível (sem rng).
+            est = next((est_ids[(i + d) % len(est_ids)] for d in range(1, len(est_ids))
+                        if not _requer_contexto(est_ids[(i + d) % len(est_ids)])), est)
         slots.append({
             "indice": i, "subtema": s["id"], "subtema_rotulo": s["rotulo"],
             "tipo_raciocinio": tipo, "tipo_raciocinio_rotulo": _rotulo(TIPOS_RACIOCINIO, tipo),
@@ -374,12 +555,30 @@ def exige_dados_textuais(subtema):
     return bool(subtema) and str(subtema).startswith(_PREFIXOS_DADOS)
 
 
+def instrucao_tipo(slot):
+    """Instrução fixa do tipo de raciocínio do slot ('' se o tipo não tem, ou
+    se o subtema do slot não é compatível com o tipo)."""
+    tipo = _por_id(TIPOS_RACIOCINIO, slot.get("tipo_raciocinio"))
+    if not tipo.get("instrucao") or not tipo_aplica_a_subtema(tipo["id"], slot.get("subtema")):
+        return ""
+    return tipo["instrucao"]
+
+
 def sufixo_prompt(slot):
     """Trecho ÚNICO anexado ao USER_TEMPLATE, igual em treino, destilação e
-    inferência: ' Subtema: X. Tipo de raciocínio: Y. Contexto: Z.' — e, para
-    subtemas de dados, a instrução fixa INSTRUCAO_DADOS_TEXTUAIS."""
+    inferência: ' Subtema: X. Tipo de raciocínio: Y. Contexto: Z.' — e, no
+    FIM, as instruções fixas: a do eixo de classificação (instrucao do tipo) e,
+    para subtemas de dados, INSTRUCAO_DADOS_TEXTUAIS.
+
+    O formato das três primeiras frases NÃO muda: o modelo foi treinado com
+    ele. A instrução do eixo entra depois, como já entrava 'Dados:' (79x no
+    treino). Caso que motivou: 9º H17, 2026-10-01 — o rótulo do tipo já dizia
+    'classificação quanto aos lados' e só 4/20 enunciados nomearam o eixo;
+    R1 Q2 ("um ônibus passa por quatro pontos formando um quadrilátero") e
+    R2 Q7 ("três garrafas PET formaram um triângulo") não deram medida nenhuma."""
     suf = (f" Subtema: {slot['subtema_rotulo']}. Tipo de raciocínio: {slot['tipo_raciocinio_rotulo']}."
            f" Contexto: {slot['contexto_rotulo']}.")
+    suf += instrucao_tipo(slot)
     if exige_dados_textuais(slot.get("subtema")):
         suf += INSTRUCAO_DADOS_TEXTUAIS
     return suf
@@ -416,6 +615,44 @@ def dados_ausentes(questao, subtema=None):
         return False
     en = _enunciado(questao) if isinstance(questao, dict) else str(questao or "")
     return exige_dados_textuais(subtema) or bool(_ARTEFATO_CITADO.search(en))
+
+
+# Qualquer coisa que conte como DADO para classificar uma figura: um número
+# (medida), uma propriedade (iguais, paralelos, retos, opostos...) ou o próprio
+# nome de uma classe ("triângulo retângulo", "forma de losango"). Regex simples
+# sobre texto normalizado, portável para TypeScript.
+# Medida POR EXTENSO ("noventa graus", "cinco centímetros") também é dado: sem
+# isto a guarda acusava "dados insuficientes" e regenerava questão boa
+# (revisão adversarial de 2026-10-01). Mesma lista de verificador_geometria.
+_DADO_CLASSIFICACAO = re.compile(
+    r"\d|paralel|perpendic|congruent|\b(iguais|igual|diferentes?|retos?|agudos?|obtusos?|opostos?)\b"
+    r"|\b(zero|um|uma|dois|duas|tres|quatro|cinco|seis|sete|oito|nove|dez|onze|doze|treze|quatorze"
+    r"|catorze|quinze|dezesseis|dezessete|dezoito|dezenove|vinte|trinta|quarenta|cinquenta|sessenta"
+    r"|setenta|oitenta|noventa|cem|cento|duzentos|trezentos|meio|meia|mil)\s+(graus?|centimetros?"
+    r"|metros?|milimetros?|decimetros?|quilometros?|cm|mm|dm|km|m)\b"
+    r"|mesm[ao]s? (medida|comprimento|tamanho|abertura)"
+    r"|equilater|isosceles|escalen|acutangul|obtusangul|quadrado|retangul|losang|trapezi|paralelogram")
+
+
+def dados_insuficientes_classificacao(questao, slot):
+    """True se o slot é de classificação (tipo com `exige_dados`) e o
+    ENUNCIADO não traz nenhuma medida, nenhuma propriedade e nenhum nome de
+    classe — não há o que classificar.
+
+    Conservadora de propósito: basta UM número ou UMA palavra de propriedade
+    para não acusar, então só pega o caso extremo. Casos reais que motivaram
+    (9º H17, 2026-10-01): R1 Q2 "Um ônibus ... passa por quatro pontos
+    formando um quadrilátero. Qual ... a classificação quanto aos lados?" e
+    R2 Q7 "três garrafas PET ... formaram um triângulo. Qual ... o tipo de
+    triângulo formado?". Premissa impossível, hierarquia e conta errada NÃO
+    são papel daqui (ficam com schema_utils/test_model). Olha só o enunciado:
+    as alternativas sempre trazem nomes de classe e mascarariam a falta."""
+    if not slot or not _por_id(TIPOS_RACIOCINIO, slot.get("tipo_raciocinio")).get("exige_dados"):
+        return False
+    en = normalizar_texto(_enunciado(questao) if isinstance(questao, dict) else str(questao or ""))
+    if not en:
+        return False
+    return not _DADO_CLASSIFICACAO.search(en)
 
 
 # --------------------------------------------------------------------------
@@ -569,12 +806,17 @@ def diversity_score(questoes, ano, habilidade, pesos=None, taxonomia=None, limia
 # --------------------------------------------------------------------------
 
 def violacoes_diversidade(lote_aceito, candidato, slot, ano, habilidade, quantidade=None,
-                          limiar=LIMIAR_NEAR_DUP, taxonomia=None):
+                          limiar=LIMIAR_NEAR_DUP, taxonomia=None, checar_dados_classificacao=False):
     """Lista de violações do candidato frente ao lote aceito e ao slot planejado.
 
     Tipos: 'subtema_fora_do_plano' (candidato caiu em OUTRO subtema conhecido e
     havia alternativa, K>=2), 'near_duplicata', 'subtema_saturado' (já há
-    ceil(N/K) questões daquele subtema), 'contexto_repetido'. Candidato
+    ceil(N/K) questões daquele subtema), 'contexto_repetido' e, com
+    `checar_dados_classificacao=True`, 'dados_insuficientes' (slot de
+    classificação sem medida nem propriedade no enunciado). Esse último é
+    OPT-IN: ligá-lo muda quantas chamadas gerar_lote faz por slot, e quem
+    decide isso (e o peso dele em gerar_lote.PESO_VIOLACAO) é o dono de
+    gerar_lote, junto com os mocks de tests/test_gerar_lote.py. Candidato
     classificado como 'outros' não gera violação de subtema (o classificador é
     léxico; na dúvida não se pune).
     """
@@ -599,7 +841,14 @@ def violacoes_diversidade(lote_aceito, candidato, slot, ano, habilidade, quantid
                       "subtema_rotulo": rot.get(c["subtema"], c["subtema"]), "quantidade": ja})
     if dados_ausentes(candidato, slot.get("subtema")):
         v.append({"tipo": "dados_ausentes"})
-    ctx_pool = [x["id"] for x in (taxonomia or {}).get("contextos", CONTEXTOS)] or [x["id"] for x in CONTEXTOS]
+    if checar_dados_classificacao and dados_insuficientes_classificacao(candidato, slot):
+        v.append({"tipo": "dados_insuficientes", "tipo_raciocinio": slot.get("tipo_raciocinio")})
+    # Sugestão SEMPRE dentro do pool da habilidade (sem SEM_CONTEXTO, que não
+    # é cenário a sugerir). Antes vinha do pool global: podia sugerir "receita
+    # de bolo" para 9º H17, e o contexto forçado sem forma natural (bolo/tampa,
+    # biscoito, cofrinho, garrafas PET, ônibus) deu 0/6 corretas em 2026-10-01.
+    ctx_pool = [cid for cid in contextos_da_habilidade(hab, taxonomia) if cid != SEM_CONTEXTO] \
+        or [x["id"] for x in CONTEXTOS]
     if c["contexto"] != SEM_CONTEXTO and len(lote_aceito) < len(ctx_pool) \
             and any(a["contexto"] == c["contexto"] for a in aceitos_cls):
         usados = {a["contexto"] for a in aceitos_cls} | {c["contexto"]}
@@ -634,6 +883,10 @@ def montar_restricao(violacoes, habilidade, slot):
             frases.append("A questão cita uma tabela ou gráfico que o aluno não vê. Escreva no "
                           "enunciado todos os dados em texto, um item por linha no formato "
                           "'rótulo: valor'.")
+        elif v["tipo"] == "dados_insuficientes":
+            frases.append("A questão não dá nenhuma medida nem propriedade da figura, então não há "
+                          "como classificá-la. Escreva no enunciado os dados que definem a resposta."
+                          + instrucao_tipo(slot))
         elif v["tipo"] == "contexto_repetido":
             frases.append(f"O contexto '{v['contexto_rotulo']}' já foi usado no lote; "
                           f"use o contexto: {v.get('sugerido_rotulo', slot['contexto_rotulo'])}.")
@@ -642,7 +895,8 @@ def montar_restricao(violacoes, habilidade, slot):
 
 
 def gerar_lote_diverso(gerar_fn, ano, habilidade, quantidade, dificuldade=None, seed=0,
-                       max_tentativas=MAX_TENTATIVAS_DIVERSIDADE, historico=None, taxonomia=None):
+                       max_tentativas=MAX_TENTATIVAS_DIVERSIDADE, historico=None, taxonomia=None,
+                       checar_dados_classificacao=False):
     """Orquestra plano + geração + regeneração com restrição.
 
     gerar_fn(slot, restricao, tentativa) -> questão (dict) ou None. `restricao`
@@ -659,7 +913,8 @@ def gerar_lote_diverso(gerar_fn, ano, habilidade, quantidade, dificuldade=None, 
             cand = gerar_fn(slot, restricao, tent)
             if cand is None:
                 continue
-            v = violacoes_diversidade(aceitas, cand, slot, ano, habilidade, quantidade, taxonomia=taxonomia)
+            v = violacoes_diversidade(aceitas, cand, slot, ano, habilidade, quantidade, taxonomia=taxonomia,
+                                      checar_dados_classificacao=checar_dados_classificacao)
             if melhor is None or len(v) < len(melhor_v):
                 melhor, melhor_v = cand, v
             if not v:

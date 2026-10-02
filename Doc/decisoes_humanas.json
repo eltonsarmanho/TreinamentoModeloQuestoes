@@ -1,0 +1,629 @@
+{
+ "_descricao": "Decisões HUMANAS sobre itens da base de conhecimento. Consumido por src/auditar_base.py --montar (e --arbitrar): decisão humana tem PRECEDÊNCIA sobre as regras automáticas (D2, D3, árbitro). Cada decisão é ligada ao item por codigo_item + idx (linha de data/train_curado.jsonl) + hash_questao (sha1 do conteúdo do assistente); se o conteúdo mudar, a decisão NÃO é aplicada e aparece em 'decisoes_nao_aplicadas' na montagem. data/ está no .gitignore, por isso este arquivo fica em Doc/ (versionável).",
+ "versao": 1,
+ "acoes_validas": {
+  "remover": "sai da v3",
+  "manter": "fica como está, sem D2/D3 automáticas",
+  "manter_editar": "fica, com as edições listadas (pré-condições conferidas)"
+ },
+ "decisoes": [
+  {
+   "codigo_item": "MT9018MH04MT",
+   "idx": 264,
+   "hash_questao": "ce88af8b96a03ca7826f7be2744aa6f95ed39e06",
+   "acao": "manter_editar",
+   "data": "2026-10-01",
+   "autor": "usuário",
+   "fonte": "lista outputs/agentes/revisao_humana_previa.jsonl (12 itens): manter somente MT9018MH04MT",
+   "motivo": "Item real correto (ordem crescente de 2,5; 2,45; 2,75 = B). Ressalvas do usuário para inserção: cadastrar a resolução comentada (estava vazia) e reclassificar a dificuldade de Moderado para Fácil (uma comparação direta de decimais).",
+   "edicoes": {
+    "resolucao_passo_a_passo": "Para comparar números decimais, escrevemos todos com a mesma quantidade de casas decimais: 2,5 = 2,50; 2,45; 2,75. Os três têm a mesma parte inteira, 2, então comparamos a parte decimal em centésimos: 45 < 50 < 75. Logo, 2,45 < 2,5 < 2,75. Cuidado: 2,45 não é maior que 2,5 só porque tem mais algarismos depois da vírgula (2,45 tem 45 centésimos e 2,5 tem 50 centésimos). A ordem crescente é 2,45 - 2,5 - 2,75.",
+    "dificuldade": "Fácil"
+   },
+   "pre_condicoes": {
+    "resolucao_passo_a_passo": "",
+    "dificuldade": "Moderado",
+    "resposta_correta": "B"
+   },
+   "conferencia": {
+    "script": "ordenação exata com Fraction: [2,45; 2,5; 2,75] = alternativa B; A, C e D são outras permutações; E falsa",
+    "arbitro": "ver outputs/agentes/arbitro_mt9018.json (Gemini, resolução às cegas)"
+   }
+  },
+  {
+   "codigo_item": "DIST-H09-Difícil-00569",
+   "idx": 1348,
+   "hash_questao": "99a9b52414e9ad44b030edc56efda63c1e3d9ab6",
+   "acao": "manter",
+   "data": "2026-10-01",
+   "autor": "usuário",
+   "fonte": "H2 (arredondamento em duas casas decimais)",
+   "motivo": "5/11 = 0,4545...; gabarito '0,45' é correto no ensino básico (duas casas decimais, arredondado ou truncado). Os dois juízes aprovaram; a remoção anterior vinha do verificador exato, corrigido pela H2."
+  },
+  {
+   "codigo_item": "MT9094DH19MT",
+   "idx": 500,
+   "hash_questao": "fdf0c19222e0ce8e6f781145ada7139f3bea60ad",
+   "acao": "remover",
+   "data": "2026-10-01",
+   "autor": "usuário",
+   "fonte": "lista outputs/agentes/revisao_humana_previa.jsonl (12 itens): manter somente MT9018MH04MT",
+   "motivo": "Conversão 2,5 km -> m rotulada Difícil no 9º H19; revisor: ano_inadequado (conteúdo de anos iniciais)."
+  },
+  {
+   "codigo_item": "MT9061FH13MT",
+   "idx": 509,
+   "hash_questao": "8eece7edfe1c16ef75d9cca030d1a3c782765184",
+   "acao": "remover",
+   "data": "2026-10-01",
+   "autor": "usuário",
+   "fonte": "lista outputs/agentes/revisao_humana_previa.jsonl (12 itens): manter somente MT9018MH04MT",
+   "motivo": "Divisão simples (2 coxinhas por R$ 8,00) sob H13 (sistemas de equações); revisor: habilidade_desalinhada."
+  },
+  {
+   "codigo_item": "MT2032MH07MT",
+   "idx": 561,
+   "hash_questao": "3e4ea2b2a09bdd2d4cc430686c4f6434b68228cd",
+   "acao": "remover",
+   "data": "2026-10-01",
+   "autor": "usuário",
+   "fonte": "lista outputs/agentes/revisao_humana_previa.jsonl (12 itens): manter somente MT9018MH04MT",
+   "motivo": "Decomposição de 245: A (150 + 95) e C (100 + 145) somam 245; resposta não única (verificador exato e os dois juízes)."
+  },
+  {
+   "codigo_item": "MT9013FH05TD",
+   "idx": 599,
+   "hash_questao": "7e450d5aea6febd2697be6328b2c333403828008",
+   "acao": "remover",
+   "data": "2026-10-01",
+   "autor": "usuário",
+   "fonte": "lista outputs/agentes/revisao_humana_previa.jsonl (12 itens): manter somente MT9018MH04MT",
+   "motivo": "O 'ou' de 'mesma quantidade de bombons ou de pirulitos' admite duas leituras; os dois juízes apontaram ambiguidade."
+  },
+  {
+   "codigo_item": "MT9049DH10MT",
+   "idx": 660,
+   "hash_questao": "1bd2cdc22b8470f647d482374585fc743d77156e",
+   "acao": "remover",
+   "data": "2026-10-01",
+   "autor": "usuário",
+   "fonte": "lista outputs/agentes/revisao_humana_previa.jsonl (12 itens): manter somente MT9018MH04MT",
+   "motivo": "Equação de 1º grau rotulada Difícil e sem resolução; revisor: ano_inadequado."
+  },
+  {
+   "codigo_item": "SINT-H08-Moderado-0032",
+   "idx": 732,
+   "hash_questao": "6258e9a083cabb3835145e5cde4ecfa4c029566a",
+   "acao": "remover",
+   "data": "2026-10-01",
+   "autor": "usuário",
+   "fonte": "lista outputs/agentes/revisao_humana_previa.jsonl (12 itens): manter somente MT9018MH04MT",
+   "motivo": "52 + 50 rotulado Moderado; distrator '2' implausível e erro de concordância ('Quantos figurinhas')."
+  },
+  {
+   "codigo_item": "DIST-H18-Moderado-00102",
+   "idx": 881,
+   "hash_questao": "ab17b6a85929f9a5f37f31219eb06008b6f37d19",
+   "acao": "remover",
+   "data": "2026-10-01",
+   "autor": "usuário",
+   "fonte": "lista outputs/agentes/revisao_humana_previa.jsonl (12 itens): manter somente MT9018MH04MT",
+   "motivo": "Removido por decisão do usuário. Nota: o verificador exato confirma o gabarito (terça + 10 dias termina na quinta); os dois juízes erraram juntos."
+  },
+  {
+   "codigo_item": "DIST-H03-Difícil-00273",
+   "idx": 1052,
+   "hash_questao": "9ea624b093522f6285f58669b4545b719d004a78",
+   "acao": "remover",
+   "data": "2026-10-01",
+   "autor": "usuário",
+   "fonte": "lista outputs/agentes/revisao_humana_previa.jsonl (12 itens): manter somente MT9018MH04MT",
+   "motivo": "'Três centenas e sete unidades' também representa 307 (distrator verdadeiro); validador: resposta não única."
+  },
+  {
+   "codigo_item": "DIST-H17-Difícil-00348",
+   "idx": 1127,
+   "hash_questao": "7ebda77d8088def72475e324616aa55fd454bdbf",
+   "acao": "remover",
+   "data": "2026-10-01",
+   "autor": "usuário",
+   "fonte": "lista outputs/agentes/revisao_humana_previa.jsonl (12 itens): manter somente MT9018MH04MT",
+   "motivo": "Ordem dos acontecimentos sem dado que fixe almoço x gincana; validador: dados insuficientes, resposta não única."
+  },
+  {
+   "codigo_item": "DIST-H01-Difícil-00408",
+   "idx": 1187,
+   "hash_questao": "9b4515182ebf66587381d2106961dd4c4652fced",
+   "acao": "remover",
+   "data": "2026-10-01",
+   "autor": "usuário",
+   "fonte": "lista outputs/agentes/revisao_humana_previa.jsonl (12 itens): manter somente MT9018MH04MT",
+   "motivo": "Removido por decisão do usuário; revisor marcou 'Dez mil e quatrocentos e oito' como distrator verdadeiro."
+  },
+  {
+   "codigo_item": "DIST-H25-Moderado-00650",
+   "idx": 1429,
+   "hash_questao": "68747e16d89d14055d478dcea36b0bea7c701a33",
+   "acao": "remover",
+   "data": "2026-10-01",
+   "autor": "usuário",
+   "fonte": "lista outputs/agentes/revisao_humana_previa.jsonl (12 itens): manter somente MT9018MH04MT",
+   "motivo": "Contexto forçado (janelas de ônibus a partir de probabilidade) e enunciado ambíguo ('janelas' x assentos)."
+  },
+  {
+   "codigo_item": "MT9031FH07MT",
+   "idx": 36,
+   "hash_questao": "96852f1baa1048234416db4d162f7201af85b98a",
+   "acao": "manter_editar",
+   "data": "2026-10-01",
+   "autor": "usuário",
+   "fonte": "decisão do usuário em 2026-10-01 (resposta ao relatório dos passos 1 e 2)",
+   "motivo": "D6: restaurar as frações que a planilha converteu em data (dia/mês -> fração), conferidas contra a resolução e sem alternativas equivalentes que tornem a resposta não única.",
+   "edicoes": {
+    "alternativas": {
+     "A": "1/4",
+     "B": "2/4",
+     "C": "3/4",
+     "D": "4/4"
+    }
+   },
+   "pre_condicoes": {
+    "alternativas": {
+     "A": "2025-04-01 00:00:00",
+     "B": "2025-04-02 00:00:00",
+     "C": "2025-04-03 00:00:00",
+     "D": "2025-04-04 00:00:00"
+    },
+    "resposta_correta": "C"
+   }
+  },
+  {
+   "codigo_item": "MT9020MfH07TD",
+   "idx": 136,
+   "hash_questao": "34e35b759195ff211888e23cd03804804c415835",
+   "acao": "remover",
+   "data": "2026-10-01",
+   "autor": "usuário",
+   "fonte": "decisão do usuário em 2026-10-01 (resposta ao relatório dos passos 1 e 2)",
+   "motivo": "D6 (alternativa virou data na planilha). Restaurado ficaria ambíguo: 5/16 (A) e 10/32 (C) são equivalentes e o gabarito 10/8 depende da leitura da imagem (fatias de 8 por pizza vs total de 32)."
+  },
+  {
+   "codigo_item": "MT90122MH25MT",
+   "idx": 169,
+   "hash_questao": "5485e36f2d87aed0d76374d2aa3ab6abf4412cf0",
+   "acao": "manter_editar",
+   "data": "2026-10-01",
+   "autor": "usuário",
+   "fonte": "decisão do usuário em 2026-10-01 (resposta ao relatório dos passos 1 e 2)",
+   "motivo": "D6: restaurar as frações que a planilha converteu em data (dia/mês -> fração), conferidas contra a resolução e sem alternativas equivalentes que tornem a resposta não única.",
+   "edicoes": {
+    "alternativas": {
+     "A": "1/10",
+     "B": "3/10",
+     "C": "6/10",
+     "D": "4/10"
+    }
+   },
+   "pre_condicoes": {
+    "alternativas": {
+     "A": "2025-10-01 00:00:00",
+     "B": "2025-10-03 00:00:00",
+     "C": "2025-10-06 00:00:00",
+     "D": "2025-10-04 00:00:00"
+    },
+    "resposta_correta": "B"
+   }
+  },
+  {
+   "codigo_item": "MT9023MH08TD",
+   "idx": 177,
+   "hash_questao": "12cbc91f3efaf1e465f7352f2e2bd9f0fbe18767",
+   "acao": "manter_editar",
+   "data": "2026-10-01",
+   "autor": "usuário",
+   "fonte": "decisão do usuário em 2026-10-01 (resposta ao relatório dos passos 1 e 2)",
+   "motivo": "D6: restaurar as frações que a planilha converteu em data (dia/mês -> fração), conferidas contra a resolução e sem alternativas equivalentes que tornem a resposta não única.",
+   "edicoes": {
+    "alternativas": {
+     "A": "6/10",
+     "B": "5/8",
+     "C": "9/10",
+     "D": "3/8"
+    }
+   },
+   "pre_condicoes": {
+    "alternativas": {
+     "A": "2025-10-06 00:00:00",
+     "B": "2025-08-05 00:00:00",
+     "C": "2025-10-09 00:00:00",
+     "D": "2025-08-03 00:00:00"
+    },
+    "resposta_correta": "A"
+   }
+  },
+  {
+   "codigo_item": "MT9043MH09MT",
+   "idx": 193,
+   "hash_questao": "946a9a5aa88ff5e1387194a9ce66f19d92c23aec",
+   "acao": "manter_editar",
+   "data": "2026-10-01",
+   "autor": "usuário",
+   "fonte": "decisão do usuário em 2026-10-01 (resposta ao relatório dos passos 1 e 2)",
+   "motivo": "D6: restaurar as frações que a planilha converteu em data (dia/mês -> fração), conferidas contra a resolução e sem alternativas equivalentes que tornem a resposta não única.",
+   "edicoes": {
+    "alternativas": {
+     "A": "2/10",
+     "B": "2/5",
+     "C": "1/2",
+     "D": "10/2"
+    }
+   },
+   "pre_condicoes": {
+    "alternativas": {
+     "A": "2025-10-02 00:00:00",
+     "B": "2025-05-02 00:00:00",
+     "C": "2025-02-01 00:00:00",
+     "D": "2025-02-10 00:00:00"
+    },
+    "resposta_correta": "A"
+   }
+  },
+  {
+   "codigo_item": "MT9040DH08MT",
+   "idx": 222,
+   "hash_questao": "f417f243fef0125c763126c1ed8e351ac5ebf3dd",
+   "acao": "manter_editar",
+   "data": "2026-10-01",
+   "autor": "usuário",
+   "fonte": "decisão do usuário em 2026-10-01 (resposta ao relatório dos passos 1 e 2)",
+   "motivo": "D6: restaurar as frações que a planilha converteu em data (dia/mês -> fração), conferidas contra a resolução e sem alternativas equivalentes que tornem a resposta não única.",
+   "edicoes": {
+    "alternativas": {
+     "A": "2/4",
+     "C": "1/2",
+     "D": "14/7"
+    }
+   },
+   "pre_condicoes": {
+    "alternativas": {
+     "A": "2025-04-02 00:00:00",
+     "C": "2025-02-01 00:00:00",
+     "D": "2025-07-14 00:00:00"
+    },
+    "resposta_correta": "C"
+   }
+  },
+  {
+   "codigo_item": "MT9073FH25TD",
+   "idx": 235,
+   "hash_questao": "09ba17f27105d284fe86684eee7d2ee267302f3f",
+   "acao": "manter_editar",
+   "data": "2026-10-01",
+   "autor": "usuário",
+   "fonte": "decisão do usuário em 2026-10-01 (resposta ao relatório dos passos 1 e 2)",
+   "motivo": "D6: restaurar as frações que a planilha converteu em data (dia/mês -> fração), conferidas contra a resolução e sem alternativas equivalentes que tornem a resposta não única.",
+   "edicoes": {
+    "alternativas": {
+     "A": "1/3",
+     "B": "1/5",
+     "C": "3/5",
+     "D": "5/5"
+    }
+   },
+   "pre_condicoes": {
+    "alternativas": {
+     "A": "2025-03-01 00:00:00",
+     "B": "2025-05-01 00:00:00",
+     "C": "2025-05-03 00:00:00",
+     "D": "2025-05-05 00:00:00"
+    },
+    "resposta_correta": "B"
+   }
+  },
+  {
+   "codigo_item": "MT90124DH25MT",
+   "idx": 237,
+   "hash_questao": "6458251d0e6c4b07f1d602ad45f031a9ff6f7e63",
+   "acao": "manter_editar",
+   "data": "2026-10-01",
+   "autor": "usuário",
+   "fonte": "decisão do usuário em 2026-10-01 (resposta ao relatório dos passos 1 e 2)",
+   "motivo": "D6: restaurar as frações que a planilha converteu em data (dia/mês -> fração), conferidas contra a resolução e sem alternativas equivalentes que tornem a resposta não única.",
+   "edicoes": {
+    "alternativas": {
+     "A": "1/4",
+     "B": "1/8",
+     "C": "1/12"
+    }
+   },
+   "pre_condicoes": {
+    "alternativas": {
+     "A": "2025-04-01 00:00:00",
+     "B": "2025-08-01 00:00:00",
+     "C": "2025-12-01 00:00:00"
+    },
+    "resposta_correta": "C"
+   }
+  },
+  {
+   "codigo_item": "MT9075DH25TD",
+   "idx": 253,
+   "hash_questao": "a493ee26c5df7229eeb86c375d79d9018c93aa74",
+   "acao": "manter_editar",
+   "data": "2026-10-01",
+   "autor": "usuário",
+   "fonte": "decisão do usuário em 2026-10-01 (resposta ao relatório dos passos 1 e 2)",
+   "motivo": "D6: restaurar as frações que a planilha converteu em data (dia/mês -> fração), conferidas contra a resolução e sem alternativas equivalentes que tornem a resposta não única.",
+   "edicoes": {
+    "alternativas": {
+     "A": "1/8",
+     "B": "1/12",
+     "D": "1/4"
+    }
+   },
+   "pre_condicoes": {
+    "alternativas": {
+     "A": "2025-08-01 00:00:00",
+     "B": "2025-12-01 00:00:00",
+     "D": "2025-04-01 00:00:00"
+    },
+    "resposta_correta": "B"
+   }
+  },
+  {
+   "codigo_item": "MT90123MH25MT",
+   "idx": 259,
+   "hash_questao": "5ab4e1ff5e216e177113a280f864d65af3d4aa0a",
+   "acao": "manter_editar",
+   "data": "2026-10-01",
+   "autor": "usuário",
+   "fonte": "decisão do usuário em 2026-10-01 (resposta ao relatório dos passos 1 e 2)",
+   "motivo": "D6: restaurar as frações que a planilha converteu em data (dia/mês -> fração), conferidas contra a resolução e sem alternativas equivalentes que tornem a resposta não única.",
+   "edicoes": {
+    "alternativas": {
+     "A": "3/6",
+     "B": "2/6",
+     "C": "4/6",
+     "D": "1/6"
+    }
+   },
+   "pre_condicoes": {
+    "alternativas": {
+     "A": "2025-06-03 00:00:00",
+     "B": "2025-06-02 00:00:00",
+     "C": "2025-06-04 00:00:00",
+     "D": "2025-06-01 00:00:00"
+    },
+    "resposta_correta": "A"
+   }
+  },
+  {
+   "codigo_item": "MT90121FH25MT",
+   "idx": 261,
+   "hash_questao": "660685cc719c2bb91d4180787d25e2d34d242ac5",
+   "acao": "manter_editar",
+   "data": "2026-10-01",
+   "autor": "usuário",
+   "fonte": "decisão do usuário em 2026-10-01 (resposta ao relatório dos passos 1 e 2)",
+   "motivo": "D6: restaurar as frações que a planilha converteu em data (dia/mês -> fração), conferidas contra a resolução e sem alternativas equivalentes que tornem a resposta não única.",
+   "edicoes": {
+    "alternativas": {
+     "A": "1/3",
+     "B": "3/5",
+     "C": "1/5",
+     "D": "5/5"
+    }
+   },
+   "pre_condicoes": {
+    "alternativas": {
+     "A": "2025-03-01 00:00:00",
+     "B": "2025-05-03 00:00:00",
+     "C": "2025-05-01 00:00:00",
+     "D": "2025-05-05 00:00:00"
+    },
+    "resposta_correta": "C"
+   }
+  },
+  {
+   "codigo_item": "MT9035DH07MT",
+   "idx": 297,
+   "hash_questao": "022af97e951e4c874bb81d8dc7cdc36f2b1ea8f5",
+   "acao": "manter_editar",
+   "data": "2026-10-01",
+   "autor": "usuário",
+   "fonte": "decisão do usuário em 2026-10-01 (resposta ao relatório dos passos 1 e 2)",
+   "motivo": "D6: restaurar as frações que a planilha converteu em data (dia/mês -> fração), conferidas contra a resolução e sem alternativas equivalentes que tornem a resposta não única.",
+   "edicoes": {
+    "alternativas": {
+     "A": "2/5",
+     "B": "7/5",
+     "C": "5/7",
+     "D": "1/5"
+    }
+   },
+   "pre_condicoes": {
+    "alternativas": {
+     "A": "2025-05-02 00:00:00",
+     "B": "2025-05-07 00:00:00",
+     "C": "2025-07-05 00:00:00",
+     "D": "2025-05-01 00:00:00"
+    },
+    "resposta_correta": "B"
+   }
+  },
+  {
+   "codigo_item": "MT9038MH08MT",
+   "idx": 299,
+   "hash_questao": "fe93088c17f880afc8bde27a82d326aa59e3bb7d",
+   "acao": "manter_editar",
+   "data": "2026-10-01",
+   "autor": "usuário",
+   "fonte": "decisão do usuário em 2026-10-01 (resposta ao relatório dos passos 1 e 2)",
+   "motivo": "D6: restaurar as frações que a planilha converteu em data (dia/mês -> fração), conferidas contra a resolução e sem alternativas equivalentes que tornem a resposta não única.",
+   "edicoes": {
+    "alternativas": {
+     "A": "4/5",
+     "B": "8/10"
+    }
+   },
+   "pre_condicoes": {
+    "alternativas": {
+     "A": "2025-05-04 00:00:00",
+     "B": "2025-10-08 00:00:00"
+    },
+    "resposta_correta": "D"
+   }
+  },
+  {
+   "codigo_item": "MT90125DH25MT",
+   "idx": 391,
+   "hash_questao": "62d744a39663373c4e945280784f1a7a76501182",
+   "acao": "remover",
+   "data": "2026-10-01",
+   "autor": "usuário",
+   "fonte": "decisão do usuário em 2026-10-01 (resposta ao relatório dos passos 1 e 2)",
+   "motivo": "D6 (alternativa virou data na planilha). Restaurado ficaria ambíguo: 1/2 (B, gabarito) e 2/4 (D) são equivalentes — duas alternativas corretas."
+  },
+  {
+   "codigo_item": "MT9026MH09TD",
+   "idx": 405,
+   "hash_questao": "de6d1e8dee66dc26b04da3d7745a81c410327771",
+   "acao": "manter_editar",
+   "data": "2026-10-01",
+   "autor": "usuário",
+   "fonte": "decisão do usuário em 2026-10-01 (resposta ao relatório dos passos 1 e 2)",
+   "motivo": "D6: restaurar as frações que a planilha converteu em data (dia/mês -> fração), conferidas contra a resolução e sem alternativas equivalentes que tornem a resposta não única.",
+   "edicoes": {
+    "alternativas": {
+     "A": "1/4",
+     "B": "2/5",
+     "C": "3/5",
+     "D": "4/5"
+    }
+   },
+   "pre_condicoes": {
+    "alternativas": {
+     "A": "2025-04-01 00:00:00",
+     "B": "2025-05-02 00:00:00",
+     "C": "2025-05-03 00:00:00",
+     "D": "2025-05-04 00:00:00"
+    },
+    "resposta_correta": "B"
+   }
+  },
+  {
+   "codigo_item": "MT9033MH07MT",
+   "idx": 503,
+   "hash_questao": "48304be3781cf78a46f3a0f12454c5ea45fded5b",
+   "acao": "manter_editar",
+   "data": "2026-10-01",
+   "autor": "usuário",
+   "fonte": "decisão do usuário em 2026-10-01 (resposta ao relatório dos passos 1 e 2)",
+   "motivo": "D6: restaurar as frações que a planilha converteu em data (dia/mês -> fração), conferidas contra a resolução e sem alternativas equivalentes que tornem a resposta não única.",
+   "edicoes": {
+    "alternativas": {
+     "A": "5/4",
+     "B": "6/4",
+     "C": "3/4",
+     "D": "1/2"
+    }
+   },
+   "pre_condicoes": {
+    "alternativas": {
+     "A": "2025-04-05 00:00:00",
+     "B": "2025-04-06 00:00:00",
+     "C": "2025-04-03 00:00:00",
+     "D": "2025-02-01 00:00:00"
+    },
+    "resposta_correta": "B"
+   }
+  },
+  {
+   "codigo_item": "MT9034DH07MT",
+   "idx": 575,
+   "hash_questao": "d93d452f567b942247e50664e58a0a0f512d476e",
+   "acao": "manter_editar",
+   "data": "2026-10-01",
+   "autor": "usuário",
+   "fonte": "decisão do usuário em 2026-10-01 (resposta ao relatório dos passos 1 e 2)",
+   "motivo": "D6: restaurar as frações que a planilha converteu em data (dia/mês -> fração), conferidas contra a resolução e sem alternativas equivalentes que tornem a resposta não única.",
+   "edicoes": {
+    "alternativas": {
+     "A": "3/10",
+     "B": "7/10",
+     "C": "10/7",
+     "D": "1/7"
+    }
+   },
+   "pre_condicoes": {
+    "alternativas": {
+     "A": "2025-10-03 00:00:00",
+     "B": "2025-10-07 00:00:00",
+     "C": "2025-07-10 00:00:00",
+     "D": "2025-07-01 00:00:00"
+    },
+    "resposta_correta": "B"
+   }
+  },
+  {
+   "codigo_item": "MT5023MH05MT",
+   "idx": 139,
+   "hash_questao": "453247c7e5a6f0eb211e8bd9484f2059901b5f5a",
+   "acao": "remover",
+   "data": "2026-10-01",
+   "autor": "usuário",
+   "fonte": "decisão do usuário em 2026-10-01 (resposta ao relatório dos passos 1 e 2)",
+   "motivo": "Gabarito errado: validador, revisor e árbitro Gemini concordam (auditoria passo 2)."
+  },
+  {
+   "codigo_item": "MT9036DH12TD",
+   "idx": 401,
+   "hash_questao": "3949f0bf4d1f8ac74faac6c57fc9294401d7c112",
+   "acao": "remover",
+   "data": "2026-10-01",
+   "autor": "usuário",
+   "fonte": "decisão do usuário em 2026-10-01 (resposta ao relatório dos passos 1 e 2)",
+   "motivo": "Gabarito errado: validador, revisor e árbitro Gemini concordam (auditoria passo 2)."
+  },
+  {
+   "codigo_item": "DIST-H11-Difícil-00301",
+   "idx": 1080,
+   "hash_questao": "c56280d95b4952754287906a96a733ff0189c5b1",
+   "acao": "remover",
+   "data": "2026-10-01",
+   "autor": "usuário",
+   "fonte": "decisão do usuário em 2026-10-01 (resposta ao relatório dos passos 1 e 2)",
+   "motivo": "Resposta não única (validador e árbitro)."
+  },
+  {
+   "codigo_item": "DIST-H15-Fácil-00589",
+   "idx": 1368,
+   "hash_questao": "7e406bafe68489682c15d26f0c7f8f7095dba801",
+   "acao": "remover",
+   "data": "2026-10-01",
+   "autor": "usuário",
+   "fonte": "decisão do usuário em 2026-10-01 (resposta ao relatório dos passos 1 e 2)",
+   "motivo": "Resolução supõe hexágono regular, dado que o enunciado não fornece."
+  },
+  {
+   "codigo_item": "MT5060DH20TD",
+   "idx": 254,
+   "hash_questao": "414b68be70469df40305da6b21b33b60f40405f5",
+   "acao": "remover",
+   "data": "2026-10-01",
+   "autor": "usuário",
+   "fonte": "decisão do usuário em 2026-10-01 (resposta ao relatório dos passos 1 e 2)",
+   "motivo": "Dados insuficientes para resolver."
+  },
+  {
+   "codigo_item": "DIST-EF03MA01-Difícil-00110",
+   "idx": 889,
+   "hash_questao": "cb35762574bbe09bc66456166278e50a8105e3b9",
+   "acao": "remover",
+   "data": "2026-10-01",
+   "autor": "usuário",
+   "fonte": "decisão do usuário em 2026-10-01 (resposta ao relatório dos passos 1 e 2)",
+   "motivo": "Gabarito 'dois mil quarenta e oito' contra a grafia usual 'dois mil e quarenta e oito' (alternativa B): ambíguo."
+  }
+ ]
+}

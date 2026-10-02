@@ -10,8 +10,10 @@ pelo mesmo pipeline validado de produção (test_model.generate_validated).
 Fluxo, para cada slot do plano:
   1. prompt = USER_TEMPLATE(quantidade=1) + diversidade.sufixo_prompt(slot)
      (+ restrição explícita na regeneração). A gramática GBNF é mantida.
-  2. generate_validated: estrutura, consistência, fix_gabarito, visual ausente.
-  3. classificar + violacoes_diversidade contra o lote já aceito.
+  2. generate_validated: estrutura, consistência, geometria, fix_gabarito,
+     visual ausente.
+  3. classificar + violacoes_diversidade contra o lote já aceito (inclui a
+     guarda de dados insuficientes de slots de classificação).
   4. Se violar: regenera com diversidade.montar_restricao e seed diferente,
      até `max_tentativas_diversidade` vezes.
   5. Se esgotar: fica o MELHOR candidato, com QUALIDADE PRIMEIRO — uma questão
@@ -36,6 +38,7 @@ from collections import Counter
 from pathlib import Path
 
 import diversidade as dv
+import verificador_geometria as vg
 from extract_data import USER_TEMPLATE
 from schema_utils import (
     ALTERNATIVE_LETTERS,
@@ -93,7 +96,54 @@ def montar_prompt(ano, habilidade, descricao, dificuldade, slot, restricao=None)
 # Peso das violações no desempate entre candidatos de mesma qualidade.
 # dados_ausentes torna a questão irresolvível no app (texto puro), então pesa
 # mais que as violações de diversidade, que só empobrecem o lote.
-PESO_VIOLACAO = {"dados_ausentes": 3}
+# dados_insuficientes (slot de classificação sem nenhuma medida/propriedade no
+# enunciado) é o mesmo defeito visto do lado da geometria: R1-Q2 "um ônibus
+# passa por quatro pontos formando um quadrilátero; classifique quanto aos
+# lados" e R2-Q7 "três garrafas PET formaram um triângulo" (9º H17,
+# 2026-10-01) não têm resposta. Mesmo peso.
+PESO_VIOLACAO = {"dados_ausentes": 3, "dados_insuficientes": 3}
+
+# Nome de CLASSE nas alternativas: só então o slot de classificação produziu de
+# fato uma pergunta de classificar. dv.dados_insuficientes_classificacao olha
+# só o enunciado (de propósito: as alternativas sempre trazem nomes de classe e
+# mascarariam a falta de dados); este filtro olha as alternativas para o
+# inverso — "Quantos lados tem um triângulo?" (2/3/4/5/6) num slot de
+# classificação não tem dígito nem propriedade no enunciado e está correta;
+# acusá-la de "dados insuficientes" seria falso positivo. Regex simples sobre
+# texto normalizado (sem acento), portável para TypeScript.
+_CLASSE_NAS_ALTERNATIVAS = re.compile(
+    r"equilater|isoscel|escalen|acutangul|obtusangul|retangul|quadrad|losang|trapezi"
+    r"|paralelogram")
+
+
+def _alternativas_classificam(questao):
+    alts = questao.get("alternativas") if isinstance(questao, dict) else None
+    if not isinstance(alts, dict):
+        return False
+    return bool(_CLASSE_NAS_ALTERNATIVAS.search(
+        dv.normalizar_texto(" ".join(str(v) for v in alts.values()))))
+
+
+def violacoes_slot(aceitas, obj, slot, ano, habilidade, quantidade, taxonomia=None):
+    """violacoes_diversidade com a guarda de dados insuficientes LIGADA.
+
+    A guarda é opt-in em diversidade.py porque muda quantas chamadas este
+    módulo faz por slot; quem liga é aqui. Ela só vale para tipos com
+    `exige_dados` (hoje: os de classificação de 9º H17) e só é mantida quando
+    as alternativas são nomes de classe (ver _alternativas_classificam).
+    Medido (2026-10-01, só leitura): nas 20 auditadas acusa R1-Q2 e R2-Q7 (os
+    2 rotulados dados ausentes) e R1-Q8 (bolo/tampa, sem dado nenhum), nenhuma
+    das 5 corretas. No corpus gerado de 9º H17 (133 únicas) a guarda bruta
+    acusava 2 e com o filtro acusa 1 (G-9H17-0023); a que saiu tem alternativas
+    descritivas ("Pode ter dois ângulos obtusos...") e não é pergunta de
+    classificar. Nas 311 ocorrências de 9º H17 em outputs/: 16 -> 1, e 13 das
+    15 retiradas são placeholders de dry-run com alternativas 10/12/14/16.
+    """
+    viol = dv.violacoes_diversidade(aceitas, obj, slot, ano, habilidade, quantidade,
+                                    taxonomia=taxonomia, checar_dados_classificacao=True)
+    if not _alternativas_classificam(obj):
+        viol = [v for v in viol if v["tipo"] != "dados_insuficientes"]
+    return viol
 
 
 def _chave(cand):
@@ -152,13 +202,38 @@ _ANCORA_PATTERN = re.compile(
     re.I,
 )
 
-# Substantivos que introduzem uma REFERÊNCIA A LETRA em português. Ficam num
-# grupo com flag LOCAL (?i:...) de propósito: o `[A-E]` dos padrões abaixo NÃO
-# pode ser case-insensitive, senão `\b[A-E]\b` passaria a casar o artigo "a", a
+# Substantivos que introduzem uma REFERÊNCIA A LETRA em português. São
+# insensíveis a caixa SÓ NELES: o `[A-E]` dos padrões abaixo NÃO pode ser
+# case-insensitive, senão `\b[A-E]\b` passaria a casar o artigo "a", a
 # conjunção "e" e a preposição "o", vetando praticamente todo o corpus. O bug
 # era o inverso — sem nenhuma flag, "Alternativa D" e "Letra B" (início de
 # frase, que é onde a citação mais aparece) escapavam do veto.
-_SUBST_LETRA = r"(?i:alternativas?|letras?|op[çc](?:[ãa]o|[õo]es)|itens|item)"
+# Antes isso era a flag LOCAL (?i:...), que é ES2025 (RegExp modifiers): o V8
+# do Node 24 aceita, mas Hermes e JavaScriptCore antigos dão SyntaxError e
+# permutar_alternativas quebraria no app (revisão adversarial de 2026-10-01).
+# _sem_caixa gera as classes explícitas ("op[çc]" -> "[Oo][Pp][çÇcC]"), que
+# qualquer motor aceita; tests/test_integracao_geometria confere que o
+# resultado casa exatamente o que a flag local casava.
+
+
+def _sem_caixa(padrao):
+    """Insensibilidade a caixa sem flag: cada letra vira [xX]. Só para padrões
+    de palavras (letras, ?, |, parênteses e classes simples, sem escapes)."""
+    assert "\\" not in padrao
+    saida, em_classe = [], False
+    for c in padrao:
+        if c in "[]":
+            em_classe = c == "["
+            saida.append(c)
+        elif c.isalpha() and c.upper() != c:
+            saida.append(c + c.upper() if em_classe else f"[{c}{c.upper()}]")
+        else:
+            saida.append(c)
+    return "".join(saida)
+
+
+_SUBST_LETRA = "(?:" + _sem_caixa(r"alternativas?|letras?|op[çc](?:[ãa]o|[õo]es)|itens|item") + ")"
+_SUBST_RESPOSTA = "(?:" + _sem_caixa(r"respostas?|afirma[çc](?:[ãa]o|[õo]es)|assertivas?") + ")"
 
 # Uma alternativa que REFERENCIA outras letras ("A e C") deixa de fazer sentido
 # quando as letras mudam de dono. 9 casos nos relatórios, 8 no treino.
@@ -193,10 +268,9 @@ _CITA_LETRA = re.compile(
 # questão quebrada. O veto é deliberadamente assimétrico nessa direção.
 _RESOL_CITA_LETRA = re.compile(
     _SUBST_LETRA + r"\s+[A-E]\b"
-    r"|(?i:respostas?|afirma[çc](?:[ãa]o|[õo]es)|assertivas?)\s+"
+    r"|" + _SUBST_RESPOSTA + r"\s+"
     r"(?:correta\s+)?(?:[ée]\s+)?(?:a\s+)?[A-E]\b"
-    r"|(?:" + _SUBST_LETRA + r"|(?i:respostas?|afirma[çc](?:[ãa]o|[õo]es)"
-    r"|assertivas?))[^.\n]{0,24}?\b[A-E]\b"
+    r"|(?:" + _SUBST_LETRA + r"|" + _SUBST_RESPOSTA + r")[^.\n]{0,24}?\b[A-E]\b"
     r"|[A-E]\s*\)\s*\S|\"[A-E]\"|'[A-E]'|[A-E]\s*[:\-]\s"
     r"|(?:primeir|segund|terceir|quart|quint|[úu]ltim)\w*\s+"
     r"(?:alternativa|op[çc][ãa]o|item|resposta)",
@@ -272,6 +346,29 @@ def _veredito(questao):
     return ({True: 2, None: 1, False: 0}[ok], motivo)
 
 
+def _assinatura_geometria(questao):
+    """O que o verificador de geometria conclui, SEM depender das letras.
+
+    (veredito, motivo, {texto da alternativa: V/F/I/?}, texto da sugestão).
+    Indexar pelo TEXTO e não pela letra é o que torna a assinatura comparável
+    antes e depois de permutar: a alternativa "Obtusângulo" tem de continuar
+    valendo V onde quer que caia.
+    """
+    veredito, det = vg.verificar_geometria(questao)
+    if veredito == "nao_aplicavel":
+        # O verificador não concluiu nada; os `valores` parciais que ele deixa
+        # no detalhe (ex.: motivo alternativa_nao_mapeada, G-9H17-0131) não são
+        # uma conclusão e não podem vetar a permutação — com eles, 10 de 9.575
+        # permutações medidas eram revertidas sem motivo.
+        return (veredito,)
+    alts = questao.get("alternativas") or {}
+    valores = det.get("valores") or {}
+    sug = det.get("sugestao")
+    return (veredito, det.get("motivo"),
+            tuple(sorted((str(alts.get(L)), str(v)) for L, v in valores.items())),
+            str(alts.get(sug)) if sug in alts else None)
+
+
 def permutar_alternativas(questao, seed, alvo=None):
     """Reatribui as letras das alternativas mantendo o SIGNIFICADO da questão.
 
@@ -286,7 +383,8 @@ def permutar_alternativas(questao, seed, alvo=None):
 
     Devolve SEMPRE uma questão válida: a original, intacta, quando há qualquer
     veto, quando o gabarito já está num slot âncora, ou quando a re-verificação
-    pós-permutação piorar check_consistency / check_structure.
+    pós-permutação piorar check_consistency / check_structure ou MUDAR o que o
+    verificador de geometria conclui (_assinatura_geometria).
     """
     if vetos_permutacao(questao):
         return questao
@@ -323,6 +421,21 @@ def permutar_alternativas(questao, seed, alvo=None):
         return questao
     if (check_structure({"questoes": [permutada]}, 1)
             != check_structure({"questoes": [questao]}, 1)):
+        return questao
+    # RE-VERIFICAÇÃO DE GEOMETRIA (2026-10-01). Questões de classificação de 9º
+    # H17 nomeiam entidades com LETRAS que coincidem com as das alternativas:
+    # R1-Q1 "a barraca A tem todos os ângulos agudos, a barraca B ..." com
+    # alternativas compostas "A barraca A é um triângulo retângulo, a barraca B
+    # é ...". O texto viaja inteiro (nada é reescrito), mas o verificador lê
+    # "A"/"B"/"C" como nomes de entidade; se a leitura dele mudar com a troca
+    # de posição — veredito, valor de alguma alternativa ou a alternativa
+    # sugerida — a permutação não acontece. Exigir a assinatura INTEIRA igual
+    # (não só o veredito) é a direção segura: vetar custa só não corrigir o
+    # viés de letra naquela questão. Medido (20 auditadas + 198 do corpus
+    # gerado + 311 de 9º H17 em outputs/, 5 seeds x 5 alvos): 9.575 permutações,
+    # 0 revertidas por esta checagem e veredito idêntico em todas — inclusive
+    # R1-Q1. Ver tests/test_integracao_geometria.py.
+    if _assinatura_geometria(permutada) != _assinatura_geometria(questao):
         return questao
     return permutada
 
@@ -380,7 +493,7 @@ def permutar_lote(questoes, seed):
 def gerar_lote_planejado(llama_cli, gguf_path, ano, habilidade, descricao, dificuldade,
                          quantidade, threads, grammar=None, retries=1, base_seed=None,
                          max_tentativas_diversidade=2, gen_fn=None, historico=None,
-                         taxonomia=None, verbose=False, permutar=True):
+                         taxonomia=None, verbose=False, permutar=True, modo_geometria=None):
     """Gera `quantidade` questões com plano de subtemas e regeneração guiada.
 
     gen_fn: substituto de test_model.generate (mesma assinatura) — para testes
@@ -398,6 +511,12 @@ def gerar_lote_planejado(llama_cli, gguf_path, ano, habilidade, descricao, dific
     violacoes (por slot, as que restaram), tempo_s, regeneracoes_diversidade,
     flags (check_structure do wrapper), detalhes (por slot),
     permutacoes_gabarito (quantas questões trocaram de letra).
+
+    modo_geometria: repassado a generate_validated ("ativo" | "sombra" | None =
+    verificador_geometria.MODO_GEOMETRIA, hoje "sombra"). Em modo ativo, questão
+    reprovada pela geometria sai de generate_validated como "falha" (rank 0),
+    então consome TENTATIVAS_QUALIDADE exatamente como a resposta fora das
+    alternativas.
     """
     t0 = time.perf_counter()
     quantidade = int(quantidade)
@@ -429,14 +548,17 @@ def gerar_lote_planejado(llama_cli, gguf_path, ano, habilidade, descricao, dific
             seed_item = base_seed * 1000 + slot["indice"] * 10 + tent
             r = generate_validated(llama_cli, gguf_path, prompt, threads, MAX_NEW_TOKENS,
                                    grammar=grammar, retries=retries, quantidade=1,
-                                   base_seed=seed_item, gen_fn=gen_fn)
+                                   base_seed=seed_item, gen_fn=gen_fn,
+                                   modo_geometria=modo_geometria)
             viol = []
             if r["obj"] is not None and tem_taxonomia:
-                viol = dv.violacoes_diversidade(aceitas, r["obj"], slot, ano, habilidade,
-                                                quantidade, taxonomia=taxonomia)
+                viol = violacoes_slot(aceitas, r["obj"], slot, ano, habilidade,
+                                      quantidade, taxonomia=taxonomia)
             cand = {"obj": r["obj"], "status": r["status"], "violacoes": viol,
                     "regeneracoes": r["regeneracoes"], "elapsed": r["elapsed"],
-                    "gen_tps": r["gen_tps"], "tentativa": tent}
+                    "gen_tps": r["gen_tps"], "tentativa": tent,
+                    "geometria": (r.get("geometria") or {}).get("veredito"),
+                    "reprovacoes_geometria": r.get("reprovacoes_geometria", 0)}
             candidatos.append(cand)
             if melhor is None or _chave(cand) > _chave(melhor):
                 melhor = cand
@@ -484,6 +606,10 @@ def gerar_lote_planejado(llama_cli, gguf_path, ano, habilidade, descricao, dific
             "status": melhor["status"], "tentativas_diversidade": len(candidatos),
             "tentativa_escolhida": melhor["tentativa"],
             "regeneracoes_qualidade": sum(c["regeneracoes"] for c in candidatos),
+            # aditivos (2026-10-01): veredito de geometria do candidato
+            # escolhido e quantas amostras do slot a geometria reprovou.
+            "geometria": melhor["geometria"],
+            "reprovacoes_geometria": sum(c["reprovacoes_geometria"] for c in candidatos),
             "tempo_modelo_s": round(sum(c["elapsed"] for c in candidatos), 2),
             "tempo_s": round(time.perf_counter() - t_slot, 2),
             "gen_tps": melhor["gen_tps"],

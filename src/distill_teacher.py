@@ -309,7 +309,9 @@ def subtema_divergente(questao, ano, habilidade, slot, taxonomia=None):
     alvo = next((s for s in hab["subtemas"] if s["id"] == slot["subtema"]), None)
     if alvo is None:
         return False
-    texto = diversidade.normalizar_texto(diversidade.texto_questao(questao))
+    # mesma máscara de classificar_questao ("triângulo retângulo" não é quadrilátero)
+    texto = diversidade.texto_para_palavras_chave(
+        diversidade.normalizar_texto(diversidade.texto_questao(questao)))
     regs = alvo["palavras_chave"] if isinstance(alvo["palavras_chave"], list) else [alvo["palavras_chave"]]
     return sum(len(re.findall(r, texto)) for r in regs if r) == 0
 
