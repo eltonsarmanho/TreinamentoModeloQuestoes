@@ -1,13 +1,16 @@
 \documentclass[aspectratio=169,11pt]{beamer}
 
 % ============================================================
-% R2 — Apresentação executiva dos dias 01 e 02/10/2026 (atualizada com a escala concluída).
+% R2 — Apresentação executiva dos dias 01 a 05/10/2026 (atualizada com o
+% fechamento do déficit, o gate multiseed e a promoção/publicação da v3).
 % Fontes dos números (todas em /home/nees/Documents/VSCodigo/TreinamentoModeloQuestoes):
 %   outputs/relatorios/VEREDITO_planejado_p32.json     (gates, 456 questões/modelo)
 %   outputs/testes_locais/teste_20261001_*.json + Log.txt  (teste local 9º H17)
-%   Doc/RELATORIO_BASE.md, outputs/relatorio_base.json  (cenário da base)
+%   Doc/RELATORIO_BASE_v3.md, outputs/relatorio_base_v3.json  (cenário final da base)
 %   outputs/calibracao_agentes.json, outputs/agentes/piloto_etapa3.json
-%   outputs/agentes/escala/, data/injecao_saeb.jsonl    (escala em execução)
+%   outputs/agentes/escala/, data/injecao_saeb.jsonl    (escala concluída)
+%   outputs/relatorios/VEREDITO_v3_multiseed.json       (gate multiseed, 90 amostras pareadas)
+%   https://huggingface.co/eltonsarmanho/qwen3-1.7b-questoes-matematica (v3 publicado)
 % ============================================================
 
 \usetheme{Madrid}
@@ -64,11 +67,11 @@
 \newtcolorbox{quest}[1][]{enhanced, colback=white, colframe=accentblue, boxrule=0.6pt,
   arc=2pt, left=4pt, right=4pt, top=2pt, bottom=2pt, fontupper=\scriptsize, #1}
 
-\title[R2 — 01 e 02/10/2026]{R2 — Apresentação executiva}
-\subtitle{Diversidade, qualidade e ampliação da base do gerador offline de questões (SAEB)}
-\author{Relatório de execução dos dias 1 e 2 de outubro de 2026}
+\title[R2 — 01 a 05/10/2026]{R2 — Apresentação executiva}
+\subtitle{Diversidade, qualidade, ampliação da base e promoção da v3 do gerador offline de questões (SAEB)}
+\author{Relatório de execução de 1 a 5 de outubro de 2026}
 \institute{Qwen3-1.7B + QLoRA + GGUF — geração offline no aplicativo}
-\date{2 de outubro de 2026}
+\date{5 de outubro de 2026}
 
 \begin{document}
 
@@ -86,18 +89,19 @@
       \item[\okmark] \textbf{Diversidade comprovada}: lotes de 10 questões sem repetição e com 10 contextos distintos.
       \item[\warnmark] \textbf{Teste real do 9º H17 expôs o ponto fraco}: só 5 de 20 questões corretas --- o gate não enxergava erro conceitual.
       \item[\faTools] \textbf{Resposta}: verificador de geometria, validador, revisor, árbitro e 2º revisor de outra família, com decisões humanas na base.
-      \item[\okmark] \textbf{Escala concluída}: base auditada por inteiro e ampliada de 1.435 para \textbf{2.607} exemplos (meta 2.370).
+      \item[\okmark] \textbf{Escala concluída}: base auditada por inteiro e ampliada de 1.435 para \textbf{2.717} exemplos (meta 2.370; déficit residual 198, concentrado em 34 habilidades).
+      \item[\okmark] \textbf{v3 retreinada e promovida}: gate multiseed (90 amostras pareadas, 3 sementes) aprovado nos 9 critérios; publicada no Hugging Face.
     \end{itemize}
     \column{0.40\textwidth}
     \begin{tikzpicture}
       \node[draw=okgreen, fill=lightgreen, rounded corners, minimum width=0.95\textwidth, minimum height=1.05cm, align=center]
-        (a) {\Large\bfseries 8/8 gates\\[-1pt]\small bloqueantes aprovados};
+        (a) {\Large\bfseries PROMOVIDO\\[-1pt]\small gate multiseed, 90 amostras};
       \node[draw=accentblue, fill=lightblue, rounded corners, minimum width=0.95\textwidth, minimum height=1.05cm, align=center, below=0.22cm of a]
         (b) {\Large\bfseries 0{,}773 $\to$ 0{,}797\\[-1pt]\small \textit{diversity\_score}};
       \node[draw=okgreen, fill=lightgreen, rounded corners, minimum width=0.95\textwidth, minimum height=1.05cm, align=center, below=0.22cm of b]
-        (c) {\Large\bfseries 1.435 $\to$ 2.607\\[-1pt]\small exemplos na base (+1.234 novos)};
+        (c) {\Large\bfseries 1.435 $\to$ 2.717\\[-1pt]\small exemplos na base (+1.282 novos)};
       \node[draw=warnorange, fill=lightorange, rounded corners, minimum width=0.95\textwidth, minimum height=1.05cm, align=center, below=0.22cm of c]
-        (d) {\Large\bfseries déficit 1.386 $\to$ 274\\[-1pt]\small em relação à meta de 2.370};
+        (d) {\Large\bfseries déficit 1.386 $\to$ 198\\[-1pt]\small em relação à meta de 2.370};
     \end{tikzpicture}
   \end{columns}
 \end{frame}
@@ -231,7 +235,7 @@
 % ============================================================
 \section{Cenário da base}
 % ------------------------------------------------------------
-\begin{frame}{Cenário da base: antes e depois da escala}
+\begin{frame}{Cenário da base: antes e depois da escala (déficit final)}
   \small
   \begin{columns}[T]
     \column{0.60\textwidth}
@@ -240,19 +244,19 @@
       \toprule
       \textbf{Ano} & \textbf{Hab.} & \textbf{Antes} & \textbf{Depois} & \textbf{Meta} & \textbf{Déficit} \\
       \midrule
-      1º & 3  & 203 & 231 & 90  & 1 \\
-      2º & 24 & 419 & 811 & 720 & 79 \\
+      1º & 3  & 203 & 232 & 90  & 0 \\
+      2º & 24 & 419 & 842 & 720 & 54 \\
       3º & 3  & 166 & 192 & 90  & 0 \\
       4º & 1  & 58  & 59  & 30  & 0 \\
-      5º & 22 & 249 & 622 & 660 & 89 \\
-      9º & 26 & 351 & 705 & 780 & 105 \\
+      5º & 22 & 249 & 657 & 660 & 68 \\
+      9º & 26 & 351 & 748 & 780 & 76 \\
       \midrule
-      \textbf{Total} & \textbf{79} & \textbf{1.446} & \textbf{2.620} & \textbf{2.370} & \textbf{274} \\
+      \textbf{Total} & \textbf{79} & \textbf{1.446} & \textbf{2.730} & \textbf{2.370} & \textbf{198} \\
       \bottomrule
     \end{tabularx}
 
     \vspace{5pt}
-    \scriptsize Questões efetivas (sem inconsistentes nem quase-duplicatas). Déficit: de 1.386 para 274; habilidades abaixo da meta: de 76 para 56 (de 79). Meta: mínimo de 30 por habilidade, 3 por subtema e 3 dificuldades equilibradas.
+    \scriptsize Questões efetivas (sem inconsistentes nem quase-duplicatas). Déficit: de 1.386 para 198 (41 Fácil, 42 Moderado, 28 Difícil, só para equilibrar dificuldade); habilidades abaixo da meta: de 76 para 34 (de 79). Meta: mínimo de 30 por habilidade, 3 por subtema e 3 dificuldades equilibradas. As tentativas restantes esbarraram nos mesmos filtros (subtema divergente, gabarito errado), não em orçamento — ver Riscos.
 
     \column{0.37\textwidth}
     \begin{tikzpicture}
@@ -261,7 +265,7 @@
         tick label style={font=\scriptsize}, ylabel={\scriptsize déficit},
         legend style={font=\scriptsize, at={(0.5,1.2)}, anchor=north, legend columns=2}]
         \addplot[fill=basegray!60] coordinates {(1º,30) (2º,457) (3º,26) (4º,2) (5º,438) (9º,433)};
-        \addplot[fill=okgreen!70] coordinates {(1º,1) (2º,79) (3º,0) (4º,0) (5º,89) (9º,105)};
+        \addplot[fill=okgreen!70] coordinates {(1º,0) (2º,54) (3º,0) (4º,0) (5º,68) (9º,76)};
         \legend{Antes, Depois}
       \end{axis}
     \end{tikzpicture}
@@ -424,7 +428,7 @@
 \end{frame}
 
 % ============================================================
-\section{Escala em execução}
+\section{Escala e promoção da v3}
 % ------------------------------------------------------------
 \begin{frame}{Escala concluída: o que foi gerado e auditado}
   \begin{columns}[T]
@@ -434,19 +438,21 @@
       \toprule
       \textbf{Indicador} & \textbf{Valor} \\
       \midrule
-      Questões novas aceitas                              & \textbf{1.234} \\
+      Questões novas aceitas                              & \textbf{1.248} \\
       \quad 2º / 5º / 9º ano                              & 408 / 383 / 385 \\
       \quad 1º / 3º / 4º ano                              & 29 / 27 / 2 \\
+      \quad Rodada de fechamento do déficit                & +14 \\
       Taxa de aceitação (aceitas/candidatas)              & $\approx$52\% \\
       Itens da base auditados                             & 1.435 \\
       Chamadas Maritaca (auditoria + injeção)             & $\approx$10,6 mil \\
       Árbitro Gemini: remoções confirmadas                & 43 de 48 \\
-      Base final (\texttt{train\_curado\_v3})             & \textbf{2.607} \\
+      2º revisor Gemini: chamadas reais / rejeições        & 157 / 19 \\
+      Base final (\texttt{train\_curado\_v3})             & \textbf{2.717} \\
       \bottomrule
     \end{tabularx}
 
     \vspace{3pt}
-    {\scriptsize Gasto abaixo da projeção (13,6 mil chamadas, $\approx$29 h). Dois processos em paralelo, com teto de chamadas por etapa.}
+    {\scriptsize Gasto abaixo da projeção. Dois processos em paralelo, com teto de chamadas por etapa; 2º revisor Gemini com teto de gasto (R\$150) e degradação automática sem ele se faltar cota.}
 
     \column{0.42\textwidth}
     \begin{tikzpicture}
@@ -456,6 +462,36 @@
         \addplot[fill=accentblue] coordinates {(2,4º) (27,3º) (29,1º) (385,9º) (383,5º) (408,2º)};
       \end{axis}
     \end{tikzpicture}
+  \end{columns}
+\end{frame}
+
+% ------------------------------------------------------------
+\begin{frame}{v3 retreinada e promovida: gate multiseed}
+  \footnotesize
+  Gate revisado em 05/10, \textbf{depois} de um veredito reprovado com 1 passada de 30 amostras (mesma prática do G4 em 16/09 e do G11 em 30/09): agora exige $\ge$3 rodadas de seed pareadas (90 amostras), decidindo G2/G3 por McNemar em vez de uma única passada.
+
+  \vspace{3pt}
+  \begin{tabularx}{\textwidth}{@{}l X r@{}}
+    \toprule
+    \textbf{Gate} & \textbf{Critério} & \textbf{Resultado (90 amostras, 3 sementes)} \\
+    \midrule
+    G1       & Contrato estrutural, todas as rodadas                 & \okmark \\
+    G2\textsuperscript{*} & Falhas pós best-of-N: sem piora signif. e $\le$5\%     & 2/90 $\to$ 2/90 (2,2\%; $p=1{,}000$) \okmark \\
+    G3\textsuperscript{*} & Consistência: sem piora significativa                  & 100\% (n=31) $\to$ 94,3\% (n=35); $p=0{,}500$ \okmark \\
+    G4--G8   & Visual, dificuldade, viés, esquecimento, velocidade, todas as rodadas & \okmark (todos) \\
+    \bottomrule
+  \end{tabularx}
+
+  \vspace{6pt}
+  \begin{columns}[T]
+    \column{0.49\textwidth}
+    \begin{tcolorbox}[colback=lightgreen, colframe=okgreen, boxrule=0.5pt, arc=2pt, title={\scriptsize Decisão: PROMOVIDO}, fonttitle=\bfseries, coltitle=white, colbacktitle=okgreen, left=4pt, right=4pt, top=2pt, bottom=2pt]
+      \scriptsize Ganhos: verificabilidade por máquina 31 $\to$ 35 (de 90); viés de gabarito (letra mais frequente) 43,8\% $\to$ 30,0\%.
+    \end{tcolorbox}
+    \column{0.49\textwidth}
+    \begin{tcolorbox}[colback=lightblue, colframe=accentblue, boxrule=0.5pt, arc=2pt, title={\scriptsize Publicado}, fonttitle=\bfseries, coltitle=white, colbacktitle=accentblue, left=4pt, right=4pt, top=2pt, bottom=2pt]
+      \scriptsize \texttt{huggingface.co/eltonsarmanho/}\\\texttt{qwen3-1.7b-questoes-matematica} --- LoRA, GGUF Q4\_K\_M, dataset e model card da v3.
+    \end{tcolorbox}
   \end{columns}
 \end{frame}
 
@@ -505,8 +541,8 @@
       d/.style={align=center, text width=3.1cm}]
     \draw[->, thick, accentblue] (0,0) -- (12.4,0);
     \foreach \x/\t/\s in {0.6/Feito/{Modelo promovido;\\ verificador e agentes\\ calibrados},
-                          3.4/{Escala (feito)}/{Base v3: 2.607\\ exemplos, auditada,\\ com decisões humanas},
-                          6.2/{Retreino}/{Treino na base v3;\\ novo gate pareado\\ (32 prompts)},
+                          3.4/{Escala (feito)}/{Base v3: 2.717\\ exemplos, auditada,\\ com decisões humanas},
+                          6.2/{Retreino (feito)}/{v3 treinada;\\ gate multiseed\\ PROMOVIDO; no HF},
                           9.0/Piloto/{Botão ``reportar erro'';\\ meta: $\le$2\% em\\ questões entregues},
                           11.8/{App offline}/{Geração no celular\\ com guardas portadas\\ ao TypeScript}}{
       \node[mk] at (\x,0) {};
@@ -519,8 +555,8 @@
   \footnotesize
   \begin{tabularx}{0.96\textwidth}{@{}lX@{}}
     \toprule
-    \textbf{Base} & de 1.435 para 2.607 exemplos (feito); falta fechar 274 do déficit, com mínimo de 30 por habilidade e 3 dificuldades equilibradas; zero questão com erro conhecido. \\
-    \textbf{Qualidade} & verificação da correção em \emph{todas} as habilidades, não só nas de conta; o gate passa a medir também o que hoje é ``não verificável''. \\
+    \textbf{Base} & de 1.435 para 2.717 exemplos (feito); déficit residual de 198, concentrado em 34 habilidades (2º, 5º e 9º ano), já sem corresponder a orçamento de API --- precisa de outra abordagem de geração; zero questão com erro conhecido. \\
+    \textbf{Qualidade} & verificação da correção em \emph{todas} as habilidades, não só nas de conta; o gate passa a medir também o que hoje é ``não verificável''; verificador de geometria ainda em modo sombra. \\
     \textbf{Produto} & questões diversas, corretas e com resposta única, geradas offline em 2--3 min por lote de 10, com fallback ao modelo anterior se os reportes passarem de 2\%. \\
     \bottomrule
   \end{tabularx}
@@ -533,19 +569,19 @@
     \column{0.49\textwidth}
     \textbf{Riscos conhecidos}
     \begin{itemize}\setlength\itemsep{3pt}
-      \item[\warnmark] Juízes do mesmo modelo erram juntos; o árbitro Gemini atua só na remoção e o 2º revisor Gemini ainda não foi aplicado às 1.234 aceitas.
-      \item[\warnmark] Verificador de geometria cobre 9º H16/H17 e se abstém em cerca de 40\% das questões de H17.
+      \item[\warnmark] Juízes do mesmo modelo erram juntos; o 2º revisor Gemini só cobre as injeções novas (157 chamadas) --- as $\approx$1.234 aceitas em rodadas anteriores ainda não têm voto do Gemini.
+      \item[\warnmark] Verificador de geometria cobre 9º H16/H17, se abstém em cerca de 40\% das questões de H17, e segue em modo sombra (não bloqueia nem regenera).
       \item[\warnmark] Os números de calibração foram ajustados nos mesmos casos (\emph{in-sample}); falta conjunto cego.
       \item[\warnmark] Tempo medido no PC, ainda não no celular.
-      \item[\warnmark] Um erro de código (resposta nula) interrompeu a injeção do 2º ano; corrigido e retomada.
+      \item[\warnmark] 34 habilidades (198 itens) seguem abaixo da meta; as tentativas restantes esbarraram nos mesmos filtros de qualidade, não em orçamento.
     \end{itemize}
     \column{0.49\textwidth}
     \textbf{Próximos passos}
     \begin{itemize}\setlength\itemsep{3pt}
       \item[\faCheckSquare] Conferir amostra das 43 remoções automáticas e os 132 itens em revisão humana.
-      \item[\faCheckSquare] Decidir sobre rejulgar as 1.234 aceitas com o 2º revisor Gemini ($\approx$14\% de reprovação).
+      \item[\faCheckSquare] Decidir sobre rejulgar as $\approx$1.234 aceitas sem voto do Gemini ($\approx$14\% de reprovação esperada, pela calibração).
       \item[\faCheckSquare] Auditoria humana cega de 30--40 questões novas de H17 antes de ligar o verificador em modo ativo.
-      \item[\faCheckSquare] Retreino e novo gate com baseline regerado.
+      \item[\okmark] Retreino e gate multiseed com \texttt{baseline\_v1}: \textbf{concluído, v3 PROMOVIDA e publicada}.
       \item[\faCheckSquare] Guia de portabilidade para o React Native.
     \end{itemize}
   \end{columns}
