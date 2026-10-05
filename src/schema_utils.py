@@ -77,6 +77,14 @@ def depende_de_visual_ausente(texto):
 
 QUESTOES_KEY = "questoes"
 ALTERNATIVE_LETTERS = "ABCDE"
+
+
+def _letra_valida(v):
+    """True só para uma letra A-E. `None in "ABCDE"` levanta TypeError (derrubou a
+    injeção do 2º ano às 21h05 de 01/10, com resposta_correta nula) e `"" in
+    "ABCDE"`/`"AB" in "ABCDE"` davam True: a checagem por substring aprovava
+    resposta vazia ou com duas letras."""
+    return isinstance(v, str) and v in tuple(ALTERNATIVE_LETTERS)
 REQUIRED_KEYS = {
     "enunciado",
     "alternativas",
@@ -146,7 +154,7 @@ def check_structure(obj, quantidade_esperada=None):
         isinstance(q, dict) and REQUIRED_KEYS.issubset(q.keys()) for q in questoes
     )
     flags["resposta_valida"] = all(
-        isinstance(q, dict) and q.get("resposta_correta") in ALTERNATIVE_LETTERS
+        isinstance(q, dict) and _letra_valida(q.get("resposta_correta"))
         for q in questoes
     )
     flags["difficulty_valida"] = all(

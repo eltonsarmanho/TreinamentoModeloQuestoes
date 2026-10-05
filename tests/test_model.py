@@ -714,8 +714,12 @@ def interactive(llama_cli, gguf_path, threads, grammar=None, retries=1, modo_geo
 
 
 def batch(llama_cli, gguf_path, threads, num_samples, grammar=None, retries=1, raw=False,
-          val_path=None, report_path=None, modo_geometria=None):
-    examples = [json.loads(line) for line in open(val_path or VAL_PATH, encoding="utf-8")]
+          val_path=None, report_path=None, modo_geometria=None, seed_rodada=0):
+    """seed_rodada=0 reproduz exatamente as seeds históricas (base_seed=i).
+    Rodadas > 0 deslocam a seed de cada item em 1000*rodada: mesma rodada nos
+    dois modelos = comparação continua PAREADA, só que sobre outra amostragem
+    (usado pelo gate multiseed de promover_checkpoint.py)."""
+    examples =[json.loads(line) for line in open(val_path or VAL_PATH, encoding="utf-8")]
     if num_samples:
         examples = examples[:num_samples]
 
@@ -741,7 +745,7 @@ def batch(llama_cli, gguf_path, threads, num_samples, grammar=None, retries=1, r
         print(f"[{i}/{len(examples)}] {user_msg[:80]}...")
         r = generate_validated(
             llama_cli, gguf_path, user_msg, threads, MAX_NEW_TOKENS,
-            grammar=grammar, retries=retries, base_seed=i,
+            grammar=grammar, retries=retries, base_seed=i + 1000 * seed_rodada,
             modo_geometria=modo_geometria,
         )
         obj, flags, text = r["obj"], r["flags"], r["text"]
@@ -828,6 +832,8 @@ def batch(llama_cli, gguf_path, threads, num_samples, grammar=None, retries=1, r
         "motor": "llama.cpp (llama-cli)",
         "modo": modo,
         "num_amostras": n,
+        "seed_rodada": seed_rodada,
+        "retries": retries,
         "estrutura": {
             "json_valido_pct": pct("json_valido"),
             "wrapper_valido_pct": pct("wrapper_valido"),
@@ -943,6 +949,9 @@ def main():
     parser.add_argument("--num-samples", type=int, default=None)
     parser.add_argument("--val", default=None, help="conjunto de avaliação (padrão: data/val.jsonl)")
     parser.add_argument("--report", default=None, help="arquivo de saída do relatório")
+    parser.add_argument("--seed-rodada", type=int, default=0,
+                        help="rodada de seeds do batch (0 = seeds históricas); use a MESMA "
+                             "rodada no baseline e no candidato para manter o pareamento")
 
     parser.add_argument("--no-grammar", action="store_true",
                         help="não usar a grammar GBNF (estrutura fica por conta do modelo)")
@@ -969,7 +978,8 @@ def main():
     if args.batch:
         batch(llama_cli, gguf_path, args.threads, args.num_samples,
               grammar=grammar, retries=args.retries, raw=args.raw,
-              val_path=args.val, report_path=args.report, modo_geometria=args.geometria)
+              val_path=args.val, report_path=args.report, modo_geometria=args.geometria,
+              seed_rodada=args.seed_rodada)
     elif args.ano and args.habilidade:
         run_one(
             llama_cli, gguf_path, args.ano, args.habilidade,

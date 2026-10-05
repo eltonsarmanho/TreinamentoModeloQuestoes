@@ -1,0 +1,555 @@
+\documentclass[aspectratio=169,11pt]{beamer}
+
+% ============================================================
+% R2 — Apresentação executiva dos dias 01 e 02/10/2026 (atualizada com a escala concluída).
+% Fontes dos números (todas em /home/nees/Documents/VSCodigo/TreinamentoModeloQuestoes):
+%   outputs/relatorios/VEREDITO_planejado_p32.json     (gates, 456 questões/modelo)
+%   outputs/testes_locais/teste_20261001_*.json + Log.txt  (teste local 9º H17)
+%   Doc/RELATORIO_BASE.md, outputs/relatorio_base.json  (cenário da base)
+%   outputs/calibracao_agentes.json, outputs/agentes/piloto_etapa3.json
+%   outputs/agentes/escala/, data/injecao_saeb.jsonl    (escala em execução)
+% ============================================================
+
+\usetheme{Madrid}
+\usecolortheme{default}
+\setbeamertemplate{navigation symbols}{}
+\setbeamertemplate{footline}[frame number]
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[brazil]{babel}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta, positioning, shapes.geometric, fit, backgrounds, calc}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.17}
+\usepackage{fontawesome5}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{array}
+\usepackage{colortbl}
+\usepackage{tcolorbox}
+\tcbuselibrary{skins}
+\usepackage{siunitx}
+\sisetup{output-decimal-marker={,}, group-separator={.}}
+
+% ---------- paleta (mesma do R1) ----------
+\definecolor{okgreen}{RGB}{34,139,34}
+\definecolor{warnorange}{RGB}{204,102,0}
+\definecolor{badred}{RGB}{178,34,34}
+\definecolor{basegray}{RGB}{90,90,90}
+\definecolor{accentblue}{RGB}{31,78,121}
+\definecolor{lightblue}{RGB}{221,235,247}
+\definecolor{lightgreen}{RGB}{226,240,217}
+\definecolor{lightred}{RGB}{248,225,225}
+\definecolor{lightorange}{RGB}{252,235,214}
+
+\setbeamercolor{structure}{fg=accentblue}
+
+\newcommand{\okmark}{{\color{okgreen}\faCheckCircle}}
+\newcommand{\warnmark}{{\color{warnorange}\faExclamationTriangle}}
+\newcommand{\badmark}{{\color{badred}\faTimesCircle}}
+
+% Ilustrações externas: se o arquivo ainda não existir em img/, mostra um
+% quadro tracejado com o nome do arquivo a baixar (Freepik/Pixabay/Pexels).
+\newcommand{\figext}[3][0.3\textwidth]{%
+  \IfFileExists{img/#2}{\includegraphics[width=#1]{img/#2}}{%
+    \begin{tikzpicture}
+      \node[draw=basegray, dashed, rounded corners, minimum width=#1, minimum height=0.55*#1,
+            align=center, text=basegray, font=\tiny, inner sep=3pt]
+        {\faImage\\[2pt]\texttt{\detokenize{img/#2}}\\[1pt]#3};
+    \end{tikzpicture}}}
+
+\newtcolorbox{quest}[1][]{enhanced, colback=white, colframe=accentblue, boxrule=0.6pt,
+  arc=2pt, left=4pt, right=4pt, top=2pt, bottom=2pt, fontupper=\scriptsize, #1}
+
+\title[R2 — 01 e 02/10/2026]{R2 — Apresentação executiva}
+\subtitle{Diversidade, qualidade e ampliação da base do gerador offline de questões (SAEB)}
+\author{Relatório de execução dos dias 1 e 2 de outubro de 2026}
+\institute{Qwen3-1.7B + QLoRA + GGUF — geração offline no aplicativo}
+\date{2 de outubro de 2026}
+
+\begin{document}
+
+% ------------------------------------------------------------
+\begin{frame}
+  \titlepage
+\end{frame}
+
+% ------------------------------------------------------------
+\begin{frame}{Resumo executivo}
+  \begin{columns}[T]
+    \column{0.58\textwidth}
+    \begin{itemize}\setlength\itemsep{5pt}
+      \item[\okmark] \textbf{Modelo promovido} em todos os 8 gates bloqueantes (456 questões por modelo, 96 pares prompt$\times$semente).
+      \item[\okmark] \textbf{Diversidade comprovada}: lotes de 10 questões sem repetição e com 10 contextos distintos.
+      \item[\warnmark] \textbf{Teste real do 9º H17 expôs o ponto fraco}: só 5 de 20 questões corretas --- o gate não enxergava erro conceitual.
+      \item[\faTools] \textbf{Resposta}: verificador de geometria, validador, revisor, árbitro e 2º revisor de outra família, com decisões humanas na base.
+      \item[\okmark] \textbf{Escala concluída}: base auditada por inteiro e ampliada de 1.435 para \textbf{2.607} exemplos (meta 2.370).
+    \end{itemize}
+    \column{0.40\textwidth}
+    \begin{tikzpicture}
+      \node[draw=okgreen, fill=lightgreen, rounded corners, minimum width=0.95\textwidth, minimum height=1.05cm, align=center]
+        (a) {\Large\bfseries 8/8 gates\\[-1pt]\small bloqueantes aprovados};
+      \node[draw=accentblue, fill=lightblue, rounded corners, minimum width=0.95\textwidth, minimum height=1.05cm, align=center, below=0.22cm of a]
+        (b) {\Large\bfseries 0{,}773 $\to$ 0{,}797\\[-1pt]\small \textit{diversity\_score}};
+      \node[draw=okgreen, fill=lightgreen, rounded corners, minimum width=0.95\textwidth, minimum height=1.05cm, align=center, below=0.22cm of b]
+        (c) {\Large\bfseries 1.435 $\to$ 2.607\\[-1pt]\small exemplos na base (+1.234 novos)};
+      \node[draw=warnorange, fill=lightorange, rounded corners, minimum width=0.95\textwidth, minimum height=1.05cm, align=center, below=0.22cm of c]
+        (d) {\Large\bfseries déficit 1.386 $\to$ 274\\[-1pt]\small em relação à meta de 2.370};
+    \end{tikzpicture}
+  \end{columns}
+\end{frame}
+
+% ============================================================
+\section{Diversidade}
+% ------------------------------------------------------------
+\begin{frame}{O modelo atingiu diversidade: números do gate decisório}
+  \begin{columns}[T]
+    \column{0.52\textwidth}
+    \small
+    \begin{tabularx}{\textwidth}{@{}Xrr@{}}
+      \toprule
+      \textbf{Métrica} & \textbf{Antigo} & \textbf{Novo} \\
+      \midrule
+      \textit{diversity\_score}        & 0,773  & \textbf{0,797} \\
+      Cobertura de subtemas            & 0,716  & \textbf{0,778} \\
+      Duplicatas semânticas            & 0,0028 & \textbf{0,000} \\
+      Aderência à habilidade           & 75,5\% & \textbf{82,4\%} \\
+      Depende de figura ausente        & 2,4\%  & \textbf{0,2\%} \\
+      Tempo por questão (CPU)          & 14,4 s & 16,4 s \\
+      \bottomrule
+    \end{tabularx}
+
+    \vspace{4pt}
+    \scriptsize 456 questões por modelo; mesmas sementes e prompts (comparação pareada); modo planejado, sem regenerações.
+
+    \column{0.46\textwidth}
+    \begin{tikzpicture}
+      \begin{axis}[ybar, width=\textwidth, height=5.2cm, bar width=9pt, ymin=0, ymax=100,
+        ylabel={\scriptsize \%}, symbolic x coords={Aderência, Cobertura},
+        xtick=data, tick label style={font=\scriptsize}, ylabel style={font=\scriptsize},
+        legend style={font=\scriptsize, at={(0.5,1.18)}, anchor=north, legend columns=2},
+        nodes near coords, nodes near coords style={font=\tiny}, enlarge x limits=0.35]
+        \addplot[fill=basegray!60] coordinates {(Aderência,75.5) (Cobertura,71.6)};
+        \addplot[fill=accentblue] coordinates {(Aderência,82.4) (Cobertura,77.8)};
+        \legend{Antigo, Novo}
+      \end{axis}
+    \end{tikzpicture}
+  \end{columns}
+\end{frame}
+
+% ------------------------------------------------------------
+\begin{frame}{Exemplo: um lote de 10 questões (9º ano, H17, Fácil)}
+  \footnotesize
+  Plano de cobertura do lote R2 de \texttt{outputs/testes\_locais}: cada questão recebeu subtema, raciocínio e contexto \emph{diferentes}.
+
+  \vspace{3pt}
+  \begin{tabularx}{\textwidth}{@{}c l l l c@{}}
+    \toprule
+    \textbf{\#} & \textbf{Subtema} & \textbf{Raciocínio} & \textbf{Contexto} & \textbf{Correta?} \\
+    \midrule
+    1  & triângulo     & lados     & festa junina   & \okmark \\
+    2  & quadrilátero  & ângulos   & loja           & \badmark \\
+    3  & triângulo     & ângulos   & coleção        & \badmark \\
+    4  & quadrilátero  & lados     & horta          & \badmark \\
+    5  & triângulo     & lados     & biblioteca     & \okmark \\
+    6  & quadrilátero  & ângulos   & esporte        & \badmark \\
+    7  & triângulo     & ângulos   & reciclagem     & \badmark \\
+    8  & quadrilátero  & lados     & mesada         & \badmark \\
+    9  & triângulo     & lados     & feira          & \okmark \\
+    10 & quadrilátero  & ângulos   & culinária      & \badmark \\
+    \bottomrule
+  \end{tabularx}
+
+  \vspace{4pt}
+  \begin{tcolorbox}[colback=lightblue, colframe=accentblue, boxrule=0.4pt, arc=2pt, left=4pt, right=4pt, top=2pt, bottom=2pt]
+    \scriptsize \textbf{Leitura:} diversidade de contexto e de subtema = 100\% (coberta). A coluna da direita mostra por que diversidade \emph{não basta}: o plano pedia combinações que o currículo não ensina (quadrilátero por ângulos), e a correção da matemática precisava de um verificador próprio.
+  \end{tcolorbox}
+\end{frame}
+
+% ------------------------------------------------------------
+\begin{frame}{Exemplos de questões geradas e aprovadas na auditoria}
+  \begin{columns}[T]
+    \column{0.49\textwidth}
+    \begin{quest}[title={\scriptsize 9º ano H17 --- festa junina (correta)}, coltitle=white, colbacktitle=accentblue, fonttitle=\bfseries]
+      Em uma festa junina, as barracas formam triângulos. A barraca A tem todos os ângulos agudos, a B tem um ângulo obtuso e a C tem um ângulo reto. Como os triângulos podem ser classificados quanto aos ângulos?\\[2pt]
+      D) A é agudo, B é obtusângulo e C é retângulo. \textbf{Gabarito: D}
+    \end{quest}
+    \vspace{3pt}
+    \begin{quest}[title={\scriptsize 9º ano H17 --- sem contexto (correta)}, coltitle=white, colbacktitle=accentblue, fonttitle=\bfseries]
+      Triângulo ABC tem lados AB = 5 cm, BC = 5 cm e CA = 6 cm. Qual é o tipo de triângulo?\\[2pt]
+      B) Isósceles. \textbf{Gabarito: B}\\
+      {\color{basegray}\emph{Resolução: dois lados iguais (AB = BC = 5 cm).}}
+    \end{quest}
+    \column{0.49\textwidth}
+    \begin{quest}[title={\scriptsize 9º ano H17 --- barraca na festa junina (correta)}, coltitle=white, colbacktitle=accentblue, fonttitle=\bfseries]
+      Na festa junina, os organizadores decoraram uma barraca triangular com lados de 8 m, 10 m e 12 m. Como os lados são diferentes entre si, qual é o tipo de triângulo?\\[2pt]
+      E) Escaleno. \textbf{Gabarito: E}
+    \end{quest}
+    \vspace{3pt}
+    \begin{quest}[title={\scriptsize 9º ano H17 --- prateleiras da biblioteca (correta)}, coltitle=white, colbacktitle=accentblue, fonttitle=\bfseries]
+      Na biblioteca da escola há prateleiras em forma de triângulo. Um deles tem todos os lados iguais. Como se chama esse tipo de triângulo?\\[2pt]
+      D) Equilátero. \textbf{Gabarito: D}
+    \end{quest}
+  \end{columns}
+  \vspace{3pt}
+  {\scriptsize Exemplos tirados de \texttt{outputs/testes\_locais}; confirmados na auditoria matemática (Log.txt). A diversidade vem do plano, a correção vem da verificação.}
+\end{frame}
+
+% ------------------------------------------------------------
+\begin{frame}{O lado B: o teste local revelou erros que o gate não media}
+  \small
+  Dois lotes de 10 questões (9º H17, Fácil, \SI{125}{s}--\SI{159}{s} por lote) foram auditados questão a questão: \textbf{5 corretas e 15 com defeito}.
+
+  \vspace{4pt}
+  \begin{columns}[T]
+    \column{0.60\textwidth}
+    \footnotesize
+    \begin{tabularx}{\textwidth}{@{}Xc@{}}
+      \toprule
+      \textbf{Classe de erro (exemplo)} & \textbf{Qtd.} \\
+      \midrule
+      Premissa impossível (triângulo com dois ângulos retos) & 4 \\
+      Gabarito errado (4 ângulos retos $\Rightarrow$ ``quadrado''; 5, 7, 9 ``acutângulo'') & 4 \\
+      Mais de uma resposta correta (90--45--45 é retângulo \emph{e} isósceles) & 3 \\
+      Dados ausentes (``um ônibus passa por 4 pontos'') & 4 \\
+      \midrule
+      \textbf{Corretas e únicas} & \textbf{5} \\
+      \bottomrule
+    \end{tabularx}
+    \column{0.37\textwidth}
+    \begin{tcolorbox}[colback=lightorange, colframe=warnorange, boxrule=0.5pt, arc=2pt, left=5pt, right=5pt]
+      \scriptsize\textbf{Causa central:} o modelo infere ``tem uma propriedade de X $\Rightarrow$ é X'', ignorando a hierarquia (quadrado $\subset$ retângulo) e que lados e ângulos são eixos distintos.
+
+      \vspace{3pt}\textbf{Por que o gate não viu:} o verificador só conferia contas; em 9º H17, 283 de 311 questões eram ``não verificáveis''.
+    \end{tcolorbox}
+  \end{columns}
+\end{frame}
+
+% ============================================================
+\section{Cenário da base}
+% ------------------------------------------------------------
+\begin{frame}{Cenário da base: antes e depois da escala}
+  \small
+  \begin{columns}[T]
+    \column{0.60\textwidth}
+    \footnotesize
+    \begin{tabularx}{\textwidth}{@{}l r r r r r@{}}
+      \toprule
+      \textbf{Ano} & \textbf{Hab.} & \textbf{Antes} & \textbf{Depois} & \textbf{Meta} & \textbf{Déficit} \\
+      \midrule
+      1º & 3  & 203 & 231 & 90  & 1 \\
+      2º & 24 & 419 & 811 & 720 & 79 \\
+      3º & 3  & 166 & 192 & 90  & 0 \\
+      4º & 1  & 58  & 59  & 30  & 0 \\
+      5º & 22 & 249 & 622 & 660 & 89 \\
+      9º & 26 & 351 & 705 & 780 & 105 \\
+      \midrule
+      \textbf{Total} & \textbf{79} & \textbf{1.446} & \textbf{2.620} & \textbf{2.370} & \textbf{274} \\
+      \bottomrule
+    \end{tabularx}
+
+    \vspace{5pt}
+    \scriptsize Questões efetivas (sem inconsistentes nem quase-duplicatas). Déficit: de 1.386 para 274; habilidades abaixo da meta: de 76 para 56 (de 79). Meta: mínimo de 30 por habilidade, 3 por subtema e 3 dificuldades equilibradas.
+
+    \column{0.37\textwidth}
+    \begin{tikzpicture}
+      \begin{axis}[ybar, width=\textwidth, height=5.4cm, bar width=7pt, ymin=0, ymax=480,
+        symbolic x coords={1º,2º,3º,4º,5º,9º}, xtick=data,
+        tick label style={font=\scriptsize}, ylabel={\scriptsize déficit},
+        legend style={font=\scriptsize, at={(0.5,1.2)}, anchor=north, legend columns=2}]
+        \addplot[fill=basegray!60] coordinates {(1º,30) (2º,457) (3º,26) (4º,2) (5º,438) (9º,433)};
+        \addplot[fill=okgreen!70] coordinates {(1º,1) (2º,79) (3º,0) (4º,0) (5º,89) (9º,105)};
+        \legend{Antes, Depois}
+      \end{axis}
+    \end{tikzpicture}
+  \end{columns}
+\end{frame}
+
+% ------------------------------------------------------------
+\begin{frame}{Por que estamos aumentando (e curando) a base}
+  \small
+  \begin{columns}[T]
+    \column{0.49\textwidth}
+    \begin{itemize}\setlength\itemsep{4pt}
+      \item[\faChartBar] \textbf{76 das 79 habilidades abaixo da meta}; mediana de apenas 11 exemplos por habilidade.
+      \item[\faBug] \textbf{9º H17 tinha 7 exemplos} --- a causa raiz dos erros do teste local.
+      \item[\faEyeSlash] \textbf{37 habilidades sem gabarito verificável} automaticamente (geometria, medidas, leitura de dados).
+      \item[\faBalanceScale] Letra E é o gabarito em só 3\% dos itens; 24 habilidades com subtemas vazios.
+    \end{itemize}
+    \column{0.49\textwidth}
+    \begin{itemize}\setlength\itemsep{4pt}
+      \item[\faFileExcel] \textbf{17 itens reais corrompidos pela planilha}: frações viraram datas (``3/6'' $\to$ ``2025-06-03''). 15 restaurados, 2 removidos por ambiguidade.
+      \item[\faTrash] \textbf{19 removidos} por decisão humana (erro matemático, resposta não única ou dados insuficientes).
+      \item[\faClipboardCheck] \textbf{Validação também afetada}: 4 de 30 itens quebrados em \texttt{val.jsonl} --- as métricas devem descontá-los.
+      \item[\faBullseye] Objetivo: \textbf{quantidade, qualidade e diversidade} juntas, não só volume.
+    \end{itemize}
+  \end{columns}
+\end{frame}
+
+% ============================================================
+\section{Estratégia}
+% ------------------------------------------------------------
+\begin{frame}{Estratégia em curso: quatro frentes}
+  \centering
+  \begin{tikzpicture}[node distance=0.35cm, every node/.style={font=\scriptsize},
+      box/.style={draw=accentblue, fill=lightblue, rounded corners, text width=5.0cm, minimum height=1.45cm, align=left, inner sep=5pt}]
+    \node[box] (a) {\textbf{\faCogs\ 1. Inferência segura}\\ plano de subtemas, guardas, permutação do gabarito e verificador de geometria};
+    \node[box, right=0.5cm of a] (b) {\textbf{\faSitemap\ 2. Plano corrigido}\\ combinações subtema$\times$raciocínio válidas; pergunta nomeia o eixo};
+    \node[box, below=0.45cm of a] (c) {\textbf{\faDatabase\ 3. Base ampliada e curada}\\ injeção por habilidade com dois juízes; auditoria de tudo o que já existe};
+    \node[box, right=0.5cm of c] (d) {\textbf{\faUserCheck\ 4. Decisão humana no centro}\\ remover, manter ou editar item; precedência sobre as regras automáticas};
+  \end{tikzpicture}
+
+  \vspace{6pt}
+  \footnotesize
+  \begin{tabularx}{0.94\textwidth}{@{}lX@{}}
+    \toprule
+    \textbf{Verificador de geometria} & aprova 5/5 corretas e reprova 15/15 erradas do teste local; 0 reprovações em 9.294 questões do treino/validação. \\
+    \textbf{Plano corrigido} & quadrilátero pedido pelas propriedades combinadas, como nos itens reais; mudou só 7 das 79 habilidades. \\
+    \bottomrule
+  \end{tabularx}
+\end{frame}
+
+% ------------------------------------------------------------
+\begin{frame}{Gates de promoção aprovados (rodada decisória, 32 prompts)}
+  \footnotesize
+  \begin{tabularx}{\textwidth}{@{}l X r r c@{}}
+    \toprule
+    \textbf{Gate} & \textbf{Critério} & \textbf{Antigo} & \textbf{Novo} & \textbf{Status} \\
+    \midrule
+    P1  & JSON válido                                     & 100\%   & 100\%   & \okmark \\
+    P2  & Quantidade entregue                             & 100\%   & 100\%   & \okmark \\
+    P3  & Gabarito inconsistente ($\le$ base$+$1\,pp e $\le$2\%) & 0,0\%   & 0,0\%   & \okmark \\
+    P4  & Aderência à habilidade                          & 75,5\%  & 82,4\%  & \okmark \\
+    P5  & Depende de figura ausente                       & 2,4\%   & 0,2\%   & \okmark \\
+    P6  & Dificuldade correta                             & 100\%   & 100\%   & \okmark \\
+    P7  & Sem esquecimento no 5º/9º ano                   & ---     & preservado & \okmark \\
+    P8  & Tempo por questão ($\le$ base$+$20\%) {\tiny(informativo)} & 14,4 s & 16,4 s & \okmark \\
+    G11 & Diversidade sem perda de qualidade              & 0,773   & 0,797   & \okmark \\
+    \bottomrule
+  \end{tabularx}
+
+  \vspace{5pt}
+  \begin{tcolorbox}[colback=lightorange, colframe=warnorange, boxrule=0.5pt, arc=2pt, left=5pt, right=5pt, top=2pt, bottom=2pt]
+    \scriptsize\textbf{Limite honesto:} o 0\% de inconsistência vale para as \textbf{40\%} das questões com conta verificável. As outras 60\% são conceituais; por isso o gate sozinho não garante correção --- daí o verificador de geometria e os agentes das próximas telas. O tempo foi medido no PC, não no celular.
+  \end{tcolorbox}
+\end{frame}
+
+% ============================================================
+\section{Validador e revisor}
+% ------------------------------------------------------------
+\begin{frame}{Estratégia de validação: duas camadas de juízes e um árbitro}
+  \centering
+  \begin{tikzpicture}[node distance=0.32cm, >=Stealth, every node/.style={font=\scriptsize},
+      st/.style={draw=accentblue, fill=lightblue, rounded corners, minimum width=2.15cm, minimum height=1.15cm, align=center, inner sep=3pt},
+      ok/.style={draw=okgreen, fill=lightgreen, rounded corners, minimum width=2.15cm, minimum height=1.15cm, align=center, inner sep=3pt},
+      no/.style={draw=badred, fill=lightred, rounded corners, minimum width=2.15cm, minimum height=0.8cm, align=center, inner sep=3pt}]
+    \node[st] (g) {\faRobot\\ \textbf{Gerador}\\ sabiá-4-thinking};
+    \node[st, right=of g] (f) {\faFilter\\ \textbf{Filtros}\\ determinísticos};
+    \node[st, right=of f] (v) {\faCheckDouble\\ \textbf{Validador}\\ resolve às cegas};
+    \node[st, right=of v] (r) {\faGlasses\\ \textbf{Revisor}\\ resolve às cegas};
+    \node[ok, right=of r] (e) {\faDatabase\\ \textbf{Entra na base}\\ só se ambos aprovam};
+    \node[no, below=0.7cm of f] (n1) {rejeita};
+    \node[no, below=0.7cm of v] (n2) {rejeita};
+    \node[no, below=0.7cm of r] (n3) {rejeita};
+    \draw[->] (g)--(f); \draw[->] (f)--(v); \draw[->] (v)--(r); \draw[->] (r)--(e);
+    \draw[->, badred] (f)--(n1); \draw[->, badred] (v)--(n2); \draw[->, badred] (r)--(n3);
+  \end{tikzpicture}
+
+  \vspace{4pt}
+  \footnotesize
+  \begin{tabularx}{0.96\textwidth}{@{}lX@{}}
+    \toprule
+    \textbf{Filtros} & schema, consistência de contas, dados ausentes, figura, duplicata (texto e \emph{dados$+$resposta}), verificador de geometria, contexto inverossímil. \\
+    \textbf{Árbitro (Gemini)} & outra família de modelo: resolve às cegas \emph{antes} de qualquer remoção automática por erro matemático. \\
+    \bottomrule
+  \end{tabularx}
+\end{frame}
+
+% ------------------------------------------------------------
+\begin{frame}{Papéis do validador e do revisor}
+  \footnotesize
+  \begin{tabularx}{\textwidth}{@{}l X X@{}}
+    \toprule
+     & \textbf{Validador (rigor matemático)} & \textbf{Revisor (SAEB e pedagogia)} \\
+    \midrule
+    Recebe & enunciado e alternativas permutadas; \textbf{sem gabarito, resolução ou dificuldade} & enunciado e alternativas em outra permutação; \textbf{sem gabarito nem resolução do autor} \\
+    Faz & resolve passo a passo; só depois compara com o gabarito & resolve de forma própria; checa habilidade, ano, distratores, clareza e contexto \\
+    Veta & premissa impossível, dados insuficientes, resposta não única, alternativas equivalentes & distrator verdadeiro, contexto forçado, conteúdo de outro ano \\
+    \midrule
+    \multicolumn{3}{@{}p{\textwidth}@{}}{\textbf{2º revisor (Gemini, opcional):} mesmo prompt do revisor, outra família de modelo, permutação própria; só é chamado se os dois primeiros aprovam. Se ficar sem cota ou cair, o fluxo segue sem ele e marca a questão.} \\
+    \bottomrule
+  \end{tabularx}
+
+  \vspace{6pt}
+  \begin{columns}[T]
+    \column{0.49\textwidth}
+    \begin{tcolorbox}[colback=lightgreen, colframe=okgreen, boxrule=0.5pt, arc=2pt, title={\scriptsize Regras decididas}, fonttitle=\bfseries, coltitle=white, colbacktitle=okgreen, left=4pt, right=4pt, top=2pt, bottom=2pt]
+      \scriptsize
+      $\bullet$ Distrator deve ser \textbf{estritamente falso}, por qualquer critério.\\
+      $\bullet$ Duas casas decimais bastam quando o valor é dízima (5/11 $\approx$ 0,45).\\
+      $\bullet$ Questão matematicamente errada \textbf{sai} da base.\\
+      $\bullet$ Resolução vazia: cadastrar a resolução comentada.
+    \end{tcolorbox}
+    \column{0.49\textwidth}
+    \begin{tcolorbox}[colback=lightorange, colframe=warnorange, boxrule=0.5pt, arc=2pt, title={\scriptsize Por que o árbitro}, fonttitle=\bfseries, coltitle=white, colbacktitle=warnorange, left=4pt, right=4pt, top=2pt, bottom=2pt]
+      \scriptsize
+      Os dois juízes são do mesmo modelo e \textbf{erram juntos}: ambos contaram ``terça $+$ 10 dias = sexta'' (o certo é quinta) e marcaram a questão como errada. Uma terceira opinião, de família diferente, evita remover questão correta.
+    \end{tcolorbox}
+  \end{columns}
+\end{frame}
+
+% ------------------------------------------------------------
+\begin{frame}{Calibração dos juízes: o que foi medido}
+  \footnotesize
+  \begin{tabularx}{\textwidth}{@{}p{0.37\textwidth} p{0.29\textwidth} X@{}}
+    \toprule
+    \textbf{Teste} & \textbf{Resultado} & \textbf{Observação} \\
+    \midrule
+    20 questões auditadas do 9º H17 (par validador+revisor)  & 15/15 ruins reprovadas; 5/5 boas aprovadas & ajustado nesses casos (\emph{in-sample}) \\
+    Itens reais do banco: falsa rejeição                     & 0/45 (após remover defeitos reais)         & 5 ``rejeições'' eram erros do banco \\
+    Defeitos conhecidos da auditoria                         & 4/4 reprovados pelo par                    & revisor sozinho: 2/4 \\
+    Distrator verdadeiro por outro eixo (12 casos)           & 6/6 reprovadas; 6/6 controles aprovados    & --- \\
+    Concordância validador $\times$ revisor ($\kappa$)       & 0,79                                       & 0,20 na auditoria da amostra de 59 \\
+    2º revisor Gemini (20 auditadas)                         & 4/4 boas aprovadas; 16/16 erradas reprovadas & 11/12 em aceitas novas (fora do ajuste) \\
+    \bottomrule
+  \end{tabularx}
+
+  \vspace{6pt}
+  \begin{tcolorbox}[colback=lightblue, colframe=accentblue, boxrule=0.5pt, arc=2pt, left=5pt, right=5pt, top=2pt, bottom=2pt]
+    \scriptsize \textbf{Dificuldade:} comparado ao rótulo do banco (45 itens), o revisor concordou pouco ($\kappa$ ponderado $=0{,}09$) e \emph{rebaixaria 80\%} dos itens Moderado/Difícil. O banco rotula dificuldade \emph{relativa à habilidade}, a rubrica do revisor é absoluta. Critério fixado antes de olhar os dados: $>$10\% de rebaixamento $\Rightarrow$ \textbf{rebaixamento automático suspenso}.
+  \end{tcolorbox}
+\end{frame}
+
+% ============================================================
+\section{Escala em execução}
+% ------------------------------------------------------------
+\begin{frame}{Escala concluída: o que foi gerado e auditado}
+  \begin{columns}[T]
+    \column{0.55\textwidth}
+    \footnotesize
+    \begin{tabularx}{\textwidth}{@{}X r@{}}
+      \toprule
+      \textbf{Indicador} & \textbf{Valor} \\
+      \midrule
+      Questões novas aceitas                              & \textbf{1.234} \\
+      \quad 2º / 5º / 9º ano                              & 408 / 383 / 385 \\
+      \quad 1º / 3º / 4º ano                              & 29 / 27 / 2 \\
+      Taxa de aceitação (aceitas/candidatas)              & $\approx$52\% \\
+      Itens da base auditados                             & 1.435 \\
+      Chamadas Maritaca (auditoria + injeção)             & $\approx$10,6 mil \\
+      Árbitro Gemini: remoções confirmadas                & 43 de 48 \\
+      Base final (\texttt{train\_curado\_v3})             & \textbf{2.607} \\
+      \bottomrule
+    \end{tabularx}
+
+    \vspace{3pt}
+    {\scriptsize Gasto abaixo da projeção (13,6 mil chamadas, $\approx$29 h). Dois processos em paralelo, com teto de chamadas por etapa.}
+
+    \column{0.42\textwidth}
+    \begin{tikzpicture}
+      \begin{axis}[xbar, width=\textwidth, height=5.0cm, bar width=8pt, xmin=0, xmax=480,
+        symbolic y coords={4º,3º,1º,9º,5º,2º}, ytick=data, tick label style={font=\scriptsize},
+        xlabel={\scriptsize questões novas aceitas}, nodes near coords, nodes near coords style={font=\tiny}]
+        \addplot[fill=accentblue] coordinates {(2,4º) (27,3º) (29,1º) (385,9º) (383,5º) (408,2º)};
+      \end{axis}
+    \end{tikzpicture}
+  \end{columns}
+\end{frame}
+
+% ------------------------------------------------------------
+\begin{frame}{Auditoria e limpeza da base existente}
+  \small
+  \begin{columns}[T]
+    \column{0.50\textwidth}
+    \textbf{Confiança nos 1.435 itens auditados}\\[3pt]
+    \footnotesize
+    \begin{tabularx}{\textwidth}{@{}X r r@{}}
+      \toprule
+      \textbf{Nível} & \textbf{Itens} & \textbf{\%} \\
+      \midrule
+      Alta    & 1.237 & 86\% \\
+      Média   & 65    & 5\% \\
+      Baixa   & 123   & 9\% \\
+      Não avaliados & 10 & 1\% \\
+      \bottomrule
+    \end{tabularx}
+
+    \vspace{4pt}
+    \scriptsize Nos itens reais, 81 saíram com confiança baixa; nenhum é removido sozinho por isso: vão para revisão humana (132 itens).
+
+    \column{0.46\textwidth}
+    \textbf{O que mudou na base}\\[3pt]
+    \footnotesize
+    \begin{tabularx}{\textwidth}{@{}X r@{}}
+      \toprule
+      \textbf{Ação} & \textbf{Itens} \\
+      \midrule
+      Removidos por decisão humana       & 19 \\
+      Removidos por erro matemático (com árbitro) & 43 \\
+      Restaurados (fração virou data)    & 15 \\
+      Resolução comentada cadastrada     & 1 \\
+      Em revisão humana                  & 132 \\
+      \bottomrule
+    \end{tabularx}
+  \end{columns}
+\end{frame}
+
+% ------------------------------------------------------------
+\begin{frame}{Onde queremos chegar}
+  \centering
+  \begin{tikzpicture}[every node/.style={font=\scriptsize}, >=Stealth,
+      mk/.style={circle, fill=accentblue, inner sep=2.2pt},
+      d/.style={align=center, text width=3.1cm}]
+    \draw[->, thick, accentblue] (0,0) -- (12.4,0);
+    \foreach \x/\t/\s in {0.6/Feito/{Modelo promovido;\\ verificador e agentes\\ calibrados},
+                          3.4/{Escala (feito)}/{Base v3: 2.607\\ exemplos, auditada,\\ com decisões humanas},
+                          6.2/{Retreino}/{Treino na base v3;\\ novo gate pareado\\ (32 prompts)},
+                          9.0/Piloto/{Botão ``reportar erro'';\\ meta: $\le$2\% em\\ questões entregues},
+                          11.8/{App offline}/{Geração no celular\\ com guardas portadas\\ ao TypeScript}}{
+      \node[mk] at (\x,0) {};
+      \node[above=3pt] at (\x,0) {\textbf{\t}};
+      \node[d, below=4pt] at (\x,0) {\s};
+    }
+  \end{tikzpicture}
+
+  \vspace{4pt}
+  \footnotesize
+  \begin{tabularx}{0.96\textwidth}{@{}lX@{}}
+    \toprule
+    \textbf{Base} & de 1.435 para 2.607 exemplos (feito); falta fechar 274 do déficit, com mínimo de 30 por habilidade e 3 dificuldades equilibradas; zero questão com erro conhecido. \\
+    \textbf{Qualidade} & verificação da correção em \emph{todas} as habilidades, não só nas de conta; o gate passa a medir também o que hoje é ``não verificável''. \\
+    \textbf{Produto} & questões diversas, corretas e com resposta única, geradas offline em 2--3 min por lote de 10, com fallback ao modelo anterior se os reportes passarem de 2\%. \\
+    \bottomrule
+  \end{tabularx}
+\end{frame}
+
+% ------------------------------------------------------------
+\begin{frame}{Riscos e decisões em aberto}
+  \small
+  \begin{columns}[T]
+    \column{0.49\textwidth}
+    \textbf{Riscos conhecidos}
+    \begin{itemize}\setlength\itemsep{3pt}
+      \item[\warnmark] Juízes do mesmo modelo erram juntos; o árbitro Gemini atua só na remoção e o 2º revisor Gemini ainda não foi aplicado às 1.234 aceitas.
+      \item[\warnmark] Verificador de geometria cobre 9º H16/H17 e se abstém em cerca de 40\% das questões de H17.
+      \item[\warnmark] Os números de calibração foram ajustados nos mesmos casos (\emph{in-sample}); falta conjunto cego.
+      \item[\warnmark] Tempo medido no PC, ainda não no celular.
+      \item[\warnmark] Um erro de código (resposta nula) interrompeu a injeção do 2º ano; corrigido e retomada.
+    \end{itemize}
+    \column{0.49\textwidth}
+    \textbf{Próximos passos}
+    \begin{itemize}\setlength\itemsep{3pt}
+      \item[\faCheckSquare] Conferir amostra das 43 remoções automáticas e os 132 itens em revisão humana.
+      \item[\faCheckSquare] Decidir sobre rejulgar as 1.234 aceitas com o 2º revisor Gemini ($\approx$14\% de reprovação).
+      \item[\faCheckSquare] Auditoria humana cega de 30--40 questões novas de H17 antes de ligar o verificador em modo ativo.
+      \item[\faCheckSquare] Retreino e novo gate com baseline regerado.
+      \item[\faCheckSquare] Guia de portabilidade para o React Native.
+    \end{itemize}
+  \end{columns}
+\end{frame}
+
+
+\end{document}

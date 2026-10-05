@@ -407,6 +407,31 @@ def maior_sufixo(exemplos, rejeitadas=()):
     return maior
 
 
+def _voto_rev2(juizo):
+    """{} sem 2º revisor ligado; {"revisor2": True} se aprovou; {"revisor2": None,
+    "revisor2_ausente": motivo} se o Gemini estava indisponível (a questão entrou só com
+    validador+revisor e pode ser reauditada depois)."""
+    r2 = juizo.get("revisor2")
+    if r2 is None:
+        return {}
+    if r2.get("indisponivel"):
+        return {"revisor2": None, "revisor2_ausente": str(r2.get("motivo") or "indisponivel")[:120]}
+    return {"revisor2": True}
+
+
+def _ligar_gemini(args, agentes):
+    """--segundo-revisor-gemini: Gemini como 2º revisor, com orçamento próprio."""
+    if not getattr(args, "segundo_revisor_gemini", False):
+        return
+    if not args.dry_run and getattr(args, "max_chamadas_gemini", None) is None:
+        raise SystemExit("--max-chamadas-gemini é obrigatório com --segundo-revisor-gemini "
+                         "(as chamadas custam dinheiro).")
+    import arbitro_gemini as ag
+    ag.ligar_segundo_revisor(agentes, dry_run=args.dry_run,
+                             max_chamadas=args.max_chamadas_gemini or ag.TETO_PADRAO_CHAMADAS,
+                             modelo=getattr(args, "modelo_gemini", None))
+
+
 def escolher_letra(letras, rng):
     """Letra menos usada entre as aceitas (empate sorteado): o gabarito tende ao
     uniforme sem mexer na questão depois de gerada (permutar depois quebraria
@@ -437,9 +462,11 @@ def construir_exemplo(lac, descricao, dificuldade, questao, slot, idx, juizo, mo
         # destilado=True: relatorio_base/merge tratam como gerado por professor
         # (não "real"); origem distingue este lote dos destilados antigos.
         "destilado": True, "origem": "injecao_saeb", "professor": modelos["gerador"],
-        "vereditos": {"validador": True, "revisor": True},
-        "confianca": {"nivel": "alta", "validador": val.get("confianca"), "revisor": rev.get("confianca"),
-                      "min": min(confs) if confs else None},
+        "vereditos": dict({"validador": True, "revisor": True}, **_voto_rev2(juizo)),
+        "confianca": dict({"nivel": "alta", "validador": val.get("confianca"), "revisor": rev.get("confianca"),
+                           "min": min(confs) if confs else None},
+                          **({"revisor2": juizo["revisor2"].get("confianca")}
+                             if (juizo.get("revisor2") or {}).get("veredito") else {})),
         "modelos": dict(modelos), "versao_prompts": aq.VERSAO_PROMPTS, "versao_juizes": aq.VERSAO_JUIZES,
         "data": aq.agora_iso(),
         "hash_questao": aq.hash_questao(questao),
@@ -557,6 +584,7 @@ def _injetar(args, p, agentes=None):
 
     if agentes is None:
         agentes = aq.montar_agentes(args, simulado=args.dry_run, log_uso=p["uso"])
+        _ligar_gemini(args, agentes)
     if getattr(args, "cache_juizes", None) and getattr(agentes, "cache_juizes", None) is None:
         # Guarda as respostas PAGAS dos juízes (permite reavaliar a decisão
         # depois sem pagar de novo). Candidatos são sempre novos: não há acerto.
@@ -787,6 +815,11 @@ def tentar(agentes, lac, descricao, item, letras, rng, vistos, comparar_com, val
     if not juizo["revisor"]["veredito"]:
         mot = motivo_revisor(juizo["revisor"])
         return {"aceita": False, "etapa": "revisor", "motivo": mot, "questao": q, "juizo": juizo}
+    rev2 = juizo.get("revisor2")
+    if rev2 is not None and not rev2.get("indisponivel") and not rev2["veredito"]:
+        # 2º revisor (Gemini). Falha de API/JSON malformado também reprova (fail-closed).
+        return {"aceita": False, "etapa": "revisor2", "motivo": motivo_revisor(rev2), "questao": q,
+                "juizo": juizo}
     if (regra_d3 == "revisor" and dif in ("Moderado", "Difícil")
             and juizo["revisor"].get("dificuldade_real") == "Fácil"):
         if not facil_aberto:
@@ -949,6 +982,7 @@ def rejulgar(args, agentes=None):
         raise SystemExit("--max-chamadas é obrigatório fora do --dry-run (as chamadas custam dinheiro).")
     if agentes is None:
         agentes = aq.montar_agentes(args, simulado=args.dry_run, log_uso=p["uso"])
+        _ligar_gemini(args, agentes)
     if getattr(args, "cache_juizes", None) and getattr(agentes, "cache_juizes", None) is None:
         agentes.cache_juizes = aq.CacheRespostas(args.cache_juizes)
     res = {"aprovadas": [], "rebaixadas": [], "saem": {}, "nao_avaliadas": [], "sem_orcamento": [],
@@ -987,15 +1021,18 @@ def rejulgar(args, agentes=None):
                 novos.append(ex)
                 continue
             if not j["ambos"]:
-                papel = "validador" if not val["veredito"] else "revisor"
+                rev2 = j.get("revisor2")
+                papel = ("validador" if not val["veredito"] else "revisor" if not rev["veredito"] else "revisor2")
                 mot = ((val.get("problemas") or [{"codigo": "reprovado"}])[-1]["codigo"] if papel == "validador"
-                       else motivo_revisor(rev))
+                       else motivo_revisor(rev2 if papel == "revisor2" else rev))
                 saem.append(_registro_saida(ex, "rejulgamento", f"{papel}:{mot}", juizo=j))
                 res["saem"][cod] = f"{papel}:{mot}"
                 continue
             rj = {"versao_prompts": aq.VERSAO_PROMPTS, "versao_juizes": aq.VERSAO_JUIZES, "data": aq.agora_iso(),
-                  "modelos": dict(agentes.modelos), "vereditos": {"validador": True, "revisor": True},
-                  "confianca": {"validador": val.get("confianca"), "revisor": rev.get("confianca")},
+                  "modelos": dict(agentes.modelos), "vereditos": dict({"validador": True, "revisor": True}, **_voto_rev2(j)),
+                  "confianca": dict({"validador": val.get("confianca"), "revisor": rev.get("confianca")},
+                                    **({"revisor2": j["revisor2"].get("confianca")}
+                                       if (j.get("revisor2") or {}).get("veredito") else {})),
                   "dificuldade_real": rev.get("dificuldade_real"), "de_versao_prompts": m.get("versao_prompts")}
             novo = dict(ex, meta=dict(m, rejulgamento=rj))
             if (regra_d3 == "revisor" and m.get("dificuldade") in ("Moderado", "Difícil")
@@ -1031,6 +1068,7 @@ def _resumo(args, p, agentes, ctrl, etapas, motivos, ignoradas, parada, lista):
     funil = {"candidatos": candidatos,
              "rejeitados_geracao": etapas.get("geracao", 0), "rejeitados_filtro": etapas.get("filtro", 0),
              "rejeitados_validador": etapas.get("validador", 0), "rejeitados_revisor": etapas.get("revisor", 0),
+             "rejeitados_revisor2": etapas.get("revisor2", 0),
              "aceitos": aceitas, "taxa_aceite": round(aceitas / candidatos, 3) if candidatos else None,
              "aceitos_rebaixados_para_facil": sum(c["rebaixadas"] for c in ctrl.values())}
     return {"gerado_em": aq.agora_iso(), "dry_run": bool(args.dry_run), "versao_prompts": aq.VERSAO_PROMPTS,
@@ -1054,7 +1092,8 @@ def _imprimir_resumo(r):
     print("\n=== Resumo da injeção ===")
     print(f"Candidatos: {f['candidatos']} | aceitos: {f['aceitos']} | taxa: {f['taxa_aceite']}")
     print(f"Rejeitados — geração: {f['rejeitados_geracao']}, filtro: {f['rejeitados_filtro']}, "
-          f"validador: {f['rejeitados_validador']}, revisor: {f['rejeitados_revisor']}")
+          f"validador: {f['rejeitados_validador']}, revisor: {f['rejeitados_revisor']}"
+          + (f", revisor2: {f['rejeitados_revisor2']}" if f.get("rejeitados_revisor2") else ""))
     print(f"Chamadas: {r['uso']['chamadas']} (teto {r['uso']['max_chamadas']}) | tokens: "
           f"{r['uso']['prompt_tokens']} entrada + {r['uso']['completion_tokens']} saída")
     print(f"Aceitas rebaixadas para Fácil (D3): {f['aceitos_rebaixados_para_facil']}")
@@ -1081,6 +1120,12 @@ def construir_parser():
                          "(nova rodada: +N por habilidade, sem passar do déficit)")
     ap.add_argument("--tentativas-por-slot", type=int, default=3)
     ap.add_argument("--max-erros-api", type=int, default=5, help="aborta após N erros de API seguidos")
+    ap.add_argument("--segundo-revisor-gemini", action="store_true",
+                    help="liga o Gemini como 2º revisor: a candidata só entra se validador E revisor E "
+                         "2º revisor aprovarem (padrão: desligado)")
+    ap.add_argument("--max-chamadas-gemini", type=int, default=None,
+                    help="teto DURO de chamadas ao Gemini (obrigatório com --segundo-revisor-gemini, fora do dry-run)")
+    ap.add_argument("--modelo-gemini", default=None, help="padrão: o modelo do árbitro (gemini-2.5-flash)")
     ap.add_argument("--incluir-dificuldade-ausente", action="store_true",
                     help="pede também dificuldades que o banco real nunca usa na habilidade (ex.: Difícil no 1º)")
     ap.add_argument("--seed", type=int, default=42)

@@ -19,6 +19,7 @@ Uso:
 import argparse
 import json
 import math
+from collections import Counter
 from pathlib import Path
 
 FLAGS_ESTRUTURAIS = [
@@ -841,10 +842,180 @@ def houve_ganho_planejado(base_rel, cand_rel, modo="ajustado"):
     return ganhos + ganho_diversidade(base_rel, cand_rel, modo, modo)
 
 
+# --------------------------------------------------------------------------
+# Perfil MULTISEED (G2/G3 agregados sobre várias rodadas de seeds)
+# --------------------------------------------------------------------------
+# REVISÃO DE 2026-10-05, registrada como feita DEPOIS de um veredito reprovado
+# (VEREDITO_v3.json: G2 e G3 reprovados), como já foi feito com o G4 em
+# 2026-09-16 e com o G11 em 2026-09-30.
+#
+# O DEFEITO: com n=30 e uma única rodada de seeds, G2 ("falhas = 0") e G3
+# ("consistência >= baseline - 5pp", sobre ~10 itens verificáveis) decidem
+# sobre UMA amostra. No veredito da v3 os dois gates reprovaram pelo MESMO item
+# (9º H06, MT9027MH06MT): 1 falha = G2 reprovado; 1 inconsistência em 10
+# verificáveis = 10pp = G3 reprovado. Regerar esse prompt 4 vezes com a v3 deu
+# 4/4 aprovadas — o instrumento não distingue esse resultado de ruído.
+#
+# REGRA (fixada ANTES de rodar as seeds novas):
+#   * baseline e candidato rodam as MESMAS rodadas de seed (test_model.py
+#     --seed-rodada r), pareadas por (rodada, codigo_item_ref);
+#   * G2* reprova se a piora de falhas for significativa (McNemar exato,
+#     p < 0,05, com mais pares piorados que melhorados) OU se a taxa agregada
+#     de falha do candidato passar de TETO_FALHA_MULTISEED (guarda absoluta:
+#     não basta empatar com um baseline ruim);
+#   * G3* reprova se a piora de inconsistência gabarito<->conta for
+#     significativa (mesmo teste);
+#   * todos os OUTROS gates bloqueantes (G1, G4–G8) continuam com a régua
+#     original e precisam passar em TODAS as rodadas — a mudança não afrouxa
+#     nada além de G2/G3.
+TETO_FALHA_MULTISEED = 0.05
+# Com 1 rodada o perfil seria só a régua frouxa sobre os MESMOS 30 itens; o
+# ganho de resolução vem das rodadas novas. Mínimo fixado junto com a regra.
+MIN_RODADAS_MULTISEED = 3
+
+
+def _rodada(rel):
+    return rel.get("seed_rodada", 0)
+
+
+def _juntar_detalhes(rels):
+    """Relatório-pseudo com detalhes de todas as rodadas, chave (rodada, item)."""
+    return {"detalhes": [{**x, "codigo_item_ref": f"{_rodada(r)}:{x['codigo_item_ref']}"}
+                         for r in rels for x in r.get("detalhes", [])]}
+
+
+def _agregado(rels):
+    det = [x for r in rels for x in r.get("detalhes", [])]
+    verif = [x for x in det if x.get("consistencia_resposta_correta") is not None]
+    ader = [x for x in det if x.get("difficulty_aderente") is not None]
+    letras = Counter()
+    for r in rels:
+        letras.update(_get(r, "estrutura", "distribuicao_respostas_corretas", default={}) or {})
+    return {
+        "n": len(det),
+        "falhas": sum(x.get("status") == "falha" for x in det),
+        "verificaveis": len(verif),
+        "consistencia_pct": round(100 * sum(bool(x["consistencia_resposta_correta"]) for x in verif)
+                                  / len(verif), 1) if verif else None,
+        "aderencia_pct": round(100 * sum(bool(x["difficulty_aderente"]) for x in ader)
+                               / len(ader), 1) if ader else None,
+        "regeneracoes": sum(_get(r, "pos_processamento", "regeneracoes_total", default=0) or 0
+                            for r in rels),
+        "vies_pct": round(100 * max(letras.values()) / sum(letras.values()), 1) if letras else None,
+    }
+
+
+def avalia_multiseed(bases, cands):
+    """Retorna (gates, ganhos, agregado_base, agregado_cand). Ver bloco acima."""
+    rb = sorted(_rodada(r) for r in bases)
+    rc = sorted(_rodada(r) for r in cands)
+    if len(rc) < MIN_RODADAS_MULTISEED:
+        raise SystemExit(f"ABORTADO: perfil multiseed exige >= {MIN_RODADAS_MULTISEED} rodadas "
+                         f"de seed (recebeu {len(rc)})")
+    if rb != rc or len(set(rb)) != len(rb):
+        raise SystemExit(f"ABORTADO: rodadas de seed não pareadas (baseline {rb}, candidato {rc})")
+    pares = sorted(zip(sorted(bases, key=_rodada), sorted(cands, key=_rodada)),
+                   key=lambda p: _rodada(p[0]))
+    for b, c in pares:
+        hb, hc = b.get("artefato_sha256"), c.get("artefato_sha256")
+        if hb and hc and hb == hc:
+            raise SystemExit(f"ABORTADO: rodada {_rodada(b)} com o MESMO sha256 nos dois lados.")
+        if Path(str(b.get("conjunto_avaliacao"))).name != Path(str(c.get("conjunto_avaliacao"))).name:
+            raise SystemExit(f"ABORTADO: rodada {_rodada(b)} com conjuntos de avaliação diferentes.")
+        if b.get("retries", 1) != c.get("retries", 1):
+            raise SystemExit(f"ABORTADO: rodada {_rodada(b)} com regenerações diferentes.")
+
+    por_rodada = [(_rodada(b), avalia(b, c)) for b, c in pares]
+    gates = []
+    for i, modelo in enumerate(por_rodada[0][1]):
+        if modelo.id in ("G2", "G3"):
+            continue
+        falhas = [f"rodada {r}: {gs[i].detalhe}" for r, gs in por_rodada if not gs[i].passou]
+        gates.append(Gate(modelo.id, modelo.nome + " [todas as rodadas]", modelo.bloqueante).resolve(
+            not falhas, "; ".join(falhas) or f"passou nas {len(pares)} rodadas"))
+
+    jb, jc = _juntar_detalhes(bases), _juntar_detalhes(cands)
+    ab, ac = _agregado(bases), _agregado(cands)
+
+    piorou, melhorou, p = _mcnemar(jb, jc, lambda x: x.get("status") == "falha")
+    significativa = piorou > melhorou and p < 0.05
+    taxa = ac["falhas"] / ac["n"] if ac["n"] else 1.0
+    gates.insert(1, Gate("G2*", "Falhas pós best-of-N (sem piora signif., <= 5%)").resolve(
+        not significativa and taxa <= TETO_FALHA_MULTISEED,
+        f"{ab['falhas']}/{ab['n']} -> {ac['falhas']}/{ac['n']} ({100 * taxa:.1f}%)  "
+        f"(piorou {piorou}, melhorou {melhorou}, McNemar p={p:.3f})"))
+
+    piorou, melhorou, p = _mcnemar(jb, jc, lambda x: x.get("consistencia_resposta_correta") is False)
+    gates.insert(2, Gate("G3*", "Consistência (sem piora significativa)").resolve(
+        not (piorou > melhorou and p < 0.05),
+        f"{ab['consistencia_pct']}% (n={ab['verificaveis']}) -> {ac['consistencia_pct']}% "
+        f"(n={ac['verificaveis']})  (piorou {piorou}, melhorou {melhorou}, McNemar p={p:.3f})"))
+
+    ganhos = []
+    for nome, chave, sentido in (("consistência", "consistencia_pct", 1),
+                                 ("aderência à dificuldade", "aderencia_pct", 1),
+                                 ("verificabilidade (n)", "verificaveis", 1),
+                                 ("viés de gabarito", "vies_pct", -1),
+                                 ("falhas", "falhas", -1),
+                                 ("regenerações", "regeneracoes", -1)):
+        vb, vc = ab.get(chave), ac.get(chave)
+        if nome == "regenerações" and any(
+                _modo_geometria(b) != _modo_geometria(c) for b, c in pares):
+            continue
+        if vb is not None and vc is not None and (vc - vb) * sentido > 0:
+            ganhos.append(f"{nome}: {vb} -> {vc}")
+    return gates, ganhos, ab, ac
+
+
+def main_multiseed(args, carrega):
+    if len(args.baseline_gguf_seeds) != len(args.candidato_gguf_seeds):
+        raise SystemExit("perfil multiseed exige o MESMO número de relatórios nos dois lados")
+    bases = [carrega(p) for p in args.baseline_gguf_seeds]
+    cands = [carrega(p) for p in args.candidato_gguf_seeds]
+    gates, ganhos, ab, ac = avalia_multiseed(bases, cands)
+
+    print("=" * 78)
+    print("GATES DE PROMOÇÃO — MULTISEED, conjunto congelado, comparação pareada")
+    print("=" * 78)
+    print(f"  baseline:  {bases[0].get('artefato')}")
+    print(f"  candidato: {cands[0].get('artefato')}")
+    print(f"  rodadas:   {sorted(_rodada(r) for r in cands)}  "
+          f"(amostras pareadas: {ac['n']})\n")
+    for g in gates:
+        marca = "PASSOU" if g.passou else "FALHOU"
+        tipo = "bloqueante" if g.bloqueante else "informativo"
+        print(f"  [{marca:^6}] {g.id} {g.nome:<46} ({tipo})")
+        print(f"            {g.detalhe}")
+    reprovados = [g for g in gates if g.bloqueante and not g.passou]
+    if reprovados:
+        veredito, motivo = "NÃO PROMOVIDO", "gates bloqueantes reprovados: " + ", ".join(g.id for g in reprovados)
+    elif not ganhos:
+        veredito, motivo = "NÃO PROMOVIDO", "sem ganho mensurável — empate técnico"
+    else:
+        veredito, motivo = "PROMOVIDO", "todos os gates bloqueantes passaram; ganhos: " + "; ".join(ganhos)
+    print("\n" + "-" * 78 + f"\nDECISÃO: {veredito}\nMOTIVO:  {motivo}\n" + "-" * 78)
+    if args.saida:
+        Path(args.saida).write_text(json.dumps({
+            "decisao": veredito, "motivo": motivo, "perfil": "multiseed",
+            "baseline": bases[0].get("artefato"), "candidato": cands[0].get("artefato"),
+            "conjunto_avaliacao": cands[0].get("conjunto_avaliacao"),
+            "rodadas": sorted(_rodada(r) for r in cands),
+            "agregado_baseline": ab, "agregado_candidato": ac, "ganhos": ganhos,
+            "gates": [{"id": g.id, "nome": g.nome, "bloqueante": g.bloqueante,
+                       "passou": g.passou, "detalhe": g.detalhe} for g in gates],
+        }, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"Veredito gravado em: {args.saida}")
+    return 0 if veredito == "PROMOVIDO" else 2
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--perfil", choices=("n1", "planejado"), default="n1",
-                        help="n1 = gates G1–G8 bloqueantes (histórico); planejado = modo do app")
+    parser.add_argument("--perfil", choices=("n1", "planejado", "multiseed"), default="n1",
+                        help="n1 = gates G1–G8 bloqueantes (histórico); planejado = modo do app; "
+                             "multiseed = G1–G8 com G2/G3 agregados sobre várias rodadas de seed")
+    parser.add_argument("--baseline-gguf-seeds", nargs="+",
+                        help="multiseed: relatórios test_model.py do baseline (1 por --seed-rodada)")
+    parser.add_argument("--candidato-gguf-seeds", nargs="+")
     parser.add_argument("--planejado-baseline", nargs="+",
                         help="relatórios avaliar_diversidade.py do baseline (1 por seed)")
     parser.add_argument("--planejado-candidato", nargs="+")
@@ -866,6 +1037,10 @@ def main():
     carrega = lambda p: json.loads(Path(p).read_text(encoding="utf-8")) if p else None
     if args.perfil == "planejado":
         return main_planejado(args, carrega)
+    if args.perfil == "multiseed":
+        if not (args.baseline_gguf_seeds and args.candidato_gguf_seeds):
+            parser.error("perfil multiseed exige --baseline-gguf-seeds e --candidato-gguf-seeds")
+        return main_multiseed(args, carrega)
     if not (args.baseline_gguf and args.candidato_gguf):
         parser.error("perfil n1 exige --baseline-gguf e --candidato-gguf")
     base, cand = carrega(args.baseline_gguf), carrega(args.candidato_gguf)

@@ -60,6 +60,26 @@ MOTIVO_TROCA_MODELO = ("gemini-2.0-flash-thinking-exp-01-21 não está mais na l
 TEMPERATURA = 0.0
 MAX_TOKENS = 8192
 TETO_PADRAO_CHAMADAS = 40  # orçamento separado e baixo (H4)
+# 2º revisor: o Gemini "pensa" antes de responder e esses tokens contam no limite; com 8.192,
+# 4 de 30 respostas vieram cortadas (MAX_TOKENS) na calibração de 2026-10-02 e virariam
+# reprovação falsa (fail-closed). Só o revisor2 usa o limite maior (a chave do cache do
+# árbitro, que inclui MAX_TOKENS, não muda).
+MAX_TOKENS_REVISOR2 = 24576
+
+# Acréscimo ao prompt do revisor SÓ para o Gemini (o do sabiá não muda). Na calibração de
+# 2026-10-02 ele reprovou por "ano_inadequado" triângulos do 9º ano H17 corretos ("escaleno é
+# de anos anteriores; no 9º se espera algo mais complexo"): confundia item FÁCIL com item de
+# ANO INADEQUADO, apesar de a própria habilidade da matriz incluir esse conteúdo.
+REVISOR2_ADDENDUM = """
+
+REGRAS ADICIONAIS DO 2º REVISOR (valem acima de qualquer outra leitura dos critérios C1 e C2):
+- O conteúdo descrito na habilidade informada (Matriz de Referência do SAEB) É o conteúdo esperado para o ano pedido, mesmo que o tema já tenha sido introduzido em anos anteriores: a Matriz retoma e aprofunda conteúdos. Não reprove por "o ano esperaria algo mais complexo".
+- C2 (ano_inadequado) só é false quando o item exige conteúdo, vocabulário ou números que NÃO fazem parte da habilidade informada (ex.: trigonometria numa habilidade de classificação) ou, nos anos iniciais, conteúdo de ano posterior.
+- Item simples não é item inadequado: o nível baixo vai SOMENTE em "dificuldade_real" (C3), nunca em C1 ou C2.
+- C5 (enunciado ambíguo) só é false se uma leitura razoável do enunciado levar a outra resposta; frase redundante ou desnecessária é sugestão, não veto.
+- Todo o rigor matemático (premissa possível, dados suficientes, UMA única alternativa verdadeira, distratores estritamente falsos) continua valendo integralmente.
+"""
+VERSAO_PROMPT_REVISOR2 = hashlib.sha1(REVISOR2_ADDENDUM.encode("utf-8")).hexdigest()[:12]
 
 # O árbitro usa o MESMO prompt do validador cego (regras da BNCC, D5, H2 e
 # formato de saída que o código já interpreta), numa permutação própria das
@@ -121,7 +141,8 @@ def interpretar_dificuldade(texto):
 # papel -> função que diz se a resposta é interpretável (cache só guarda e só
 # devolve resposta interpretável, P4).
 _INTERPRETAVEL = {"arbitro": lambda t: aq.resposta_interpretavel("validador", t),
-                  "arbitro_dificuldade": lambda t: isinstance(t, str) and interpretar_dificuldade(t) is not None}
+                  "arbitro_dificuldade": lambda t: isinstance(t, str) and interpretar_dificuldade(t) is not None,
+                  "revisor2": lambda t: aq.resposta_interpretavel("revisor", t)}
 
 
 # Partes do nome que tiram um modelo da lista de candidatos a árbitro (não
@@ -270,7 +291,8 @@ class Arbitro:
 
     def _chave(self, mensagens, papel="arbitro"):
         # "arbitro" mantém a chave antiga (o cache já pago continua valendo).
-        base = json.dumps([papel, self.modelo, MAX_TOKENS, TEMPERATURA, mensagens], ensure_ascii=False,
+        mt = MAX_TOKENS_REVISOR2 if papel == "revisor2" else MAX_TOKENS
+        base = json.dumps([papel, self.modelo, mt, TEMPERATURA, mensagens], ensure_ascii=False,
                           sort_keys=True)
         return hashlib.sha1(base.encode("utf-8")).hexdigest()
 
@@ -291,8 +313,9 @@ class Arbitro:
             reg = {"ts": aq.agora_iso(), "agente": papel, "fase": fase, "modelo": self.modelo,
                    "tentativa": tentativa, "provedor": "google"}
             try:
-                resp = self.cliente.chat_completion(messages=mensagens, max_tokens=MAX_TOKENS,
-                                                    temperature=TEMPERATURA)
+                resp = self.cliente.chat_completion(
+                    messages=mensagens, max_tokens=MAX_TOKENS_REVISOR2 if papel == "revisor2" else MAX_TOKENS,
+                    temperature=TEMPERATURA)
                 texto = resp.choices[0].message.content or ""
             except Exception as exc:  # noqa: BLE001 - rede/quota/provedor
                 ultimo = aq._sanitizar(f"{type(exc).__name__}: {exc}")
@@ -319,6 +342,7 @@ class Arbitro:
                 r = {"chave": chave, "papel": papel, "modelo": self.modelo, "texto": texto,
                      "prompt_tokens": usage[0], "completion_tokens": usage[1], "ts": aq.agora_iso(),
                      "versao_prompt_arbitro": (VERSAO_PROMPT_ARBITRO if papel == "arbitro"
+                                               else aq.VERSAO_PROMPTS if papel == "revisor2"
                                                else VERSAO_PROMPT_DIFICULDADE)}
                 self.cache[chave] = r
                 with aq.abrir_para_gravar(self.cache_path, "a") as f:
@@ -369,6 +393,14 @@ class Arbitro:
                     cache=bool(info.get("cache")))
 
 
+    def revisar_cego(self, agentes, questao, ano, habilidade, descricao, subtema=None):
+        """2º REVISOR (2026-10-02): o prompt e a interpretação do revisor da
+        Maritaca, enviados ao Gemini numa permutação própria (sal "revisor2").
+        Mesmo contrato de Agentes.revisar. Orçamento, log e cache do Gemini."""
+        return agentes.revisar(
+            questao, ano, habilidade, descricao, subtema, None, sal="revisor2", sistema_extra=REVISOR2_ADDENDUM,
+            chamador=lambda msgs: self.chamar(msgs, fase="revisao_cega", papel="revisor2"))
+
     def julgar_dificuldade(self, questao, ano, habilidade, descricao=""):
         """Dificuldade real pela rubrica absoluta (desempate da D3). Contrato:
         {avaliado, dificuldade_real|None, etapas, exigencias, resolucao, modelo,
@@ -401,3 +433,53 @@ def montar_arbitro(dry_run=False, max_chamadas=TETO_PADRAO_CHAMADAS, log_uso=LOG
         return Arbitro(cli, f"simulado:{modelo}", aq.Orcamento(max_chamadas), log_uso=log_uso, cache_path=None)
     import distill_teacher  # noqa: F401,PLC0415 - carrega o .env (sem imprimir nada dele)
     return Arbitro(ClienteGemini(modelo), modelo, aq.Orcamento(max_chamadas), log_uso=log_uso, cache_path=cache_path)
+
+
+LIMITE_FALHAS_GEMINI = 3  # falhas de API SEGUIDAS (cada uma já com retry) para dar o Gemini como indisponível
+
+
+def ligar_segundo_revisor(agentes, dry_run=False, max_chamadas=TETO_PADRAO_CHAMADAS, log_uso=None,
+                          cache_path=None, modelo=None, limite_falhas=LIMITE_FALHAS_GEMINI, aviso=print):
+    """Liga o Gemini como 2º revisor em `agentes` (orçamento PRÓPRIO, separado
+    da Maritaca). Devolve o Arbitro usado, para o chamador ler o uso.
+
+    DEGRADAÇÃO (2026-10-02, pedido do usuário: o Gemini tem limite de gasto e a
+    chamada falha ao ultrapassá-lo; o fluxo não pode acabar): falha de API
+    (cota, rede, 4xx/5xx) por `limite_falhas` vezes seguidas, ou o teto de
+    chamadas do próprio orçamento, DESLIGA o 2º revisor pelo resto da execução
+    e o pipeline segue só com validador + revisor. Cada questão decidida sem
+    ele sai marcada (`indisponivel`). Resposta cortada/malformada do Gemini
+    NÃO é indisponibilidade (é conteúdo): continua reprovando, fail-closed."""
+    arb = montar_arbitro(dry_run=dry_run, max_chamadas=max_chamadas,
+                         log_uso=log_uso or LOG_USO_GEMINI.with_name("uso_api_gemini_revisor2.jsonl"),
+                         cache_path=cache_path or CACHE_ARBITRO.with_name("gemini_revisor2_cache.jsonl"),
+                         modelo=modelo)
+    estado = {"ativo": True, "falhas": 0, "motivo": None, "sem_revisor2": 0}
+    agentes.segundo_revisor_estado = estado
+
+    def _desligar(motivo):
+        estado.update(ativo=False, motivo=motivo)
+        aviso(f"!!! 2º revisor (Gemini) INDISPONÍVEL: {motivo}. Seguindo SEM ele (validador + revisor).")
+
+    def segundo(q, ano, hab, desc, sub):
+        if not estado["ativo"]:
+            estado["sem_revisor2"] += 1
+            return {"indisponivel": True, "veredito": None, "motivo": estado["motivo"]}
+        try:
+            r = arb.revisar_cego(agentes, q, ano, hab, desc, sub)
+        except aq.OrcamentoEsgotado as exc:
+            _desligar(f"orçamento de chamadas Gemini esgotado ({exc})")
+            estado["sem_revisor2"] += 1
+            return {"indisponivel": True, "veredito": None, "motivo": estado["motivo"]}
+        if r.get("erro") == "erro_api":
+            estado["falhas"] += 1
+            detalhe = (r.get("problemas") or [{}])[0].get("detalhe", "erro_api")
+            if estado["falhas"] >= limite_falhas:
+                _desligar(f"{estado['falhas']} falhas de API seguidas ({detalhe})")
+            estado["sem_revisor2"] += 1
+            return {"indisponivel": True, "veredito": None, "motivo": f"erro_api: {detalhe}"[:200]}
+        estado["falhas"] = 0
+        return r
+
+    agentes.segundo_revisor = segundo
+    return arb

@@ -1908,6 +1908,10 @@ class Agentes:
         # CacheRespostas opcional (só juízes): acerto não gasta orçamento nem
         # vai para o log de uso; resposta nova paga é gravada nele.
         self.cache_juizes = cache_juizes
+        # 2º revisor (Gemini), opcional: callable(questao, ano, habilidade, descricao, subtema)
+        # -> resultado de revisar(). None = desligado (padrão).
+        self.segundo_revisor = None
+        self.segundo_revisor_estado = None  # {"ativo", "falhas", "motivo"} quando ligado
 
     # -- chamada genérica ---------------------------------------------------
     def _log(self, reg):
@@ -2072,28 +2076,35 @@ class Agentes:
                                               "justificativa_falsa", "chega_na_alternativa")})
 
     # -- REVISOR ------------------------------------------------------------
-    def revisar(self, questao, ano, habilidade, descricao, subtema=None, dificuldade=None):
+    def revisar(self, questao, ano, habilidade, descricao, subtema=None, dificuldade=None, *,
+                chamador=None, sal="revisor", sistema_extra=None):
         """Revisor CEGO (D1): uma chamada, sem gabarito, sem resolução do autor,
         sem difficulty, alternativas numa permutação própria. A resposta dele
         é comparada com o gabarito AQUI. Contrato igual ao anterior, mais
-        dificuldade_real (D3) e permutacao."""
+        dificuldade_real (D3) e permutacao.
+
+        `chamador`/`sal` (2º revisor, 2026-10-02): o MESMO prompt e a MESMA
+        interpretação podem ser enviados por outro provedor (Gemini) numa
+        permutação própria. Sem `chamador` nada muda (Maritaca, sal "revisor")."""
         alts = questao.get("alternativas") or {}
         gab = questao.get("resposta_correta")
-        perm = permutacao(questao, sal="revisor")
+        nome = "revisor2" if sal == "revisor2" else "revisor"
+        perm = permutacao(questao, sal=sal)
         # `dificuldade` continua na assinatura (chamadores e calibração passam),
         # mas NÃO vai para a mensagem desde P3: ancorava a dificuldade_real.
         user = REVISOR_USUARIO.format(
             ano=ano, habilidade=habilidade, descricao=descricao or "",
             subtema=subtema_para_revisor(subtema, alts) or "não especificado",
             enunciado=questao.get("enunciado", ""), **{L: alts.get(perm[L], "") for L in LETRAS})
-        texto, _ = self.chamar("revisor", "revisao_cega", [{"role": "system", "content": REVISOR_SISTEMA},
-                                                           {"role": "user", "content": user}])
+        msgs = [{"role": "system", "content": REVISOR_SISTEMA + (sistema_extra or "")},
+                {"role": "user", "content": user}]
+        texto, _ = chamador(msgs) if chamador else self.chamar("revisor", "revisao_cega", msgs)
         if texto is None:
-            return _falha("revisor", "erro_api", {"chamadas": 1, "permutacao": perm})
+            return _falha(nome, "erro_api", {"chamadas": 1, "permutacao": perm})
         r = interpretar_revisor(texto)
         if r is None:
-            return _falha("revisor", "veredito_malformado", {"chamadas": 1, "permutacao": perm,
-                                                             "bruto": _sanitizar(texto, 400)})
+            return _falha(nome, "veredito_malformado", {"chamadas": 1, "permutacao": perm,
+                                                        "bruto": _sanitizar(texto, 400)})
         resp_exib = resposta_unica(r["status"])
         resp = perm[resp_exib] if resp_exib else None
         status_orig = {perm[L]: r["status"][L] for L in LETRAS}
@@ -2141,7 +2152,17 @@ class Agentes:
         if val["veredito"] or not curto_circuito:
             rev = self.revisar(questao, ano, habilidade, descricao, subtema, dificuldade)
         ambos = bool(val["veredito"] and rev is not None and rev["veredito"])
-        return {"validador": val, "revisor": rev, "ambos": ambos}
+        out = {"validador": val, "revisor": rev, "ambos": ambos}
+        # 2º revisor só é pago quando os dois primeiros já aprovaram (a regra
+        # de entrada passa a ser validador E revisor E 2º revisor).
+        if self.segundo_revisor is not None and ambos:
+            rev2 = self.segundo_revisor(questao, ano, habilidade, descricao, subtema)
+            out["revisor2"] = rev2
+            # Gemini fora do ar/sem cota (indisponivel=True): segue SÓ com validador+revisor,
+            # a questão fica marcada como sem 2º revisor (reauditável depois).
+            if not (rev2 or {}).get("indisponivel"):
+                out["ambos"] = bool(rev2 is not None and rev2.get("veredito"))
+        return out
 
 
 def montar_agentes(args, simulado=False, log_uso=LOG_USO_PADRAO, orcamento=None, dormir=time.sleep):

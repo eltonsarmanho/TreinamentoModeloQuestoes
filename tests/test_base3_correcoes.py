@@ -228,3 +228,27 @@ class TestArbitroIncompleto(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestRespostaCorretaNulaNaoQuebra(unittest.TestCase):
+    """Injeção do 2º ano caiu com TypeError em check_structure quando o modelo
+    devolveu resposta_correta nula (2026-10-01 21:05)."""
+
+    def _q(self, gab):
+        return {"enunciado": "e", "alternativas": {L: str(i) for i, L in enumerate("ABCDE")},
+                "resolucao_passo_a_passo": "r", "resposta_correta": gab, "difficulty": "EASY"}
+
+    def test_nulo_vazio_e_duas_letras_sao_invalidos_sem_excecao(self):
+        from schema_utils import check_structure
+        for gab in (None, "", "AB", 3, ["A"]):
+            f = check_structure({"questoes": [self._q(gab)]}, quantidade_esperada=1)
+            self.assertFalse(f["resposta_valida"], gab)
+
+    def test_letra_valida_continua_valida(self):
+        from schema_utils import check_structure
+        for L in "ABCDE":
+            self.assertTrue(check_structure({"questoes": [self._q(L)]}, quantidade_esperada=1)["resposta_valida"])
+
+    def test_permutacao_veta_gabarito_nulo_sem_excecao(self):
+        import gerar_lote as gl
+        self.assertEqual(gl.vetos_permutacao(self._q(None)), ["schema"])

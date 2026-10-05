@@ -2192,3 +2192,167 @@ class TestRevisaoPiloto2(unittest.TestCase):
             self.assertTrue(all(r["versao_juizes"] == aq.VERSAO_JUIZES for r in depois.values()))
         finally:
             amb.fechar()
+
+
+class TestSegundoRevisorGemini(unittest.TestCase):
+    """Gemini como 2º revisor (2026-10-02): mesmo prompt/interpretação do revisor,
+    permutação própria, orçamento próprio; desligado por padrão."""
+
+    def setUp(self):
+        self.amb = Ambiente(falta_facil=2)
+
+    def tearDown(self):
+        self.amb.fechar()
+
+    def _agentes(self, mar, gem=None, max_gem=50):
+        a = agentes_com(mar, max_chamadas=200, log_uso=self.amb.d / "uso.jsonl")
+        arb = None
+        if gem is not None:
+            arb = arbitro_com(gem, max_chamadas=max_gem)
+            a.segundo_revisor = lambda q, ano, hab, desc, sub: arb.revisar_cego(a, q, ano, hab, desc, sub)
+        return a, arb
+
+    def _rodar(self, ag_):
+        return silencioso(iq.injetar, self.amb.args_injecao(), agentes=ag_)
+
+    def test_desligado_por_padrao_nao_muda_o_contrato(self):
+        a, _ = self._agentes(Roteiro())
+        j = a.julgar(questao_boa(), "9º", "H99", "soma", None, "Fácil")
+        self.assertNotIn("revisor2", j)
+        self.assertTrue(j["ambos"])
+        self.assertIsNone(a.segundo_revisor)
+
+    def test_aprovando_entra_e_registra_o_voto(self):
+        mar, gem = Roteiro(), Roteiro()
+        a, _ = self._agentes(mar, gem)
+        res = self._rodar(a)
+        aceitas = self.amb.linhas("injecao_saeb.jsonl")
+        self.assertEqual(len(aceitas), 2)
+        m = aceitas[0]["meta"]
+        self.assertEqual(m["vereditos"], {"validador": True, "revisor": True, "revisor2": True})
+        self.assertIn("revisor2", m["confianca"])
+        self.assertEqual(gem.chamadas["revisor"], 2)  # pago só para quem passou nos 2 primeiros
+
+    def test_reprovado_pelo_segundo_revisor_nao_entra(self):
+        a, _ = self._agentes(Roteiro(), Roteiro(revisor_aprova=False))
+        res = self._rodar(a)
+        self.assertEqual(self.amb.linhas("injecao_saeb.jsonl"), [])
+        self.assertGreater(res["funil"]["rejeitados_revisor2"], 0)
+        self.assertEqual(res["funil"]["aceitos"], 0)
+
+    def test_so_paga_gemini_se_os_dois_primeiros_aprovaram(self):
+        mar, gem = Roteiro(revisor_aprova=False), Roteiro()
+        a, _ = self._agentes(mar, gem)
+        self._rodar(a)
+        self.assertEqual(gem.chamadas["revisor"], 0)
+
+    def _ligado(self, mar, gem, max_gem=50, limite=3):
+        """Agentes com o 2º revisor ligado PELO CAMINHO REAL (com degradação)."""
+        a = agentes_com(mar, max_chamadas=200, log_uso=self.amb.d / "uso.jsonl")
+        avisos = []
+        arb = ag.ligar_segundo_revisor(a, dry_run=True, max_chamadas=max_gem, log_uso=self.amb.d / "gem_uso.jsonl",
+                                       cache_path=self.amb.d / "gem_cache.jsonl", limite_falhas=limite,
+                                       aviso=avisos.append)
+        arb.cliente, arb.dormir = gem, (lambda s: None)
+        return a, arb, avisos
+
+    def test_gemini_fora_do_ar_nao_derruba_o_fluxo_e_segue_sem_ele(self):
+        # cota/gasto estourado => a chamada falha; o fluxo continua só com validador+revisor
+        a, arb, avisos = self._ligado(Roteiro(), Roteiro(excecao=RuntimeError("429 quota exceeded")), limite=2)
+        res = self._rodar(a)
+        aceitas = self.amb.linhas("injecao_saeb.jsonl")
+        self.assertEqual(len(aceitas), 2)
+        self.assertEqual(res["funil"]["aceitos"], 2)
+        self.assertNotIn("orcamento", str(res["parada"]))
+        v = aceitas[0]["meta"]["vereditos"]
+        self.assertIsNone(v["revisor2"])
+        self.assertIn("revisor2_ausente", v)
+        self.assertFalse(a.segundo_revisor_estado["ativo"])
+        self.assertTrue(any("INDISPONÍVEL" in x for x in avisos))
+
+    def test_depois_de_desligado_nao_chama_mais_o_gemini(self):
+        gem = Roteiro(excecao=RuntimeError("quota"))
+        a, arb, _ = self._ligado(Roteiro(), gem, limite=2)
+        a.julgar(questao_boa(), "9º", "H99", "soma", None, "Fácil")
+        a.julgar(questao_boa(), "9º", "H99", "soma", None, "Fácil")
+        n = gem.chamadas["revisor"]
+        a.julgar(questao_boa(), "9º", "H99", "soma", None, "Fácil")
+        self.assertEqual(gem.chamadas["revisor"], n)
+        self.assertFalse(a.segundo_revisor_estado["ativo"])
+
+    def test_falha_isolada_nao_desliga(self):
+        class Oscila(Roteiro):
+            def chat_completion(self, messages, max_tokens, temperature):
+                if self.chamadas["x"] < 2:  # as 2 tentativas do Arbitro falham; a próxima chamada funciona
+                    self.chamadas["x"] += 1
+                    raise RuntimeError("503 timeout")
+                return super().chat_completion(messages, max_tokens, temperature)
+        a, arb, _ = self._ligado(Roteiro(), Oscila(), limite=3)
+        j = a.julgar(questao_boa(), "9º", "H99", "soma", None, "Fácil")
+        self.assertTrue(a.segundo_revisor_estado["ativo"])
+        self.assertTrue(j["revisor2"].get("indisponivel"))
+        j2 = a.julgar(questao_boa(), "9º", "H99", "soma", None, "Fácil")
+        self.assertTrue(j2["revisor2"]["veredito"])
+        self.assertEqual(a.segundo_revisor_estado["falhas"], 0)
+
+    def test_orcamento_do_gemini_esgotado_segue_sem_ele(self):
+        gem = Roteiro()
+        a, arb, avisos = self._ligado(Roteiro(), gem, max_gem=1)
+        res = self._rodar(a)
+        self.assertEqual(res["funil"]["aceitos"], 2)  # a injeção NÃO para
+        self.assertLessEqual(gem.chamadas["revisor"], 1)
+        self.assertFalse(a.segundo_revisor_estado["ativo"])
+        self.assertTrue(any("esgotado" in x for x in avisos))
+        linhas = self.amb.linhas("injecao_saeb.jsonl")
+        self.assertEqual([l["meta"]["vereditos"].get("revisor2") for l in linhas].count(None), 1)
+
+    def test_resposta_malformada_do_gemini_continua_reprovando(self):
+        a, arb, _ = self._ligado(Roteiro(), Fila(["lixo sem json"] * 20))
+        j = a.julgar(questao_boa(), "9º", "H99", "soma", None, "Fácil")
+        self.assertFalse(j["ambos"])
+        self.assertFalse(j["revisor2"].get("indisponivel"))
+        self.assertTrue(a.segundo_revisor_estado["ativo"])
+
+    def test_addendum_so_vai_para_o_gemini(self):
+        mar, gem = Grava(), Grava()
+        a, arb, _ = self._ligado(mar, gem)
+        a.julgar(questao_boa(), "9º", "H99", "soma", None, "Fácil")
+        sis = lambda cli: [m[0]["content"] for papel, m in cli.msgs if papel == "revisor"]
+        self.assertTrue(sis(gem) and all("REGRAS ADICIONAIS DO 2º REVISOR" in x for x in sis(gem)))
+        self.assertTrue(sis(mar) and all("REGRAS ADICIONAIS DO 2º REVISOR" not in x for x in sis(mar)))
+
+    def test_gemini_nao_recebe_gabarito_nem_resolucao(self):
+        gem = Grava()
+        a, _ = self._agentes(Roteiro(), gem)
+        q = dict(questao_boa(gab="D"), resolucao_passo_a_passo="Somando 35 + 18 obtemos 53 (RESOLUCAO-MARCADOR).")
+        a.julgar(q, "9º", "H99", "soma", None, "Fácil")
+        enviadas = [m for papel, m in gem.msgs if papel == "revisor"]
+        self.assertEqual(len(enviadas), 1, "o Gemini deveria ter sido chamado uma vez")
+        texto = json.dumps(enviadas[0], ensure_ascii=False)
+        self.assertNotIn("RESOLUCAO-MARCADOR", texto)
+        self.assertNotIn("esolução", texto.split('"role": "user"')[1])
+        self.assertNotIn("abarito", texto.split('"role": "user"')[1])
+
+    def test_gemini_usa_permutacao_propria(self):
+        gem = Grava()
+        a, _ = self._agentes(Roteiro(), gem)
+        q = questao_boa(gab="D")
+        a.julgar(q, "9º", "H99", "soma", None, "Fácil")
+        self.assertNotEqual(aq.permutacao(q, sal="revisor2"), aq.permutacao(q, sal="revisor"))
+
+    def test_flag_sem_teto_de_chamadas_e_recusada(self):
+        a, _ = self._agentes(Roteiro())
+        args = SimpleNamespace(segundo_revisor_gemini=True, dry_run=False, max_chamadas_gemini=None)
+        with self.assertRaises(SystemExit):
+            iq._ligar_gemini(args, a)
+
+    def test_flag_desligada_nao_faz_nada(self):
+        a, _ = self._agentes(Roteiro())
+        iq._ligar_gemini(SimpleNamespace(segundo_revisor_gemini=False, dry_run=False), a)
+        self.assertIsNone(a.segundo_revisor)
+
+    def test_flag_em_dry_run_liga_com_cliente_simulado(self):
+        a, _ = self._agentes(Roteiro())
+        iq._ligar_gemini(SimpleNamespace(segundo_revisor_gemini=True, dry_run=True, max_chamadas_gemini=5,
+                                         modelo_gemini=None), a)
+        self.assertIsNotNone(a.segundo_revisor)

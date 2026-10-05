@@ -310,7 +310,7 @@ def vetos_permutacao(questao):
             or set(alts) != set(ALTERNATIVE_LETTERS)
             or not all(isinstance(alts[L], str) and alts[L].strip()
                        for L in ALTERNATIVE_LETTERS)
-            or gab not in ALTERNATIVE_LETTERS):
+            or not (isinstance(gab, str) and gab in tuple(ALTERNATIVE_LETTERS))):
         return ["schema"]                                                   # V1
     textos = [alts[L].strip().lower() for L in ALTERNATIVE_LETTERS]
     if len(set(textos)) != len(ALTERNATIVE_LETTERS):

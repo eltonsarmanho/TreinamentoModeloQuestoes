@@ -52,62 +52,76 @@ def main():
     parser.add_argument(
         "--skip-data", action="store_true", help="não subir train.jsonl/val.jsonl"
     )
+    parser.add_argument("--lora-dir", default=str(LORA_DIR),
+                        help="pasta dos adaptadores LoRA (padrão: outputs/lora)")
+    parser.add_argument("--gguf-dir", default=str(GGUF_DIR),
+                        help="pasta do .gguf (padrão: outputs/gguf_gguf)")
+    parser.add_argument("--data-dir", default=str(DATA_DIR),
+                        help="pasta a subir como data/ (padrão: data/ inteira; "
+                             "para um ciclo específico, aponte para uma pasta com "
+                             "só os jsonl relevantes)")
+    parser.add_argument("--model-card", default=str(MODEL_CARD),
+                        help="model card a subir como README.md")
+    parser.add_argument("--eval-report", default=str(EVAL_REPORT),
+                        help="relatório de avaliação a subir como eval_report.json")
     args = parser.parse_args()
+    lora_dir, gguf_dir, data_dir = Path(args.lora_dir), Path(args.gguf_dir), Path(args.data_dir)
+    model_card, eval_report = Path(args.model_card), Path(args.eval_report)
 
-    if not GGUF_DIR.exists() and not args.skip_gguf:
+    if not gguf_dir.exists() and not args.skip_gguf:
         raise SystemExit(
-            f"{GGUF_DIR} não existe — rode primeiro: python src/export_gguf.py"
+            f"{gguf_dir} não existe — rode primeiro: python src/export_gguf.py"
         )
-    if not LORA_DIR.exists() and not args.skip_lora:
+    if not lora_dir.exists() and not args.skip_lora:
         raise SystemExit(
-            f"{LORA_DIR} não existe — rode primeiro: python src/train.py"
+            f"{lora_dir} não existe — rode primeiro: python src/train.py"
         )
 
     api = HfApi()
     print(f"Criando/verificando repositório privado: {args.repo_id}")
     api.create_repo(args.repo_id, repo_type="model", private=True, exist_ok=True)
 
-    if MODEL_CARD.exists():
+    if model_card.exists():
         print("Enviando model card -> README.md")
         api.upload_file(
             repo_id=args.repo_id,
-            path_or_fileobj=str(MODEL_CARD),
+            path_or_fileobj=str(model_card),
             path_in_repo="README.md",
             commit_message="Adiciona model card com dataset, hiperparâmetros e métricas",
         )
 
-    if EVAL_REPORT.exists():
+    if eval_report.exists():
         print("Enviando eval_report.json")
         api.upload_file(
             repo_id=args.repo_id,
-            path_or_fileobj=str(EVAL_REPORT),
+            path_or_fileobj=str(eval_report),
             path_in_repo="eval_report.json",
             commit_message="Adiciona relatório de avaliação",
         )
 
-    if not args.skip_data and DATA_DIR.exists():
-        print(f"Enviando dataset de {DATA_DIR} -> data/")
+    if not args.skip_data and data_dir.exists():
+        print(f"Enviando dataset de {data_dir} -> data/")
         api.upload_folder(
             repo_id=args.repo_id,
-            folder_path=str(DATA_DIR),
+            folder_path=str(data_dir),
             path_in_repo="data",
             commit_message="Adiciona dataset de fine-tuning (train/val jsonl)",
         )
 
     if not args.skip_lora:
-        print(f"Enviando adaptadores LoRA de {LORA_DIR} -> lora/")
+        print(f"Enviando adaptadores LoRA de {lora_dir} -> lora/")
         api.upload_folder(
             repo_id=args.repo_id,
-            folder_path=str(LORA_DIR),
+            folder_path=str(lora_dir),
             path_in_repo="lora",
             commit_message="Adiciona adaptadores LoRA (fine-tuning Qwen3-1.7B)",
         )
 
     if not args.skip_gguf:
-        print(f"Enviando GGUF de {GGUF_DIR} -> gguf/")
+        print(f"Enviando GGUF de {gguf_dir} -> gguf/")
         api.upload_folder(
             repo_id=args.repo_id,
-            folder_path=str(GGUF_DIR),
+            folder_path=str(gguf_dir),
             path_in_repo="gguf",
             commit_message="Adiciona modelo quantizado GGUF Q4_K_M para uso mobile",
         )
