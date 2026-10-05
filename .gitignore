@@ -23,3 +23,10 @@ TreinamentoDados/
 # Binários grandes (excedem limite do GitHub)
 baseline_v1/lora/adapter_model.safetensors
 baseline_v1/qwen3-1.7b.Q4_K_M.baseline.gguf
+# LaTeX build artifacts
+*.aux
+*.log
+*.nav
+*.out
+*.snm
+*.toc
