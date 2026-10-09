@@ -204,7 +204,8 @@ class TestTimeoutLlamaCli(unittest.TestCase):
         from unittest import mock
         import test_model as tm
         exc = subprocess.TimeoutExpired(cmd="llama-cli", timeout=300)
-        with mock.patch.object(tm.subprocess, "run", side_effect=exc):
+        with mock.patch.object(tm, "MOTOR", "cli"), \
+                mock.patch.object(tm.subprocess, "run", side_effect=exc):
             texto, _, _, elapsed = tm.generate("cli", "m.gguf", "Gere 1", 4, 512, seed=1)
         self.assertEqual(texto, "")
         self.assertGreaterEqual(elapsed, 0)

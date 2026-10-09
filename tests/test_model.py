@@ -34,15 +34,21 @@ Modos:
 """
 
 import argparse
+import atexit
 import hashlib
 import json
+import os
 import re
+import resource
 import shutil
+import socket
 import sqlite3
 import statistics
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -74,9 +80,19 @@ REPORT_PATH = ROOT / "outputs" / "eval_report_gguf.json"
 GRAMMAR_PATH = ROOT / "grammars" / "questao.gbnf"
 
 DEFAULT_LLAMA_CLI = Path.home() / ".unsloth" / "llama.cpp" / "llama-cli"
-# Q4_K_M: melhor tokens/s medido no benchmark (ver README) com poucas threads —
-# a geração é limitada por banda de memória, não por núcleos de CPU.
-DEFAULT_THREADS = 4
+# Núcleos físicos (cpu_count conta SMT), teto 8. llama-bench, i7-11800H
+# (2026-10-07): decode 33 -> 37 tok/s de 4 para 8 threads e satura (limitado
+# por banda de memória); prefill 150 -> 243 tok/s e para de escalar em 8.
+DEFAULT_THREADS = max(1, min(8, (os.cpu_count() or 8) // 2))
+
+# "server": um llama-server persistente por (gguf, threads) — carrega o modelo
+# uma vez e reaproveita o KV do prefixo comum (system prompt, ~307 tokens) via
+# cache_prompt. É o modo do app. "cli": um llama-cli por chamada (modo antigo,
+# mantido para reproduzir baselines medidos com ele). Sem cache e com as
+# mesmas threads os dois geram o MESMO JSON; cache e threads mudam o texto por
+# arredondamento numérico, por isso a troca passou pelo gate multiseed.
+MOTORES = ("server", "cli")
+MOTOR = "server"
 # MEDIDO (2026-09, tokenizer Qwen/Qwen3-1.7B) sobre as 1.188 respostas ACEITAS
 # dos relatórios outputs/diversidade_*.json, reconstruídas como
 # json.dumps({"questoes": [q]}, ensure_ascii=False) — a unidade real, já que
@@ -99,12 +115,87 @@ DEFAULT_THREADS = 4
 # Ver `pendencias` do relatório da Fase 1: a economia de latência pertence ao
 # cache de prefixo (item 1.4, lado React Native), não a este teto.
 MAX_NEW_TOKENS = 512
+# Sem -c, o llama-cli reserva o contexto inteiro do modelo (40960 tokens):
+# 4,4 GB de KV, pico de 5,8 GB de RSS e +2,9 s de carga por chamada (perfil
+# da Fase 0, 2026-10-07). Pior prompt medido com o tokenizer do Qwen3 = 890
+# tokens (gerar_lote, todas as restrições de montar_restricao juntas) + 512 de
+# saída = 1402; 2048 dá folga. Ao crescer prompt ou MAX_NEW_TOKENS, rever.
+N_CTX = 2048
 TEMPERATURE = 0.7
 TOP_P = 0.8
 
 SPEED_PATTERN = re.compile(
     r"Prompt:\s*([\d.]+)\s*t/s\s*\|\s*Generation:\s*([\d.]+)\s*t/s"
 )
+
+# Perfil de latência (--perfil). None = desligado: generate() roda exatamente
+# como sempre. Uma lista = generate() troca --log-disable por -lv 3 (só INFO,
+# ~20 linhas no stderr; o stdout não muda) e anexa um dict por chamada.
+PERFIL_CHAMADAS = None
+_TS = r"(\d+)\.(\d+)\.(\d+)\.(\d+)"
+_PERFIL_CARGA = re.compile(_TS + r" I srv\s+llama_server: model loaded")
+_PERFIL_PREFILL = re.compile(r"prompt eval time =\s*([\d.]+) ms /\s*(\d+) tokens")
+_PERFIL_DECODE = re.compile(r"\|\s+eval time =\s*([\d.]+) ms /\s*(\d+) tokens")
+
+
+def parse_perfil(stderr, wall_s):
+    """Decompõe uma chamada do llama-cli em carga / prefill / decode / outros (s).
+
+    carga = do início do log até "model loaded" (mmap, repack, alocação do KV,
+    warmup). outros = wall - o resto (spawn do processo, template, teardown).
+    Campos ausentes viram None (ex.: timeout antes do fim)."""
+    def ts_s(m):
+        mi, s, ms, us = (int(g) for g in m.groups()[:4])
+        return mi * 60 + s + ms / 1e3 + us / 1e6
+
+    carga = _PERFIL_CARGA.search(stderr)
+    prefill = _PERFIL_PREFILL.search(stderr)
+    decode = _PERFIL_DECODE.search(stderr)
+    p = {
+        "wall_s": round(wall_s, 3),
+        "carga_s": round(ts_s(carga), 3) if carga else None,
+        "prefill_s": round(float(prefill.group(1)) / 1e3, 3) if prefill else None,
+        "prefill_tokens": int(prefill.group(2)) if prefill else None,
+        "decode_s": round(float(decode.group(1)) / 1e3, 3) if decode else None,
+        "decode_tokens": int(decode.group(2)) if decode else None,
+    }
+    partes = (p["carga_s"], p["prefill_s"], p["decode_s"])
+    p["outros_s"] = round(wall_s - sum(partes), 3) if None not in partes else None
+    return p
+
+
+def _pico_rss_mib():
+    """Pico de RSS do llama.cpp: do servidor vivo (VmHWM) ou dos llama-cli já encerrados."""
+    if MOTOR == "server" and _Servidor.proc is not None:
+        try:
+            for linha in Path(f"/proc/{_Servidor.proc.pid}/status").read_text().splitlines():
+                if linha.startswith("VmHWM:"):
+                    return round(int(linha.split()[1]) / 1024, 1)
+        except OSError:
+            pass
+    return round(resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss / 1024, 1)
+
+
+def resumo_perfil(chamadas):
+    """Agrega parse_perfil() de várias chamadas: média/mediana/p95 e fração do wall."""
+    def stats(vals):
+        vals = sorted(v for v in vals if v is not None)
+        if not vals:
+            return None
+        return {"media": round(statistics.mean(vals), 3),
+                "mediana": round(statistics.median(vals), 3),
+                "p95": round(vals[min(len(vals) - 1, int(0.95 * len(vals)))], 3),
+                "soma": round(sum(vals), 3)}
+
+    campos = ("wall_s", "carga_s", "prefill_s", "decode_s", "outros_s",
+              "prefill_tokens", "decode_tokens")
+    out = {"chamadas": len(chamadas), **{k: stats(c[k] for c in chamadas) for k in campos}}
+    wall_total = (out["wall_s"] or {}).get("soma") or 0
+    out["fracao_do_wall_pct"] = {
+        k: round(100 * out[k]["soma"] / wall_total, 1) if out[k] and wall_total else None
+        for k in ("carga_s", "prefill_s", "decode_s", "outros_s")
+    }
+    return out
 
 
 def find_llama_cli(explicit=None):
@@ -132,9 +223,107 @@ def find_gguf(explicit=None):
     return candidates[0]
 
 
+class _Servidor:
+    """llama-server persistente; reiniciado se gguf/threads mudarem ou se morrer."""
+    proc, chave, url, carga_s = None, None, None, None
+
+    @classmethod
+    def garantir(cls, llama_cli, gguf_path, threads):
+        chave = (str(gguf_path), int(threads))
+        if cls.proc is not None and cls.chave == chave and cls.proc.poll() is None:
+            return cls.url
+        cls.parar()
+        binario = Path(llama_cli).with_name("llama-server")
+        if not binario.exists():
+            binario = Path(shutil.which("llama-server") or binario)
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            porta = s.getsockname()[1]
+        # -np 1: com slots automáticos o -c seria dividido entre eles e o
+        # pior prompt (890 tokens) não caberia; e um slot só mantém o KV do
+        # prefixo comum entre chamadas consecutivas.
+        cmd = [str(binario), "-m", str(gguf_path), "--jinja", "-rea", "off",
+               "-c", str(N_CTX), "-np", "1", "-t", str(threads),
+               "--host", "127.0.0.1", "--port", str(porta), "--log-disable"]
+        inicio = time.perf_counter()
+        cls.proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        cls.chave, cls.url = chave, f"http://127.0.0.1:{porta}"
+        while time.perf_counter() - inicio < 120:
+            if cls.proc.poll() is not None:
+                raise SystemExit(f"llama-server encerrou ao iniciar (código {cls.proc.returncode}): {cmd}")
+            try:
+                urllib.request.urlopen(cls.url + "/health", timeout=1).read()
+                cls.carga_s = round(time.perf_counter() - inicio, 3)
+                return cls.url
+            except (urllib.error.URLError, ConnectionError, TimeoutError):
+                time.sleep(0.05)
+        cls.parar()
+        raise SystemExit("llama-server não respondeu em 120s")
+
+    @classmethod
+    def parar(cls):
+        if cls.proc is not None and cls.proc.poll() is None:
+            cls.proc.terminate()
+            try:
+                cls.proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                cls.proc.kill()
+        cls.proc = None
+
+
+atexit.register(_Servidor.parar)
+
+
+def _generate_server(llama_cli, gguf_path, user_prompt, threads, max_new_tokens, seed, grammar):
+    url = _Servidor.garantir(llama_cli, gguf_path, threads)
+    corpo = {
+        "messages": [{"role": "system", "content": SYSTEM_PROMPT},
+                     {"role": "user", "content": user_prompt}],
+        "temperature": TEMPERATURE, "top_p": TOP_P, "max_tokens": max_new_tokens,
+        "cache_prompt": True,
+    }
+    if seed is not None:
+        corpo["seed"] = seed
+    if grammar is not None:
+        corpo["grammar"] = Path(grammar).read_text(encoding="utf-8")
+    req = urllib.request.Request(url + "/v1/chat/completions", data=json.dumps(corpo).encode(),
+                                 headers={"Content-Type": "application/json"})
+    start = time.perf_counter()
+    # Mesma política do llama-cli: timeout/erro = geração inválida, não derruba o lote.
+    try:
+        with urllib.request.urlopen(req, timeout=300) as r:
+            resp = json.loads(r.read().decode("utf-8", errors="replace"))
+        answer = resp["choices"][0]["message"]["content"] or ""
+        tim = resp.get("timings") or {}
+    except (urllib.error.URLError, TimeoutError, ConnectionError, KeyError, ValueError) as e:
+        print(f"  [erro llama-server] {e!r} (seed={seed}); tratado como geração inválida",
+              file=sys.stderr)
+        _Servidor.parar()
+        answer, tim = "", {}
+    elapsed = time.perf_counter() - start
+
+    if PERFIL_CHAMADAS is not None:
+        prefill_s = tim["prompt_ms"] / 1e3 if "prompt_ms" in tim else None
+        decode_s = tim["predicted_ms"] / 1e3 if "predicted_ms" in tim else None
+        PERFIL_CHAMADAS.append({
+            "wall_s": round(elapsed, 3), "carga_s": 0.0,
+            "prefill_s": round(prefill_s, 3) if prefill_s is not None else None,
+            "prefill_tokens": tim.get("prompt_n"),
+            "prefill_cache_tokens": tim.get("cache_n"),
+            "decode_s": round(decode_s, 3) if decode_s is not None else None,
+            "decode_tokens": tim.get("predicted_n"),
+            "outros_s": (round(elapsed - prefill_s - decode_s, 3)
+                         if prefill_s is not None and decode_s is not None else None),
+        })
+    return answer, tim.get("prompt_per_second"), tim.get("predicted_per_second"), elapsed
+
+
 def generate(llama_cli, gguf_path, user_prompt, threads, max_new_tokens, seed=None,
              grammar=None):
-    """Chama llama-cli em modo single-turn e retorna (texto, prompt_tps, gen_tps, latencia_total_s)."""
+    """Gera uma resposta e retorna (texto, prompt_tps, gen_tps, latencia_total_s)."""
+    if MOTOR == "server":
+        return _generate_server(llama_cli, gguf_path, user_prompt, threads,
+                                max_new_tokens, seed, grammar)
     cmd = [
         str(llama_cli),
         "-m", str(gguf_path),
@@ -146,10 +335,11 @@ def generate(llama_cli, gguf_path, user_prompt, threads, max_new_tokens, seed=No
         "--temp", str(TEMPERATURE),
         "--top-p", str(TOP_P),
         "-n", str(max_new_tokens),
+        "-c", str(N_CTX),
         "--no-display-prompt", "--simple-io",
         "-t", str(threads),
-        "--log-disable",
     ]
+    cmd += ["-lv", "3", "--log-timestamps"] if PERFIL_CHAMADAS is not None else ["--log-disable"]
     if grammar is not None:
         cmd += ["--grammar-file", str(grammar)]
     if seed is not None:
@@ -168,12 +358,14 @@ def generate(llama_cli, gguf_path, user_prompt, threads, max_new_tokens, seed=No
     # entra na latência: é o que o usuário do app esperaria.
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300, errors="replace")
-        stdout = result.stdout
+        stdout, stderr = result.stdout, result.stderr
     except subprocess.TimeoutExpired:
         print(f"  [timeout] llama-cli > 300s (seed={seed}); tratado como geração inválida",
               file=sys.stderr)
-        stdout = ""
+        stdout, stderr = "", ""
     elapsed = time.perf_counter() - start
+    if PERFIL_CHAMADAS is not None:
+        PERFIL_CHAMADAS.append(parse_perfil(stderr, elapsed))
 
     match = SPEED_PATTERN.search(stdout)
     prompt_tps = float(match.group(1)) if match else None
@@ -829,7 +1021,11 @@ def batch(llama_cli, gguf_path, threads, num_samples, grammar=None, retries=1, r
         "artefato": str(gguf_path),
         "artefato_sha256": artefato_sha256,
         "conjunto_avaliacao": str(val_path or VAL_PATH),
-        "motor": "llama.cpp (llama-cli)",
+        "motor": f"llama.cpp (llama-{MOTOR})",
+        # Configuração que muda o texto gerado (ver MOTOR): o gate multiseed
+        # usa este campo para aceitar mesmo sha256 com --comparar-inferencia.
+        "inferencia": {"motor": MOTOR, "threads": threads, "n_ctx": N_CTX,
+                       "cache_prompt": MOTOR == "server"},
         "modo": modo,
         "num_amostras": n,
         "seed_rodada": seed_rodada,
@@ -900,13 +1096,27 @@ def batch(llama_cli, gguf_path, threads, num_samples, grammar=None, retries=1, r
             "tokens_por_segundo_geracao": round(statistics.mean(gen_tps_list), 1) if gen_tps_list else None,
             "latencia_media_total_s": round(statistics.mean(latencies), 2),
             "nota": (
-                "latencia_media_total_s inclui o carregamento do modelo a cada "
-                "chamada (processo novo por questão); tokens_por_segundo_geracao "
+                "motor cli: latencia_media_total_s inclui carregar o modelo a cada "
+                "chamada; motor server: carga única (perfil.carga_servidor_s) e "
+                "prefixo do system prompt em cache. tokens_por_segundo_geracao "
                 "vem do próprio llama.cpp e reflete só a fase de geração."
             ),
         },
         "detalhes": results,
     }
+    if PERFIL_CHAMADAS is not None:
+        report["perfil"] = {
+            **resumo_perfil(PERFIL_CHAMADAS),
+            # ru_maxrss dos filhos: pico entre TODOS os llama-cli do lote (KiB no Linux).
+            "pico_rss_mib": _pico_rss_mib(),
+            "carga_servidor_s": _Servidor.carga_s if MOTOR == "server" else None,
+            "nota": (
+                "uma entrada por chamada ao modelo (inclui regenerações do best-of-N). "
+                "carga_s = início do processo até 'model loaded' (mmap, repack, KV, warmup); "
+                "prefill_tokens inclui o system prompt, idêntico em toda chamada."
+            ),
+            "por_chamada": PERFIL_CHAMADAS,
+        }
 
     out_path = Path(report_path) if report_path else REPORT_PATH
     out_path.parent.mkdir(exist_ok=True)
@@ -915,15 +1125,18 @@ def batch(llama_cli, gguf_path, threads, num_samples, grammar=None, retries=1, r
 
     print(f"\n===== Teste real (GGUF via llama.cpp) — {n} amostras =====")
     for section in ("estrutura", "por_ano", "pos_processamento", "geometria",
-                    "velocidade_cpu_real"):
+                    "velocidade_cpu_real", "perfil"):
+        if section not in report:
+            continue
         print(f"[{section}]")
         for k, v in report[section].items():
-            if k != "nota":
+            if k not in ("nota", "por_chamada"):
                 print(f"  {k}: {v}")
     print(f"\nRelatório completo: {out_path}")
 
 
 def main():
+    global PERFIL_CHAMADAS, MOTOR
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -963,7 +1176,17 @@ def main():
                         help="verificador de geometria: 'ativo' regenera questões de "
                              "classificação reprovadas; 'sombra' só relata (comportamento "
                              "anterior, para comparar com baselines antigos)")
+    parser.add_argument("--motor", choices=MOTORES, default=MOTOR,
+                        help="server = llama-server persistente com cache do system prompt "
+                             "(produção); cli = um llama-cli por chamada (reproduz baselines antigos)")
+    parser.add_argument("--perfil", action="store_true",
+                        help="mede carga/prefill/decode de cada chamada ao llama-cli; no --batch "
+                             "vai para report['perfil']. Não altera a geração")
     args = parser.parse_args()
+
+    MOTOR = args.motor
+    if args.perfil:
+        PERFIL_CHAMADAS = []
 
     llama_cli = find_llama_cli(args.llama_cli)
     gguf_path = find_gguf(args.model)
@@ -992,6 +1215,11 @@ def main():
     else:
         interactive(llama_cli, gguf_path, args.threads, grammar=grammar,
                     retries=args.retries, modo_geometria=args.geometria)
+
+    if args.perfil and not args.batch and PERFIL_CHAMADAS:
+        print("\n[perfil]")
+        for k, v in resumo_perfil(PERFIL_CHAMADAS).items():
+            print(f"  {k}: {v}")
 
 
 if __name__ == "__main__":

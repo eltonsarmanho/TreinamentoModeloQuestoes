@@ -27,7 +27,7 @@ python src/distill_teacher.py           # (optional) distills from a larger teac
 python src/train.py                     # QLoRA fine-tune (RTX 3060 6GB); --train/--val/--out/--checkpoints for control runs
 python src/export_gguf.py               # merges LoRA + quantizes to GGUF Q4_K_M
 python tests/test_model.py              # interactive: generate one question via the real .gguf/llama-cli
-python tests/test_model.py --batch --val data/val_frozen_v1.jsonl --report outputs/relatorios/eval.json
+python tests/test_model.py --batch --val data/val_frozen_v1.jsonl --report outputs/relatorios/eval.json  # add --perfil for a latency breakdown
 python src/promover_checkpoint.py --perfil multiseed \
   --baseline-gguf-seeds <3 reports> --candidato-gguf-seeds <3 reports>  # promotion gate, see below
 python src/push_to_hub.py --repo-id <org>/<name> --lora-dir ... --gguf-dir ... --data-dir ... --model-card ...
@@ -138,13 +138,18 @@ Three profiles, selected with `--perfil`:
 - `planejado`: the app's actual generation mode (N planned calls, 0 regens).
 - `multiseed` (current default for new promotions): requires ≥3 seed rounds
   (`tests/test_model.py --seed-rodada N`, same prompts/pairing, different
-  generation seeds) so G2/G3 decide on ≥90 paired samples via McNemar instead
+  generation seeds) so G2/G3 decide on ≥90 paired samples via McNemar, and G6
+  (answer-letter bias) on the letter counts summed over all rounds, instead
   of a single 30-item pass. This profile exists because a single item on a
   30-sample pass once failed both G2 and G3 simultaneously — not
   distinguishable from noise. **Any further change to gate criteria must be
   made *after* a reproved verdict and documented in the code as such** — this
   is the established practice (see git history / comments in the file), not
   a one-off.
+  `--comparar-inferencia` reuses this profile to compare two *inference
+  configurations* of the same `.gguf` (e.g. `--motor cli` vs `--motor server`):
+  it requires the same sha256 and a different `report["inferencia"]`, and
+  counts latency as a gain.
 
 Baseline and candidate are always evaluated on the exact same seeds
 (`base_seed` in `test_model.generate_validated`) — this is what makes the
@@ -164,6 +169,16 @@ builds a planned N-question batch this way (one call per question against a
 subtopic-coverage plan from `src/diversidade.py`), instead of one call asking
 for N questions at once — the latter let diversity ride on sampling alone and
 only the first question in a batch got the full check.
+
+Generation runs on a persistent `llama-server` by default (`MOTOR = "server"`,
+`--motor cli` = one `llama-cli` process per call, kept to reproduce old
+baselines): the model loads once and the system-prompt prefix stays in the KV
+cache (`cache_prompt`). Always `-c N_CTX` (2048; without it llama.cpp
+reserves the model's full 40960-token context, ~4.4 GB of KV) and `-np 1` (auto
+slots would split that context). Prompt cache and thread count change the
+generated text through floating-point rounding (not bit-identical), so changing
+them goes through the multiseed gate. `--perfil` breaks each call into
+load / prefill / decode time and peak RSS.
 
 ### Secrets
 

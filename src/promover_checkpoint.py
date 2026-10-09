@@ -18,6 +18,7 @@ Uso:
 
 import argparse
 import json
+import statistics
 import math
 from collections import Counter
 from pathlib import Path
@@ -868,6 +869,17 @@ def houve_ganho_planejado(base_rel, cand_rel, modo="ajustado"):
 #   * todos os OUTROS gates bloqueantes (G1, G4–G8) continuam com a régua
 #     original e precisam passar em TODAS as rodadas — a mudança não afrouxa
 #     nada além de G2/G3.
+#
+# REVISÃO DE 2026-10-09 (G6*), registrada como feita DEPOIS de um veredito
+# reprovado (VEREDITO_inferencia_server.json, --comparar-inferencia: llama-cli
+# 4 threads x llama-server + cache de prompt + 8 threads, mesmo .gguf v3).
+# O DEFEITO é o mesmo de G2/G3: G6 ("letra mais frequente <= baseline + 5pp")
+# decidia em CADA rodada de 30 itens, onde 2 respostas = 6,7pp. Reprovou só na
+# rodada 0 (36,7% -> 43,3%: B 11 -> 13); na rodada 1 o candidato MELHOROU
+# 6,6pp, e somadas as 90 amostras foi 30,0% -> 31,1%.
+# REGRA: G6* aplica a MESMA tolerância (+5pp) ao viés agregado das rodadas
+# (_agregado()["vies_pct"], contagem de letras somada) em vez de exigi-la por
+# rodada. G1, G4, G5, G7 e G8 continuam por rodada.
 TETO_FALHA_MULTISEED = 0.05
 # Com 1 rodada o perfil seria só a régua frouxa sobre os MESMOS 30 itens; o
 # ganho de resolução vem das rodadas novas. Mínimo fixado junto com a regra.
@@ -905,8 +917,14 @@ def _agregado(rels):
     }
 
 
-def avalia_multiseed(bases, cands):
-    """Retorna (gates, ganhos, agregado_base, agregado_cand). Ver bloco acima."""
+def avalia_multiseed(bases, cands, comparar_inferencia=False):
+    """Retorna (gates, ganhos, agregado_base, agregado_cand). Ver bloco acima.
+
+    comparar_inferencia (2026-10-09): compara CONFIGURAÇÕES de inferência do
+    MESMO .gguf (motor, threads, cache de prompt), que mudam o texto gerado por
+    arredondamento. Inverte a trava de sha256 (tem de ser o mesmo artefato e
+    report["inferencia"] tem de diferir) e conta latência como ganho. Os gates
+    bloqueantes não mudam."""
     rb = sorted(_rodada(r) for r in bases)
     rc = sorted(_rodada(r) for r in cands)
     if len(rc) < MIN_RODADAS_MULTISEED:
@@ -918,7 +936,14 @@ def avalia_multiseed(bases, cands):
                    key=lambda p: _rodada(p[0]))
     for b, c in pares:
         hb, hc = b.get("artefato_sha256"), c.get("artefato_sha256")
-        if hb and hc and hb == hc:
+        if comparar_inferencia:
+            if not (hb and hb == hc):
+                raise SystemExit(f"ABORTADO: --comparar-inferencia exige o MESMO sha256 "
+                                 f"(rodada {_rodada(b)}: {hb} x {hc}).")
+            if not (b.get("inferencia") and c.get("inferencia")) or b["inferencia"] == c["inferencia"]:
+                raise SystemExit(f"ABORTADO: rodada {_rodada(b)} sem 'inferencia' diferente "
+                                 f"nos dois lados ({b.get('inferencia')} x {c.get('inferencia')}).")
+        elif hb and hc and hb == hc:
             raise SystemExit(f"ABORTADO: rodada {_rodada(b)} com o MESMO sha256 nos dois lados.")
         if Path(str(b.get("conjunto_avaliacao"))).name != Path(str(c.get("conjunto_avaliacao"))).name:
             raise SystemExit(f"ABORTADO: rodada {_rodada(b)} com conjuntos de avaliação diferentes.")
@@ -928,7 +953,7 @@ def avalia_multiseed(bases, cands):
     por_rodada = [(_rodada(b), avalia(b, c)) for b, c in pares]
     gates = []
     for i, modelo in enumerate(por_rodada[0][1]):
-        if modelo.id in ("G2", "G3"):
+        if modelo.id in ("G2", "G3", "G6"):
             continue
         falhas = [f"rodada {r}: {gs[i].detalhe}" for r, gs in por_rodada if not gs[i].passou]
         gates.append(Gate(modelo.id, modelo.nome + " [todas as rodadas]", modelo.bloqueante).resolve(
@@ -951,6 +976,11 @@ def avalia_multiseed(bases, cands):
         f"{ab['consistencia_pct']}% (n={ab['verificaveis']}) -> {ac['consistencia_pct']}% "
         f"(n={ac['verificaveis']})  (piorou {piorou}, melhorou {melhorou}, McNemar p={p:.3f})"))
 
+    vb, vc = ab["vies_pct"], ac["vies_pct"]
+    gates.insert(3, Gate("G6*", "Viés de gabarito agregado (<= baseline + 5pp)").resolve(
+        vb is not None and vc is not None and vc <= vb + 5,
+        f"letra mais frequente {vb}% -> {vc}% (n={ac['n']})"))
+
     ganhos = []
     for nome, chave, sentido in (("consistência", "consistencia_pct", 1),
                                  ("aderência à dificuldade", "aderencia_pct", 1),
@@ -964,6 +994,13 @@ def avalia_multiseed(bases, cands):
             continue
         if vb is not None and vc is not None and (vc - vb) * sentido > 0:
             ganhos.append(f"{nome}: {vb} -> {vc}")
+    if comparar_inferencia:
+        lat = lambda rels: statistics.mean(
+            _get(r, "velocidade_cpu_real", "latencia_media_total_s") for r in rels)
+        lb, lc = lat(bases), lat(cands)
+        if lc < lb:
+            ganhos.append(f"latência média por item: {lb:.2f}s -> {lc:.2f}s "
+                          f"({100 * (lc - lb) / lb:+.1f}%)")
     return gates, ganhos, ab, ac
 
 
@@ -972,7 +1009,7 @@ def main_multiseed(args, carrega):
         raise SystemExit("perfil multiseed exige o MESMO número de relatórios nos dois lados")
     bases = [carrega(p) for p in args.baseline_gguf_seeds]
     cands = [carrega(p) for p in args.candidato_gguf_seeds]
-    gates, ganhos, ab, ac = avalia_multiseed(bases, cands)
+    gates, ganhos, ab, ac = avalia_multiseed(bases, cands, args.comparar_inferencia)
 
     print("=" * 78)
     print("GATES DE PROMOÇÃO — MULTISEED, conjunto congelado, comparação pareada")
@@ -1000,6 +1037,8 @@ def main_multiseed(args, carrega):
             "baseline": bases[0].get("artefato"), "candidato": cands[0].get("artefato"),
             "conjunto_avaliacao": cands[0].get("conjunto_avaliacao"),
             "rodadas": sorted(_rodada(r) for r in cands),
+            "inferencia_baseline": bases[0].get("inferencia"),
+            "inferencia_candidato": cands[0].get("inferencia"),
             "agregado_baseline": ab, "agregado_candidato": ac, "ganhos": ganhos,
             "gates": [{"id": g.id, "nome": g.nome, "bloqueante": g.bloqueante,
                        "passou": g.passou, "detalhe": g.detalhe} for g in gates],
@@ -1016,6 +1055,9 @@ def main():
     parser.add_argument("--baseline-gguf-seeds", nargs="+",
                         help="multiseed: relatórios test_model.py do baseline (1 por --seed-rodada)")
     parser.add_argument("--candidato-gguf-seeds", nargs="+")
+    parser.add_argument("--comparar-inferencia", action="store_true",
+                        help="multiseed: mesmo .gguf, configurações de inferência diferentes "
+                             "(report['inferencia']); latência conta como ganho")
     parser.add_argument("--planejado-baseline", nargs="+",
                         help="relatórios avaliar_diversidade.py do baseline (1 por seed)")
     parser.add_argument("--planejado-candidato", nargs="+")

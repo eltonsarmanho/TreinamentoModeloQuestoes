@@ -112,5 +112,68 @@ class TestMultiseed(unittest.TestCase):
         self.assertTrue(any(g.startswith("consistência") for g in ganhos))
 
 
+class TestCompararInferencia(unittest.TestCase):
+    """Mesmo .gguf, configuração de inferência diferente (motor/threads/cache)."""
+
+    def _par(self, lat_b=10.0, lat_c=5.0, inf_b="cli", inf_c="server", sha_c="m"):
+        def rel(r, sha, inf, lat):
+            x = _rel(r, sha)
+            x["inferencia"] = {"motor": inf}
+            x["velocidade_cpu_real"]["latencia_media_total_s"] = lat
+            return x
+        return ([rel(r, "m", inf_b, lat_b) for r in range(3)],
+                [rel(r, sha_c, inf_c, lat_c) for r in range(3)])
+
+    def test_mesmo_sha_aceito_e_latencia_conta_como_ganho(self):
+        gates, ganhos, _, _ = pc.avalia_multiseed(*self._par(), comparar_inferencia=True)
+        self.assertTrue(_gate(gates, "G2*").passou)
+        self.assertTrue(any(g.startswith("latência") for g in ganhos))
+
+    def test_sem_a_opcao_mesmo_sha_continua_abortando(self):
+        with self.assertRaises(SystemExit):
+            pc.avalia_multiseed(*self._par())
+
+    def test_mesma_inferencia_aborta(self):
+        with self.assertRaises(SystemExit):
+            pc.avalia_multiseed(*self._par(inf_c="cli"), comparar_inferencia=True)
+
+    def test_artefatos_diferentes_abortam(self):
+        with self.assertRaises(SystemExit):
+            pc.avalia_multiseed(*self._par(sha_c="outro"), comparar_inferencia=True)
+
+    def test_latencia_pior_nao_e_ganho(self):
+        _, ganhos, _, _ = pc.avalia_multiseed(*self._par(lat_c=12.0), comparar_inferencia=True)
+        self.assertFalse(any(g.startswith("latência") for g in ganhos))
+
+
+class TestG6Agregado(unittest.TestCase):
+    """Revisão de 2026-10-09: G6 decide sobre a contagem de letras somada."""
+
+    def _com_letras(self, rodada, sha, dist):
+        x = _rel(rodada, sha)
+        x["estrutura"]["distribuicao_respostas_corretas"] = dist
+        x["estrutura"]["gabarito_letra_mais_frequente_pct"] = round(
+            100 * max(dist.values()) / sum(dist.values()), 1)
+        return x
+
+    def test_caso_real_ruido_numa_rodada_passa(self):
+        bases = [self._com_letras(0, "b", {"A": 7, "B": 11, "C": 5, "D": 4, "E": 3}),
+                 self._com_letras(1, "b", {"A": 10, "B": 5, "C": 7, "D": 4, "E": 4}),
+                 self._com_letras(2, "b", {"A": 10, "B": 10, "C": 6, "D": 2, "E": 2})]
+        cands = [self._com_letras(0, "c", {"A": 8, "B": 13, "C": 5, "D": 2, "E": 2}),
+                 self._com_letras(1, "c", {"A": 8, "B": 6, "C": 8, "D": 4, "E": 4}),
+                 self._com_letras(2, "c", {"A": 11, "B": 9, "C": 4, "D": 4, "E": 2})]
+        gates, _, _, _ = pc.avalia_multiseed(bases, cands)
+        self.assertTrue(_gate(gates, "G6*").passou)
+        self.assertNotIn("G6", [g.id for g in gates])
+
+    def test_vies_agregado_acima_da_tolerancia_reprova(self):
+        bal = {"A": 6, "B": 6, "C": 6, "D": 6, "E": 6}
+        bases = [self._com_letras(r, "b", bal) for r in range(3)]
+        cands = [self._com_letras(r, "c", {"A": 12, "B": 6, "C": 4, "D": 4, "E": 4}) for r in range(3)]
+        gates, _, _, _ = pc.avalia_multiseed(bases, cands)
+        self.assertFalse(_gate(gates, "G6*").passou)  # 20% -> 40%
+
+
 if __name__ == "__main__":
     unittest.main()
