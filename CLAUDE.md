@@ -224,6 +224,12 @@ that `promover_checkpoint.mcnemar_planejado` re-judges stored reports with the
 *current* verifier, so re-running a gate on old reports can now give different
 paired counts (e.g. base_k0 x exp_C: 13 worse / 3 better, p≈0.02).
 
+### Auditoria e padronização da base (2026-10-10)
+
+`src/padronizar_enunciado.py` converte CAIXA ALTA em caixa normal e restaura acentos (Maritaca `sabia-4`; 20 de 20 passaram no invariante contra 6 de 20 do `sabiazinho-4`). O invariante é a trava: o texto novo tem de ser igual ao original sem acentos e sem diferença de maiúsculas, então o modelo não pode trocar palavra nem número; resposta que viola cai no método determinístico. Escreve só um arquivo novo (`data/train_curado_v4.jsonl`), nunca `train_curado.jsonl`, `train.jsonl` nem `val*`; `--real` exige `--max-chamadas`. `src/auditar_gabaritos_base.py` classifica cada gabarito em CONFIRMADO / JUIZES / FRACO / REFUTADO sem chamada paga, e `src/reverificar_gabaritos.py` resolve às cegas (2 permutações) só os FRACO. As trocas de gabarito que ela sugere são PROPOSTAS: item real do banco e `Doc/decisoes_humanas.json` têm precedência e exigem revisão humana. CONFIRMADO só certifica a aritmética.
+
+`src/consolidar_base.py` fecha o ciclo e gera `data/train_curado_v5.jsonl` (v4 menos os itens sem sustentação, com a letra do gabarito balanceada em 20% cada por `permutar_lote`, um único lote para a base inteira). Fases: `figura` (sabia-4: resolvível só com o texto?), `resolver` (sabia-4-thinking, 2 permutações: lê, resolve, marca o gabarito e escreve a resolução, só para os itens do banco sem justificativa "Correto"; troca de gabarito só com confirmação aritmética, senão remove) e `montar` (sem API). Todas têm `--max-chamadas` e abortam, em vez de remover, se o teto ou a API falharem. `auditar_gabaritos_base.py --base data/train_curado_v5.jsonl --rotulo v5` compara o gabarito do banco por CONTEÚDO (o extrator troca "×" por "x" e travessões por hífen; o banco guarda frações como data de planilha). O banco SQLite e a v3 não são alterados.
+
 ### Secrets
 
 `.env` holds `MARITALK_API_KEY`, `GOOGLE_API_KEY`, `HF_TOKEN` — never read,

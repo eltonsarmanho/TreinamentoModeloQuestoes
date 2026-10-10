@@ -14,6 +14,8 @@ Camadas, da mais forte para a mais fraca (a primeira que decide fixa a classe):
                   (validador + revisor, sabia-4-thinking, cada um RESOLVE o item sem ver o
                   gabarito) aprovaram: confiança "alta" em data/auditoria_base.jsonl, ou item
                   injetado (só entra com os dois vereditos true).
+  3b. CEGO      — resolvido às cegas e confirmado em 2 passes (sabia-4-thinking); vale tanto
+                  quanto JUIZES e é a evidência dos itens que os juízes deixaram "baixa/media".
   4. FRACO      — juízes "media"/"baixa", ou item nunca julgado com os prompts atuais.
   5. RESIDUAL   — não é REFUTADO nem CONFIRMADO e também não é JUIZES: são os únicos
                   candidatos a uma resolução cega paga. Os itens FRACO também entram.
@@ -27,6 +29,7 @@ Uso:
 """
 import argparse
 import json
+import re
 import sqlite3
 import sys
 from collections import Counter, defaultdict
@@ -55,7 +58,11 @@ def origem(codigo):
 
 
 def carregar_banco(db=ROOT / "DB" / "questoes.db"):
-    """codigo_item -> (gabarito, letra marcada 'Correto' nas justificativas ou None)."""
+    """codigo_item -> (gabarito, letra marcada 'Correto' nas justificativas ou None, {letra: texto}).
+
+    Os textos permitem comparar o gabarito por CONTEÚDO: depois do balanceamento de
+    letras (permutar_lote) a letra do treino deixa de ser a do banco, mas o texto da
+    alternativa correta continua sendo o mesmo."""
     out = {}
     if not Path(db).exists():
         return out
@@ -64,7 +71,8 @@ def carregar_banco(db=ROOT / "DB" / "questoes.db"):
     for x in con.execute("select * from itens where gabarito in ('A','B','C','D')"):
         j = {L: (x[f"justificativa_alternativa_{L.lower()}"] or "").strip() for L in "ABCD"}
         marc = [L for L, v in j.items() if v.lower().startswith(("correto", "correta"))]
-        out[x["codigo_item"]] = (x["gabarito"], marc[0] if len(marc) == 1 else None)
+        textos = {L: (x[f"alternativa_{L.lower()}"] or "") for L in "ABCD"}
+        out[x["codigo_item"]] = (x["gabarito"], marc[0] if len(marc) == 1 else None, textos)
     return out
 
 
@@ -80,7 +88,49 @@ def carregar_juizes(caminho=ROOT / "data" / "auditoria_base.jsonl"):
     return ult
 
 
-def classificar(q, codigo, banco, juizes):
+_DATA_DE_PLANILHA = re.compile(r"^\d{4}-\d{2}-\d{2}( 00:00:00)?$")
+
+
+def _canon(t):
+    """forma_canonica + as duas diferenças legítimas entre o banco e o treino: o extrator troca
+    "×" por "x" e os travessões ("−", "–", "—") por "-"."""
+    from padronizar_enunciado import forma_canonica
+    return forma_canonica(str(t).replace("×", "x").replace("−", "-").replace("–", "-").replace("—", "-"))
+
+
+def _mesmo_conteudo(q, db, letra_banco):
+    """A alternativa correta do treino tem o mesmo texto que a alternativa `letra_banco` do banco.
+    Sem textos do banco (tupla de 2) ou se a alternativa foi reescrita (padronização só muda
+    caixa/acento, que forma_canonica ignora), cai na comparação por letra."""
+    if len(db) < 3 or not db[2].get(letra_banco):
+        return q["resposta_correta"] == letra_banco
+    if _DATA_DE_PLANILHA.match(str(db[2][letra_banco]).strip()):
+        # o banco guardou uma fração como data (3/4 -> 2025-04-03): não há texto para comparar
+        return True
+    return _canon(q["alternativas"].get(q["resposta_correta"], "")) == _canon(db[2][letra_banco])
+
+
+def _diverge_do_banco(q, db):
+    return not _mesmo_conteudo(q, db, db[0])
+
+
+def carregar_cegos():
+    """codigo_item confirmados por RESOLUÇÃO CEGA paga (sabia-4-thinking, 2 permutações das alternativas):
+    reverificar_gabaritos (PROPOSTAS_..., classe confirmado_cego) e consolidar_base (resolver:
+    manter / manter_resolucao_antiga / trocar_gabarito, que só trocam com confirmação aritmética)."""
+    out = set()
+    prop = ROOT / "outputs" / "relatorios" / "PROPOSTAS_CORRECAO_GABARITO.jsonl"
+    if prop.exists():
+        out |= {json.loads(l)["codigo_item"] for l in open(prop, encoding="utf-8")
+                if l.strip() and json.loads(l)["classe"] == "confirmado_cego"}
+    res = ROOT / "outputs" / "relatorios" / "consolidacao_resolver.json"
+    if res.exists():
+        out |= {c for c, d in json.loads(res.read_text(encoding="utf-8")).items()
+                if d["decisao"] in ("manter", "manter_resolucao_antiga", "trocar_gabarito")}
+    return out
+
+
+def classificar(q, codigo, banco, juizes, cegos=frozenset()):
     """Devolve (classe, evidencias:list[str])."""
     ev = []
     ok, _sug, motivo = su.check_consistency_detalhado(q)
@@ -92,19 +142,21 @@ def classificar(q, codigo, banco, juizes):
         ev.append(f"verificador:{motivo}")
     if fora:
         ev.append("resultado_fora_das_alternativas")
-    if db and db[0] != gab:
+    if db and _diverge_do_banco(q, db):
         ev.append(f"gabarito_diverge_do_banco({db[0]}!={gab})")
     if ev:
         return "REFUTADO", ev
     if ok is True:
         ev.append(f"verificador:{motivo}")
-    if db and db[1] == gab:
+    if db and db[1] and _mesmo_conteudo(q, db, db[1]):
         ev.append("justificativa_oficial_confirma")
     if org == "sintetico":
         ev.append("sintetico_calculado")
     if ev:
         return "CONFIRMADO", ev
     j = juizes.get(codigo)
+    if codigo in cegos:
+        return "CEGO", ["resolucao_cega_2_passes_confirma"]
     if org == "injetado":
         return "JUIZES", ["aprovado_nos_dois_juizes_na_injecao"]
     if j and j.get("confianca") == "alta":
@@ -114,7 +166,8 @@ def classificar(q, codigo, banco, juizes):
     return "FRACO", ["nunca_julgado_com_os_prompts_atuais"]
 
 
-def auditar(base, banco=None, juizes=None):
+def auditar(base, banco=None, juizes=None, cegos=None):
+    cegos = carregar_cegos() if cegos is None else cegos
     banco = carregar_banco() if banco is None else banco
     juizes = carregar_juizes() if juizes is None else juizes
     itens = []
@@ -124,7 +177,7 @@ def auditar(base, banco=None, juizes=None):
         r = json.loads(l)
         m = r["meta"]
         for j, q in enumerate(json.loads(r["messages"][2]["content"])["questoes"]):
-            classe, ev = classificar(q, m["codigo_item"], banco, juizes)
+            classe, ev = classificar(q, m["codigo_item"], banco, juizes, cegos)
             itens.append({"linha": i, "questao": j, "codigo_item": m["codigo_item"], "ano": m["ano"],
                           "habilidade": m["habilidade"], "unidade": unidade_de(m["ano"], m["habilidade"]),
                           "origem": origem(m["codigo_item"]), "classe": classe, "evidencias": ev,
@@ -135,7 +188,7 @@ def auditar(base, banco=None, juizes=None):
 
 def resumo_md(itens, base):
     n = len(itens)
-    ordem = ["CONFIRMADO", "JUIZES", "FRACO", "REFUTADO"]
+    ordem = ["CONFIRMADO", "JUIZES", "CEGO", "FRACO", "REFUTADO"]
     por = Counter(x["classe"] for x in itens)
     linhas = [f"# Auditoria de gabaritos — {Path(base).name}", "",
               f"{n} questões. Sem nenhuma chamada paga. Nada foi alterado.", "",
@@ -167,8 +220,12 @@ def resumo_md(itens, base):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--base", default=str(ROOT / "data" / "train_curado_v3.jsonl"))
+    ap.add_argument("--rotulo", default="v3", help="sufixo dos arquivos de saída (AUDITORIA_GABARITOS_<rotulo>.*)")
     args = ap.parse_args()
     itens = auditar(args.base)
+    global SAIDA_JSONL, SAIDA_MD
+    SAIDA_JSONL = ROOT / "outputs" / "relatorios" / f"AUDITORIA_GABARITOS_{args.rotulo}.jsonl"
+    SAIDA_MD = ROOT / "outputs" / "relatorios" / f"AUDITORIA_GABARITOS_{args.rotulo}.md"
     SAIDA_JSONL.parent.mkdir(parents=True, exist_ok=True)
     SAIDA_JSONL.write_text("".join(json.dumps(x, ensure_ascii=False) + "\n" for x in itens), encoding="utf-8")
     md = resumo_md(itens, args.base)

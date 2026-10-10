@@ -31,6 +31,14 @@ class TestClassificar(unittest.TestCase):
         x = q("Qual a cor?", ["a", "b", "c", "d", "e"], "A", "")
         self.assertEqual(ag.classificar(x, "MT1", {"MT1": ("B", "B")}, {})[0], "REFUTADO")
 
+    def test_gabarito_comparado_por_conteudo_depois_de_permutar(self):
+        # banco: B = "4" é a correta. No treino a mesma alternativa foi movida para a letra D.
+        x = q("Quanto é 2 + 2?", ["3", "5", "6", "4", "7"], "D", "")
+        db = ("B", "B", {"A": "3", "B": "4", "C": "5", "D": "6"})
+        self.assertNotEqual(ag.classificar(x, "MT1", {"MT1": db}, {})[0], "REFUTADO")
+        errado = q("Quanto é 2 + 2?", ["3", "5", "6", "4", "7"], "A", "")
+        self.assertEqual(ag.classificar(errado, "MT1", {"MT1": db}, {})[0], "REFUTADO")
+
     def test_justificativa_oficial_confirma(self):
         x = q("Qual a cor?", ["a", "b", "c", "d", "e"], "B", "")
         self.assertEqual(ag.classificar(x, "MT1", {"MT1": ("B", "B")}, {})[0], "CONFIRMADO")
@@ -41,6 +49,11 @@ class TestClassificar(unittest.TestCase):
         self.assertEqual(ag.classificar(x, "DIST-X", {}, {"DIST-X": {"confianca": "baixa"}})[0], "FRACO")
         self.assertEqual(ag.classificar(x, "DIST-Y", {}, {})[0], "FRACO")
         self.assertEqual(ag.classificar(x, "INJ-1-H01-F-1", {}, {})[0], "JUIZES")
+
+    def test_resolucao_cega_confirma_o_que_os_juizes_deixaram_fraco(self):
+        x = q("Qual a cor?", ["a", "b", "c", "d", "e"], "B", "")
+        self.assertEqual(ag.classificar(x, "DIST-X", {}, {"DIST-X": {"confianca": "baixa"}}, {"DIST-X"})[0], "CEGO")
+        self.assertEqual(ag.classificar(x, "DIST-X", {}, {"DIST-X": {"confianca": "baixa"}}, set())[0], "FRACO")
 
     def test_origem(self):
         self.assertEqual([ag.origem(c) for c in ("DIST-a", "INJ-a", "SINT-a", "EF01MA02-046-L2-2026-09", "MT9042MH09MT")],
