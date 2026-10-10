@@ -1004,6 +1004,19 @@ def avalia_multiseed(bases, cands, comparar_inferencia=False):
     return gates, ganhos, ab, ac
 
 
+def _observacoes(bases, cands):
+    """OBSERVAÇÕES informativas (P0-4; src/observacoes_gate.py): impressas e
+    gravadas em `observacoes`, mas FORA do veredito — nunca alimentam
+    `reprovados`, `ganhos` nem o PROMOVIDO / NÃO PROMOVIDO. Para virarem
+    critério é preciso um veredito reprovado e a mudança documentada aqui."""
+    import observacoes_gate as og  # import tardio, como diversidade (src/ no path)
+    obs = og.calcular_seguro(bases, cands)
+    print()
+    for linha in og.formatar(obs):
+        print(linha)
+    return obs
+
+
 def main_multiseed(args, carrega):
     if len(args.baseline_gguf_seeds) != len(args.candidato_gguf_seeds):
         raise SystemExit("perfil multiseed exige o MESMO número de relatórios nos dois lados")
@@ -1031,9 +1044,11 @@ def main_multiseed(args, carrega):
     else:
         veredito, motivo = "PROMOVIDO", "todos os gates bloqueantes passaram; ganhos: " + "; ".join(ganhos)
     print("\n" + "-" * 78 + f"\nDECISÃO: {veredito}\nMOTIVO:  {motivo}\n" + "-" * 78)
+    obs = _observacoes(bases, cands)
     if args.saida:
         Path(args.saida).write_text(json.dumps({
             "decisao": veredito, "motivo": motivo, "perfil": "multiseed",
+            "observacoes": obs,  # informativo (P0-4): não entra no veredito
             "baseline": bases[0].get("artefato"), "candidato": cands[0].get("artefato"),
             "conjunto_avaliacao": cands[0].get("conjunto_avaliacao"),
             "rodadas": sorted(_rodada(r) for r in cands),
@@ -1135,11 +1150,13 @@ def main():
     print(f"DECISÃO: {veredito}")
     print(f"MOTIVO:  {motivo}")
     print("-" * 78)
+    obs = _observacoes([base], [cand])
 
     if args.saida:
         Path(args.saida).write_text(json.dumps({
             "decisao": veredito,
             "motivo": motivo,
+            "observacoes": obs,  # informativo (P0-4): não entra no veredito
             "baseline": base.get("artefato"),
             "candidato": cand.get("artefato"),
             "conjunto_avaliacao": cand.get("conjunto_avaliacao"),

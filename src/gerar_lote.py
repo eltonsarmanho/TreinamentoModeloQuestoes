@@ -57,7 +57,11 @@ from test_model import MAX_NEW_TOKENS, generate_validated
 # abaixo. generate_validated devolve "falha" tanto para estrutura quebrada
 # (alternativas repetidas) quanto para resposta fora das alternativas — os dois
 # casos que a Fase 1 quer regenerar.
-RANK_STATUS = {"ok": 4, "nao_verificavel": 4, "corrigido": 3,
+# "ok" (consistência VERIFICADA) > "nao_verificavel" (2026-10-10): antes valiam o
+# mesmo, e com o verificador estendido (schema_utils) a diferença entre verificado
+# e apenas não reprovado passou a ser informativa. Só desempata candidatos que o
+# slot já gerou (nenhuma chamada extra).
+RANK_STATUS = {"ok": 5, "nao_verificavel": 4, "corrigido": 3,
                "depende_de_visual": 1, "falha": 0}
 
 # Orçamento de re-amostragem por QUALIDADE, independente do de diversidade.
@@ -91,6 +95,45 @@ def montar_prompt(ano, habilidade, descricao, dificuldade, slot, restricao=None)
     if restricao:
         p += f" Restrição: {restricao}"
     return p
+
+
+# Inverso de USER_TEMPLATE: recupera (ano, habilidade, descricao, dificuldade) de
+# um prompt de produção. A descrição pode terminar em ".." (ponto duplicado no
+# banco), por isso o ponto final de USER_TEMPLATE não entra no grupo.
+_RX_USER = re.compile(
+    r"^Gere \d+ questão\(ões\) de matemática\. Ano: (\S+) ano\. "
+    r"Habilidade: (\S+) — (.*)\. Dificuldade: ([^.\s]+)\.$", re.S)
+
+
+def prompt_com_sufixo(ano, habilidade, descricao, dificuldade, seed, historico=None,
+                      taxonomia=None):
+    """Prompt de UMA questão com o sufixo de diversidade — o que o app deve mandar.
+
+    92% do treino (2505/2717) tem o sufixo "Subtema/Tipo de raciocínio/Contexto";
+    o prompt puro de USER_TEMPLATE cai no regime dos ~8% restantes (quase só itens
+    reais em CAIXA ALTA com resolução de uma linha). Sorteia 1 slot do plano
+    (determinístico dado seed/historico; sem taxonomia, só o contexto gira) e
+    devolve (prompt, slot). O app deve variar `seed` a cada chamada e/ou passar
+    `historico` (questões já geradas) para não repetir subtema/contexto.
+    """
+    try:
+        slot = dv.planejar_lote(ano, habilidade, 1, dificuldade, seed=seed,
+                                historico=historico, taxonomia=taxonomia)[0]
+    except (KeyError, FileNotFoundError):
+        slot = _slots_fallback(1, dificuldade)[0]
+        slot["contexto"] = dv.CONTEXTOS[seed % len(dv.CONTEXTOS)]["id"]
+        slot["contexto_rotulo"] = dv.CONTEXTOS[seed % len(dv.CONTEXTOS)]["rotulo"]
+    return montar_prompt(ano, habilidade, descricao, dificuldade, slot), slot
+
+
+def acrescentar_sufixo(user_msg, seed, historico=None, taxonomia=None):
+    """Versão de prompt_com_sufixo para um prompt de produção já montado (val do
+    gate). Prompt fora do formato de USER_TEMPLATE volta inalterado."""
+    m = _RX_USER.match(user_msg.strip())
+    if not m:
+        return user_msg
+    return prompt_com_sufixo(m.group(1), m.group(2), m.group(3), m.group(4), seed,
+                             historico=historico, taxonomia=taxonomia)[0]
 
 
 # Peso das violações no desempate entre candidatos de mesma qualidade.

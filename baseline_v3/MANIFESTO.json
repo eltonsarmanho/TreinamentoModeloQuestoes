@@ -1,0 +1,162 @@
+{
+  "nome": "baseline_v3",
+  "congelado_em": "2026-10-10T11:20:30-03:00",
+  "codigo": {
+    "commit": "51591cd6f3cb0c954dcab3abda6d9145fc20f50f",
+    "arvore_com_alteracoes": true,
+    "arquivos_alterados": [
+      "M src/gerar_lote.py",
+      " M tests/test_gerar_lote.py",
+      " M tests/test_model.py"
+    ]
+  },
+  "artefatos": {
+    "gguf": {
+      "caminho": "outputs/gguf_v3_gguf/qwen3-1.7b.Q4_K_M.gguf",
+      "presente": true,
+      "sha256": "3a7682595ed2d278adf37657dc14f82ef24078a0933e6127d5c0069c3fb60833",
+      "bytes": 1107409216
+    },
+    "lora_adapter": {
+      "caminho": "outputs/lora_v3/adapter_model.safetensors",
+      "presente": true,
+      "sha256": "c3e504dc1491b3a5069538964d9a5b98f55eb4a9a41d62d99ff1111dec51b83b",
+      "bytes": 69782384
+    },
+    "lora_config": {
+      "caminho": "outputs/lora_v3/adapter_config.json",
+      "presente": true,
+      "sha256": "cc5bf53d41e8fac36dbbf305f97af9e2e92de2eb361554a3f93567f78616c417",
+      "bytes": 1327
+    },
+    "gramatica": {
+      "caminho": "grammars/questao.gbnf",
+      "presente": true,
+      "sha256": "57df02bb3d988973a3997abefc2a822a2a346bf2efefebc9e87594d12baf1d22",
+      "bytes": 2050
+    },
+    "banco_saeb": {
+      "caminho": "DB/questoes.db",
+      "presente": true,
+      "sha256": "3f5edbb6a2e6585d8703c5e8bfe23f7f3a6bbaf9fad5bad6820c056c730d097e",
+      "bytes": 13725696
+    }
+  },
+  "datasets": {
+    "treino": {
+      "caminho": "data/train_curado_v3.jsonl",
+      "presente": true,
+      "sha256": "f10a69fa94c58bc1c08c7a3cdf0b27ddb094d6a02069bb70fd0af5679b15cb41",
+      "bytes": 6801120,
+      "linhas": 2717
+    },
+    "val_congelado": {
+      "caminho": "data/val_frozen_v1.jsonl",
+      "presente": true,
+      "sha256": "4f56633d31694c1d5b0e9ccf696d03ede348f563ebe9ec3895d38a50d99fcc40",
+      "bytes": 53910,
+      "linhas": 30
+    },
+    "val": {
+      "caminho": "data/val.jsonl",
+      "presente": true,
+      "sha256": "72c59e7db1c7a3efc6be8cf2ad84cdb343e37c16a71335af667c887ce7cd7d9d",
+      "bytes": 54270,
+      "linhas": 30
+    },
+    "val_novos": {
+      "caminho": "data/val_novos_v1.jsonl",
+      "presente": true,
+      "sha256": "ad5ffe715d422b48a166f26a239f9ead641634cd4851509925a3647fb404dd72",
+      "bytes": 56494,
+      "linhas": 30
+    },
+    "taxonomia": {
+      "caminho": "data/taxonomia_subtemas.json",
+      "presente": true,
+      "sha256": "9c3a13d2376c9d9a915c571c1f4d2538b7cca28a47896a161456fe45587bd011",
+      "bytes": 129271
+    }
+  },
+  "prompt": {
+    "system_prompt_sha256": "7d8593f0cdff815a5126f10db09b4037a67f497d3c660488a1236281e18a54aa",
+    "user_template_sha256": "82bb0d56ee37e34891996e4aefffba78057c26fea2ac1287b9339a2a0781f3b3",
+    "user_template": "Gere {quantidade} questão(ões) de matemática. Ano: {ano} ano. Habilidade: {habilidade} — {descricao}. Dificuldade: {dificuldade}.",
+    "regua_diversidade_sha256": "4dd53baebbad99f77019ffd2663c75e99fe400abeccc7f781cd3801e5314dba6"
+  },
+  "treino": {
+    "BASE_MODEL": "unsloth/Qwen3-1.7B",
+    "MAX_SEQ_LENGTH": "1024",
+    "LORA_RANK": "16",
+    "LORA_ALPHA": "32",
+    "BATCH_SIZE": "2",
+    "GRAD_ACCUMULATION": "8",
+    "LEARNING_RATE": "2e-4",
+    "EPOCHS": "3",
+    "SEED": "42"
+  },
+  "inferencia": {
+    "motor": "server",
+    "n_ctx": 2048,
+    "threads_padrao": 8,
+    "temperatura": 0.7,
+    "top_p": 0.8,
+    "max_tokens": 512,
+    "np": 1,
+    "cache_prompt": true
+  },
+  "relatorios": {
+    "veredito_modelo_v3": {
+      "caminho": "outputs/relatorios/VEREDITO_v3_multiseed.json",
+      "presente": true,
+      "sha256": "8382719db11e88f789fb865776a5411e7e3ccaa931481e244101b4f1afc08adf",
+      "bytes": 2734
+    },
+    "veredito_inferencia_server": {
+      "caminho": "outputs/relatorios/VEREDITO_inferencia_server_g6agregado.json",
+      "presente": true,
+      "sha256": "7b8ac2308ce6385e2ed60cf42ad91efc85b4b72f3d170c4850874ee15d6c831c",
+      "bytes": 3052
+    },
+    "eval_v3_s0": {
+      "caminho": "outputs/relatorios/eval_v3_gguf.json",
+      "presente": true,
+      "sha256": "048b2e032d250ebfaa27b97261eb96f1bdfb4809b34d761ca0254bcf64d70eda",
+      "bytes": 22864
+    },
+    "eval_v3_s1": {
+      "caminho": "outputs/relatorios/eval_v3_s1_gguf.json",
+      "presente": true,
+      "sha256": "514a552583ab9ff9e128871f18fe1b024941fafabed717f4b6893ae0e355a6bd",
+      "bytes": 23007
+    },
+    "eval_v3_s2": {
+      "caminho": "outputs/relatorios/eval_v3_s2_gguf.json",
+      "presente": true,
+      "sha256": "734831bdadd9f3f9c357c811bf2a6011fbbc38f6934bdeea8771652703324920",
+      "bytes": 22960
+    }
+  },
+  "metricas_referencia": {
+    "decisao": "PROMOVIDO",
+    "perfil": "multiseed",
+    "agregado_candidato": {
+      "n": 90,
+      "falhas": 2,
+      "verificaveis": 35,
+      "consistencia_pct": 94.3,
+      "aderencia_pct": 100.0,
+      "regeneracoes": 14,
+      "vies_pct": 30.0
+    },
+    "agregado_baseline": {
+      "n": 90,
+      "falhas": 2,
+      "verificaveis": 31,
+      "consistencia_pct": 100.0,
+      "aderencia_pct": 100.0,
+      "regeneracoes": 12,
+      "vies_pct": 43.8
+    }
+  }
+}

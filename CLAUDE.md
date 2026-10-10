@@ -151,6 +151,25 @@ Three profiles, selected with `--perfil`:
   it requires the same sha256 and a different `report["inferencia"]`, and
   counts latency as a gain.
 
+**Observations and the blind human sample (P0-4, informative only).** Every
+verdict (profiles `n1` and `multiseed`) ends with an `OBSERVAÇÃO (não
+bloqueante)` block and writes it to `observacoes` in the output JSON
+(`src/observacoes_gate.py`): (1) verification coverage, `ok` vs
+`nao_verificavel` per round and aggregate; (2) between-round variability of the
+same item (mean Jaccard / near-dup % of the delivered statements); (3) rate of
+"E = Nenhuma das alternativas anteriores" and of ALL-CAPS statements. 2 and 3
+need the question text, which `test_model.batch` now stores in
+`detalhes[].obj` (older reports lack it and print `n/d`). They never touch
+PROMOVIDO / NÃO PROMOVIDO; making any of them blocking follows the rule above
+(only after a reproved verdict, documented in the code). A teacher-graded blind
+sample complements the automatic metrics: `python src/amostra_humana.py gerar
+--relatorios baseline=a.json candidato=b.json ... --n 40` writes
+`folha_professor.csv` (shuffled, opaque ids, no origin hints; hand it to the
+teacher, see `Doc/PROCEDIMENTO_AMOSTRA_HUMANA.md`) and `chave_oculta.json`
+(keep it away from the teacher); `... apurar --folha folha_preenchida.csv
+--chave chave_oculta.json` reports validity per thematic unit
+(`src/unidades_tematicas.py`) and per origin with Wilson 95% intervals.
+
 Baseline and candidate are always evaluated on the exact same seeds
 (`base_seed` in `test_model.generate_validated`) — this is what makes the
 comparison paired instead of two independent noisy samples. `baseline_v1/`
@@ -179,6 +198,31 @@ slots would split that context). Prompt cache and thread count change the
 generated text through floating-point rounding (not bit-identical), so changing
 them goes through the multiseed gate. `--perfil` breaks each call into
 load / prefill / decode time and peak RSS.
+
+The arithmetic check (`schema_utils._analisar_contas`, extended 2026-10-10) now
+reads n-ary sums/products, parentheses, powers, chained equalities
+(`a + b = c = d`), units (`cm`, `°`, `R$`, `%`...), pt-BR decimals/thousands
+(`1.250,50`), `p% de N`, clock times (`10h30 + 45 min = 11h15`) and `≈` rounding
+(a plain `=` stays exact: an approximate `=` never verifies). A resolution whose
+final computed result is in *no* alternative (numeric-valued options, tolerant of
+`33,3` vs `33%`, `1.250` vs `1250 reais`, `0,25` vs `25%`) is `fora_das_alternativas`
+→ `status="falha"` → regenerated; a result that sits in a *different* alternative
+still goes to `fix_gabarito`. Measured on `train_curado_v3`: verified (`ok`)
+47.5% → 58.9%, `nao_verificavel` 52.5% → 41.1%, 0 new rejections of training
+items; the raw rule alone would have rejected 42 correct items, which the tail
+guard (`_valor_na_cauda`) and the mention guard (`_valor_mencionado`) absolve — do
+not remove them. `avisos_consistencia()` adds a non-blocking `dado_inventado`
+warning (operand absent from the statement and from earlier steps; ~5% of items
+with a computation, mostly benign) exposed as `avisos_consistencia` in the
+`generate_validated` result; it never changes status. `gerar_lote.RANK_STATUS`
+now ranks `ok` above `nao_verificavel`. Still blind: a wrong question with a
+coherent resolution ("12 m² → 28 m², how many m² now?" marked 16), a gabarito that
+matches a wrong calculation the resolution itself made (prism volume without the
+`/2`), verbal reasoning without an equation, and label-type alternatives (textual
+branch, which only runs for items that already had a binary `a op b = r`). Note
+that `promover_checkpoint.mcnemar_planejado` re-judges stored reports with the
+*current* verifier, so re-running a gate on old reports can now give different
+paired counts (e.g. base_k0 x exp_C: 13 worse / 3 better, p≈0.02).
 
 ### Secrets
 

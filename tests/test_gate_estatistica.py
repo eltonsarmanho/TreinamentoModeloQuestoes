@@ -386,7 +386,15 @@ class TestCasoRealQueMotivouAMudanca(unittest.TestCase):
                                  "consistencia_inconsistente_pct")
         piorou, melhorou, p, n, fora = r
         self.assertEqual((n, fora), (228, 0))
-        self.assertGreaterEqual(p, 0.05)  # a piora observada é ruído
+        # 2026-10-10: o veredito por questão é RECALCULADO com o schema_utils
+        # atual. Com o verificador antigo (só "a op b = r" binária) a piora
+        # observada era ruído (p >= 0,05). Com o estendido (somas n-árias,
+        # unidades, encadeadas) o mesmo par de relatórios dá 13 pioras x 3
+        # melhoras (p ~ 0,021); as 16 discordâncias foram lidas à mão e são erros
+        # reais (resultado da resolução fora das alternativas). O agregado
+        # gravado (1,32% -> 2,19%) não muda. Este teste fixa a medição nova.
+        self.assertEqual((piorou, melhorou), (13, 3))
+        self.assertLess(p, 0.05)
 
     def test_aderencia_melhorou_de_forma_significativa(self):
         piorou, melhorou, p, n, _ = pc.mcnemar_planejado(

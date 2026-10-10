@@ -1,0 +1,101 @@
+{
+  "gerado_por": "gerar_lote.prompt_com_sufixo / montar_prompt (Python real)",
+  "vetores": [
+    {
+      "ano": "5º",
+      "habilidade": "H01",
+      "descricao": "Escrever números racionais (naturais de até 6 ordens, representação fracionária ou decimal finita até a ordem dos milésimos) em sua representação por algarismos ou em língua materna OU Associar o registro numérico ao registro em língua materna.",
+      "dificuldade": "Moderado",
+      "slot": {
+        "subtema": "registro_lingua_materna",
+        "subtema_rotulo": "registro por extenso",
+        "tipo_raciocinio": "resolucao_problema",
+        "tipo_raciocinio_rotulo": "resolução de problema",
+        "contexto": "biblioteca",
+        "contexto_rotulo": "biblioteca da escola"
+      },
+      "origem_slot": "diversidade.planejar_lote(..., 1, dif, seed=4)",
+      "prompt_esperado": "Gere 1 questão(ões) de matemática. Ano: 5º ano. Habilidade: H01 — Escrever números racionais (naturais de até 6 ordens, representação fracionária ou decimal finita até a ordem dos milésimos) em sua representação por algarismos ou em língua materna OU Associar o registro numérico ao registro em língua materna.. Dificuldade: Moderado. Subtema: registro por extenso. Tipo de raciocínio: resolução de problema. Contexto: biblioteca da escola."
+    },
+    {
+      "ano": "9º",
+      "habilidade": "H17",
+      "descricao": "Classificar triângulos ou quadriláteros em relação aos lados ou aos ângulos internos.",
+      "dificuldade": "Moderado",
+      "slot": {
+        "subtema": "triangulo",
+        "subtema_rotulo": "triângulos",
+        "tipo_raciocinio": "classificacao_lados",
+        "tipo_raciocinio_rotulo": "classificação quanto aos lados",
+        "contexto": "festa",
+        "contexto_rotulo": "festa junina"
+      },
+      "origem_slot": "diversidade.planejar_lote(..., 1, dif, seed=7)",
+      "prompt_esperado": "Gere 1 questão(ões) de matemática. Ano: 9º ano. Habilidade: H17 — Classificar triângulos ou quadriláteros em relação aos lados ou aos ângulos internos.. Dificuldade: Moderado. Subtema: triângulos. Tipo de raciocínio: classificação quanto aos lados. Contexto: festa junina. Eixo: pergunte quanto aos lados e dê a medida dos três lados; a resposta é a classe mais específica."
+    },
+    {
+      "ano": "9º",
+      "habilidade": "H17",
+      "descricao": "Classificar triângulos ou quadriláteros em relação aos lados ou aos ângulos internos.",
+      "dificuldade": "Moderado",
+      "slot": {
+        "subtema": "quadrilatero",
+        "subtema_rotulo": "quadriláteros",
+        "tipo_raciocinio": "classificacao_propriedades",
+        "tipo_raciocinio_rotulo": "classificação por lados, paralelismo e ângulos retos",
+        "contexto": "festa",
+        "contexto_rotulo": "festa junina"
+      },
+      "origem_slot": "diversidade.planejar_lote(..., 1, dif, seed=1)",
+      "prompt_esperado": "Gere 1 questão(ões) de matemática. Ano: 9º ano. Habilidade: H17 — Classificar triângulos ou quadriláteros em relação aos lados ou aos ângulos internos.. Dificuldade: Moderado. Subtema: quadriláteros. Tipo de raciocínio: classificação por lados, paralelismo e ângulos retos. Contexto: festa junina. Eixo: informe os lados iguais, os lados paralelos e os ângulos retos; a resposta é o nome mais específico garantido por eles."
+    },
+    {
+      "ano": "9º",
+      "habilidade": "H24",
+      "descricao": "Representar dados em listas, tabelas ou gráficos.",
+      "dificuldade": "Fácil",
+      "slot": {
+        "subtema": "grafico_setores",
+        "subtema_rotulo": "gráfico de setores",
+        "tipo_raciocinio": "leitura_dados",
+        "tipo_raciocinio_rotulo": "leitura e interpretação de dados",
+        "contexto": "mercado",
+        "contexto_rotulo": "mercado do bairro"
+      },
+      "origem_slot": "diversidade.planejar_lote(..., 1, dif, seed=3)",
+      "prompt_esperado": "Gere 1 questão(ões) de matemática. Ano: 9º ano. Habilidade: H24 — Representar dados em listas, tabelas ou gráficos.. Dificuldade: Fácil. Subtema: gráfico de setores. Tipo de raciocínio: leitura e interpretação de dados. Contexto: mercado do bairro. Dados: escreva no enunciado todos os dados da tabela ou do gráfico em texto, um item por linha no formato 'rótulo: valor'."
+    },
+    {
+      "ano": "2º",
+      "habilidade": "H09",
+      "descricao": "Identificar a classificação OU Classificar objetos ou representações por figuras, por meio de atributos, tais como cor, forma e medida.",
+      "dificuldade": "Difícil",
+      "slot": {
+        "subtema": "geral",
+        "subtema_rotulo": "identificar a classificacao ou classificar objetos ou representacoes por figuras, por meio de atributos, tais como cor, forma e medida",
+        "tipo_raciocinio": "classificacao_atributos",
+        "tipo_raciocinio_rotulo": "classificação por atributos",
+        "contexto": "horta",
+        "contexto_rotulo": "horta comunitária"
+      },
+      "origem_slot": "diversidade.planejar_lote(..., 1, dif, seed=3)",
+      "prompt_esperado": "Gere 1 questão(ões) de matemática. Ano: 2º ano. Habilidade: H09 — Identificar a classificação OU Classificar objetos ou representações por figuras, por meio de atributos, tais como cor, forma e medida.. Dificuldade: Difícil. Subtema: identificar a classificacao ou classificar objetos ou representacoes por figuras, por meio de atributos, tais como cor, forma e medida. Tipo de raciocínio: classificação por atributos. Contexto: horta comunitária."
+    },
+    {
+      "ano": "3º",
+      "habilidade": "H99",
+      "descricao": "Habilidade fora da taxonomia (exemplo do caminho de fallback).",
+      "dificuldade": "Fácil",
+      "slot": {
+        "subtema": "geral",
+        "subtema_rotulo": "geral",
+        "tipo_raciocinio": "indefinido",
+        "tipo_raciocinio_rotulo": "livre",
+        "contexto": "viagem",
+        "contexto_rotulo": "viagem de ônibus"
+      },
+      "origem_slot": "fallback: contexto = CONTEXTOS[3 % 16], sem subtema",
+      "prompt_esperado": "Gere 1 questão(ões) de matemática. Ano: 3º ano. Habilidade: H99 — Habilidade fora da taxonomia (exemplo do caminho de fallback).. Dificuldade: Fácil. Contexto: viagem de ônibus."
+    }
+  ]
+}

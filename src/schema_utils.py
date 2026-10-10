@@ -29,6 +29,7 @@ comprometer a letra antes de mostrar o raciocínio.
 import json
 import re
 import unicodedata
+from fractions import Fraction
 
 IMAGE_PATTERN = re.compile(r"\b(figura|imagem|gráfico|desenho|ilustração)\b", re.I)
 
@@ -216,6 +217,8 @@ _OPS = {
 
 
 def _to_number(text):
+    if "," in text and "." in text:  # "1.250,50": ponto de milhar + vírgula decimal
+        text = text.replace(".", "")
     try:
         value = float(text.replace(",", "."))
     except ValueError:
@@ -239,11 +242,472 @@ def _computed_result(text):
 
 
 def _computed_results(text):
-    """Resultados de TODAS as contas 'a op b = r' corretas do texto, em ordem.
+    """Resultados de TODAS as contas corretas do texto, em ordem de posição.
 
     Resoluções de vários passos ("6 + 7 = 13. Depois, 13 + 5 = 18") têm a
     resposta na ÚLTIMA conta; olhar só a primeira (13) reprovava questões
-    corretas e fazia fix_gabarito trocar o gabarito certo por um errado."""
+    corretas e fazia fix_gabarito trocar o gabarito certo por um errado.
+    Desde 2026-10-10 inclui as contas n-árias/encadeadas/com unidade do motor
+    estendido (ver _analisar_contas), unidas às da regex binária antiga."""
+    return [_numero(r[1]) for r in _contas_ricas(text)]
+
+
+# ---------------------------------------------------------------------------
+# MOTOR ARITMÉTICO ESTENDIDO (2026-10-10).
+#
+# Por que existe. A auditoria de 2026-10-10 mediu que _EXPR_PATTERN (conta
+# BINÁRIA "a op b = r" com números puros) deixava 52,5% do corpus de treino
+# (data/train_curado_v3.jsonl, 1449 de 2759) e 61 de 90 gerações do val como
+# "não verificável" (Geometria 92%, Grandezas 75%, Prob/Estat 71%). Dali saíam
+# sem reprovação 13 de 16 gabaritos errados cujo resultado calculado na
+# resolução estava FORA das alternativas. Casos reais que passavam:
+#   "8 + 6 + 8 + 6 = 28 cm", "180° - 150° = 30°", "2 x (8 + 6) = 28"  (-> [])
+#   "40/120 = 1/3 ≈ 33,3%" com alternativas 100%/20%/25%/50%/120%, gabarito 25%.
+#
+# O que lê agora: somas/produtos n-ários, parênteses, potência (²,³,^), unidades
+# coladas ou separadas (° cm m m² km kg g L mL h min R$ %), vírgula decimal e
+# ponto de milhar pt-BR ("1.250,50"), sinais - + x × * ÷ / (":" só entre
+# espaços), "p% de N" e "a/b de N", relógio "10h30" (em minutos) e igualdades
+# ENCADEADAS ("a + b = c = d", "a op b = c; c ÷ 2 = d"). "≈" aceita arredondamento
+# (|dif| < 10^-casas; sem casas, < 1). Divisão por zero, expoente > 12 e
+# módulo > 1e15 invalidam o termo (nunca viram resultado). Aritmética em
+# Fraction: sem erro de ponto flutuante.
+#
+# Contrato: só ACRESCENTA resultados a _computed_results (a regex antiga continua
+# sendo unida a eles), logo tudo que era "ok" continua "ok". Uma conta interna
+# ERRADA não vira resultado (como antes); só deixa de contar.
+#
+# MEDIDO em 2026-10-10 (sem rodar o modelo): train_curado_v3 (2759) ok 1310 ->
+# 1624 (47,5% -> 58,9%), nao_verificavel 1449 -> 1135; por unidade ok antes ->
+# depois: Números 67,6 -> 73,6%, Álgebra 38,8 -> 45,1%, Geometria 8,4 -> 21,9%,
+# Grandezas 25,5 -> 55,8%, Prob/Estat 28,5 -> 42,3%. Reprovadas novas no treino:
+# 0 (a regra crua dava 42 falsos positivos, todos absolvidos por
+# _valor_na_cauda/_valor_mencionado; ver os testes de TestGuardasContraFalsoPositivo).
+# Nas 90 gerações do val: 14 nv -> ok e 9 nv -> reprovada, as 9 lidas à mão são
+# erros reais. Em 1623 questões únicas dos relatórios: 49 reprovadas novas
+# (36 únicas), lidas à mão. O que continua CEGO: pergunta errada com resolução
+# coerente ("12 m² -> 28 m², quantos m² agora?", gabarito 16), gabarito que bate
+# com a conta errada da própria resolução, raciocínio verbal sem conta, e o ramo
+# textual (alternativas-rótulo), que só roda para quem já tinha conta binária.
+#
+# Portabilidade (módulo roda no app via TypeScript): sem grupo nomeado,
+# lookbehind, flag embutida, \Z ou classe \p; a varredura é manual.
+# ---------------------------------------------------------------------------
+
+_UNIDADES_CANON = {
+    "mm": "mm", "cm": "cm", "dm": "dm", "m": "m", "km": "km", "metro": "m", "metros": "m",
+    "mm²": "mm²", "cm²": "cm²", "m²": "m²", "km²": "km²", "cm³": "cm³", "m³": "m³",
+    "mg": "mg", "g": "g", "kg": "kg", "t": "t", "grama": "g", "gramas": "g",
+    "quilo": "kg", "quilos": "kg", "quilograma": "kg", "quilogramas": "kg",
+    "l": "l", "ml": "ml", "litro": "l", "litros": "l",
+    "s": "s", "seg": "s", "segundo": "s", "segundos": "s",
+    "min": "min", "minuto": "min", "minutos": "min",
+    "h": "h", "hora": "h", "horas": "h",
+    "real": "rs", "reais": "rs", "centavo": "cent", "centavos": "cent",
+    "grau": "°", "graus": "°",
+}
+# (de, para) -> fator tal que valor_em_de * fator = valor_em_para
+_FATORES_UNIDADE = {
+    ("m", "cm"): 100, ("m", "mm"): 1000, ("cm", "mm"): 10, ("km", "m"): 1000,
+    ("km", "cm"): 100000, ("dm", "cm"): 10, ("m", "dm"): 10,
+    ("kg", "g"): 1000, ("g", "mg"): 1000, ("kg", "mg"): 10 ** 6, ("t", "kg"): 1000,
+    ("l", "ml"): 1000, ("h", "min"): 60, ("min", "s"): 60, ("h", "s"): 3600,
+    ("rs", "cent"): 100, ("m²", "cm²"): 10 ** 4, ("km²", "m²"): 10 ** 6,
+    ("m³", "l"): 1000, ("m³", "cm³"): 10 ** 6, ("cm³", "ml"): 1,
+}
+_LIMITE_MODULO = 10 ** 15
+_LIMITE_EXPOENTE = 12
+_NUM_MILHAR_RE = re.compile(r"[1-9]\d{0,2}(?:\.\d{3})+(?:,\d+)?(?!\d)")
+_NUM_PLANO_RE = re.compile(r"\d+(?:[.,]\d+)?")
+_RELOGIO_RE = re.compile(r"(\d{1,2})h(\d{2})(?!\d)")
+_RELOGIO_ALT = re.compile(r"^(\d{1,2})h(\d{2})(?:\s*min)?$", re.I)
+
+
+class _Invalido(Exception):
+    """Termo sem valor aritmético (sintaxe, divisão por zero, overflow)."""
+
+
+class _Tok(object):
+    __slots__ = ("k", "v", "dec", "un", "pct", "relogio", "fim", "colado", "op", "ini")
+
+    def __init__(self, k, fim, op=None, v=None, dec=0, un=None, pct=False,
+                 relogio=False, colado=False, ini=0):
+        self.k, self.fim, self.op, self.v, self.dec = k, fim, op, v, dec
+        self.ini = ini
+        self.un, self.pct, self.relogio, self.colado = un, pct, relogio, colado
+
+
+def _fator_unidade(de, para):
+    if de == para:
+        return 1
+    if (de, para) in _FATORES_UNIDADE:
+        return Fraction(_FATORES_UNIDADE[(de, para)])
+    if (para, de) in _FATORES_UNIDADE:
+        return Fraction(1, _FATORES_UNIDADE[(para, de)])
+    return None
+
+
+def _ler_numero(s, i):
+    """(valor Fraction, casas decimais, fim, relogio) do número que começa em s[i]."""
+    m = _RELOGIO_RE.match(s, i)
+    if m:
+        minutos = int(m.group(1)) * 60 + int(m.group(2))
+        if int(m.group(2)) < 60:
+            return Fraction(minutos), 0, m.end(), True
+    m = _NUM_MILHAR_RE.match(s, i)
+    if m and "," in m.group(0) and m.end() - i <= 18:
+        bruto = m.group(0).replace(".", "").replace(",", ".")
+        return Fraction(bruto), len(bruto.split(".")[1]), m.end(), False
+    m = _NUM_PLANO_RE.match(s, i)
+    if m.end() - i > 18:  # gigante: nem converte (Fraction de 5000 dígitos estoura)
+        return None, 0, m.end(), False
+    bruto = m.group(0).replace(",", ".")
+    casas = len(bruto.split(".")[1]) if "." in bruto else 0
+    return Fraction(bruto), casas, m.end(), False
+
+
+def _tokenizar(s):
+    """Lista de _Tok: NUM, OP (+ - * / ^), LP, RP, EQ, AEQ e W (palavra/outro =
+    quebra a expressão). Unidade, % e R$ ficam DENTRO do NUM."""
+    toks, n, i = [], len(s), 0
+    moeda = False
+    while i < n:
+        c = s[i]
+        if c.isspace():
+            i += 1
+        elif c.isdigit() and c.isascii():
+            v, casas, j, rel = _ler_numero(s, i)
+            if v is None or j - i > 18:  # número gigante: não é conta de questão
+                toks.append(_Tok("W", j))
+                i = j
+                continue
+            un, pct = ("rs" if moeda else None), False
+            moeda = False
+            if not rel:
+                k = j + 1 if j < n and s[j] == " " else j
+                if k < n and s[k] == "%":
+                    pct, j = True, k + 1
+                elif k < n and s[k] in "°º":
+                    un, j = "°", k + 1
+                elif k < n and s[k].isalpha() and s[k] not in "xX":
+                    f = k
+                    while f < n and s[f].isalpha():
+                        f += 1
+                    palavra = s[k:f].lower()
+                    f2 = f
+                    while f2 < n and s[f2] in "²³":
+                        f2 += 1
+                    sup = s[f:f2]
+                    proximo = f2
+                    while proximo < n and s[proximo] == " ":
+                        proximo += 1
+                    canon = _UNIDADES_CANON.get(palavra + sup)
+                    solta = proximo < n and s[proximo] in "=+-*/÷)≈xX^:·" and palavra != "de"
+                    if canon or solta:
+                        un = canon or un
+                        j = f2
+                        # unidade composta "km/h": consome "/palavra" colada
+                        if j + 1 < n and s[j] == "/" and s[j + 1].isalpha():
+                            g = j + 1
+                            while g < n and s[g].isalpha():
+                                g += 1
+                            j, un = g, None
+            toks.append(_Tok("NUM", j, v=v, dec=casas, un=un, pct=pct, relogio=rel, ini=i))
+            if j < n and s[j] in "²³" and not rel:
+                toks.append(_Tok("OP", j + 1, op="^"))
+                toks.append(_Tok("NUM", j + 1, v=Fraction(2 if s[j] == "²" else 3)))
+                j += 1
+            i = j
+        elif c == "R" and s[i:i + 2] == "R$":
+            moeda, i = True, i + 2
+        elif c in "+*÷·":
+            toks.append(_Tok("OP", i + 1, op={"+": "+", "*": "*", "÷": "/", "·": "*"}[c]))
+            i += 1
+        elif c == "-":
+            colado = i + 1 < n and s[i + 1].isdigit()
+            toks.append(_Tok("OP", i + 1, op="-", colado=colado))
+            i += 1
+        elif c == "/":
+            toks.append(_Tok("OP", i + 1, op="/"))
+            i += 1
+        elif c == "^":
+            toks.append(_Tok("OP", i + 1, op="^"))
+            i += 1
+        elif c == ":" and 0 < i < n - 1 and s[i - 1] == " " and s[i + 1] == " ":
+            toks.append(_Tok("OP", i + 1, op="/"))
+            i += 1
+        elif c in "([":
+            toks.append(_Tok("LP", i + 1))
+            i += 1
+        elif c in ")]":
+            toks.append(_Tok("RP", i + 1))
+            i += 1
+        elif c == "=":
+            toks.append(_Tok("EQ", i + 1))
+            i += 1
+        elif c in "≈≅":
+            toks.append(_Tok("AEQ", i + 1))
+            i += 1
+        elif c in "xX" and not (i > 0 and s[i - 1].isalpha()) and not (
+                i + 1 < n and s[i + 1].isalpha()):
+            k = i + 1
+            while k < n and s[k] == " ":
+                k += 1
+            ant = toks[-1].k if toks else None
+            if ant in ("NUM", "RP") and k < n and (s[k].isdigit() or s[k] in "(-R"):
+                toks.append(_Tok("OP", i + 1, op="*"))
+            else:
+                toks.append(_Tok("W", i + 1))
+            i += 1
+        elif c.isalpha():
+            f = i
+            while f < n and s[f].isalpha():
+                f += 1
+            while f < n and s[f].isdigit() and s[f].isascii():
+                f += 1
+            palavra = s[i:f].lower()
+            ant = toks[-1] if toks else None
+            if palavra == "de" and ant is not None and ant.k == "NUM" and (
+                    ant.pct or (len(toks) >= 3 and toks[-2].k == "OP" and toks[-2].op == "/"
+                                and toks[-3].k == "NUM")):
+                if ant.pct:
+                    ant.v, ant.pct = ant.v / 100, False
+                toks.append(_Tok("OP", f, op="*"))
+            else:
+                toks.append(_Tok("W", f))
+            i = f
+        else:
+            toks.append(_Tok("W", i + 1))
+            i += 1
+    return toks
+
+
+def _avaliar_termo(toks):
+    """(valor, tem_conta, unidade, pct, casas, relogio) de uma lista de _Tok, ou None."""
+    toks = list(toks)
+    if sum(1 for t in toks if t.k == "LP") > 20:
+        return None  # parênteses demais: não é conta de questão
+    # traço de lista ("- 5 + 3 = 8"): separado do número, no começo do termo
+    while toks and toks[0].k == "OP" and not (toks[0].op == "-" and toks[0].colado):
+        toks = toks[1:]
+    if not toks:
+        return None
+    pos, estado = [0], {"conta": False}
+
+    def peek():
+        return toks[pos[0]] if pos[0] < len(toks) else None
+
+    def soma():
+        v = produto()
+        while peek() is not None and peek().k == "OP" and peek().op in "+-":
+            op = toks[pos[0]].op
+            pos[0] += 1
+            w = produto()
+            v = v + w if op == "+" else v - w
+            estado["conta"] = True
+        return v
+
+    def produto():
+        v = potencia()
+        while peek() is not None and peek().k == "OP" and peek().op in "*/":
+            op = toks[pos[0]].op
+            pos[0] += 1
+            w = potencia()
+            if op == "*":
+                v = v * w
+            else:
+                if w == 0:
+                    raise _Invalido("divisao por zero")
+                v = v / w
+            estado["conta"] = True
+            if abs(v) > _LIMITE_MODULO:
+                raise _Invalido("overflow")
+        return v
+
+    def potencia():
+        v = unario()
+        if peek() is not None and peek().k == "OP" and peek().op == "^":
+            pos[0] += 1
+            e = unario()
+            if e.denominator != 1 or e < 0 or e > _LIMITE_EXPOENTE:
+                raise _Invalido("expoente")
+            v = v ** int(e)
+            estado["conta"] = True
+            if abs(v) > _LIMITE_MODULO:
+                raise _Invalido("overflow")
+        return v
+
+    def unario():
+        t = peek()
+        if t is not None and t.k == "OP" and t.op == "-":
+            pos[0] += 1
+            estado["conta"] = True
+            return -unario()
+        return atomo()
+
+    def atomo():
+        t = peek()
+        if t is None:
+            raise _Invalido("fim")
+        if t.k == "NUM":
+            pos[0] += 1
+            return t.v
+        if t.k == "LP":
+            pos[0] += 1
+            v = soma()
+            f = peek()
+            if f is None or f.k != "RP":
+                raise _Invalido("parentese")
+            pos[0] += 1
+            estado["conta"] = True
+            return v
+        raise _Invalido("atomo")
+
+    try:
+        valor = soma()
+    except (_Invalido, ArithmeticError, ValueError, RecursionError):
+        return None
+    if pos[0] != len(toks) or abs(valor) > _LIMITE_MODULO:
+        return None
+    nums = [t for t in toks if t.k == "NUM"]
+    unidades = {t.un for t in nums if t.un}
+    # termo de UM número guarda a unidade/%/casas dele; com conta, só se todas
+    # as unidades coincidem (duas unidades misturadas => sem unidade).
+    unidade = next(iter(unidades)) if len(unidades) == 1 else None
+    if any(t.relogio for t in nums) and ("h" in unidades):
+        return None  # relógio + duração em horas: ambíguo, não verifica
+    return (valor, estado["conta"], unidade, nums[0].pct if len(nums) == 1 else False,
+            nums[0].dec if len(nums) == 1 else None, any(t.relogio for t in nums))
+
+
+def _iguais(esq, dir_, aprox):
+    """Os termos avaliados `esq` e `dir_` valem o mesmo?  "=" é igualdade EXATA
+    (depois de converter unidade pela tabela e "0,25 = 25%"). Só "≈" aceita
+    arredondamento/truncamento: |dif| < 10^-k com k>=1 casas escritas no
+    resultado, e |dif| < 1 sem casas."""
+    lv, _c, lu, lp, _d, _r = esq
+    rv, rconta, ru, rp, rdec, _rr = dir_
+    cands = [lv]
+    if rp and not lp:
+        cands.append(lv * 100)
+    if lp and not rp:
+        cands.append(lv / 100)
+    if lu and ru and lu != ru:
+        f = _fator_unidade(lu, ru)
+        if f is not None:
+            cands.append(lv * f)
+    for c in cands:
+        if c == rv:
+            return True
+    # Tolerância de arredondamento SÓ para "≈". Com "=", a conta aproximada
+    # ("10 ÷ 3 = 3,33") continua sem valor de verificação — decisão H2 de
+    # tests/test_base3_decisoes.py (contrato congelado: aproximado nunca vira
+    # "verificado" nem acusação).
+    if not aprox or rconta or rdec is None:
+        return False
+    if rdec >= 1:
+        return any(abs(c - rv) < Fraction(1, 10 ** rdec) for c in cands)
+    return any(abs(c - rv) < 1 for c in cands)
+
+
+def _analisar_contas(texto):
+    """(registros, cadeias, spans) das contas CORRETAS do texto.
+
+    registros: [(fim, valor Fraction, unidade, pct, casas)] em ordem de posição;
+    cadeias:   [{"fim": int, "operandos": [Fraction...]}] com os operandos do
+               PRIMEIRO termo de cada igualdade verificada (alimenta o aviso de
+               "dado inventado");
+    spans:     [(ini, fim)] dos números que participam de alguma igualdade
+               verificada (para separar "usado em conta" de "mencionado")."""
+    s = normalize_math(texto)[:20000]
+    toks = _tokenizar(s)
+    registros, cadeias, spans = [], [], []
+    i, n = 0, len(toks)
+    while i < n:
+        if toks[i].k not in ("NUM", "OP", "LP", "RP", "EQ", "AEQ"):
+            i += 1
+            continue
+        j = i
+        while j < n and toks[j].k in ("NUM", "OP", "LP", "RP", "EQ", "AEQ"):
+            j += 1
+        seg = toks[i:j]
+        i = j
+        termos, sinais, atual = [], [], []
+        for t in seg:
+            if atual and atual[-1].k in ("NUM", "RP") and t.k in ("NUM", "LP"):
+                # dois operandos sem operador ("15 3 x 2 = 6", "5 (…"): são
+                # expressões distintas; o que veio antes fecha numa cadeia própria.
+                termos.append(atual)
+                sinais.append(None)
+                atual = []
+            if t.k in ("EQ", "AEQ"):
+                termos.append(atual)
+                sinais.append(t.k == "AEQ")
+                atual = []
+            else:
+                atual.append(t)
+        termos.append(atual)
+        if len(termos) < 2:
+            continue
+        vals = [_avaliar_termo(t) if t else None for t in termos]
+        estabelecido = False
+        primeira = True
+        for a in range(len(termos) - 1):
+            esq, dir_ = vals[a], vals[a + 1]
+            if sinais[a] is None:  # quebra entre expressões, não é igualdade
+                estabelecido = False
+                primeira = True
+                continue
+            if esq is None or dir_ is None:
+                estabelecido = False
+                continue
+            if not (esq[1] or estabelecido):
+                estabelecido = False
+                continue
+            if _iguais(esq, dir_, sinais[a]):
+                estabelecido = True
+                t_fim = termos[a + 1][-1]
+                registros.append((t_fim.fim, dir_[0], dir_[2], dir_[3], dir_[4]))
+                spans.extend((t.ini, t.fim) for t in termos[a] + termos[a + 1]
+                             if t.k == "NUM")
+                if primeira and esq[1]:
+                    cadeias.append({"fim": t_fim.fim, "operandos": [
+                        t.v for t in termos[a] if t.k == "NUM"],
+                        "ini": min(t.ini for t in termos[a] if t.k == "NUM")})
+                primeira = False
+            else:
+                estabelecido = False
+    return registros, cadeias, spans
+
+
+def _contas_ricas(texto):
+    """Registros de _analisar_contas UNIDOS aos da regex antiga (superconjunto:
+    nada que era resultado deixa de ser), ordenados por posição."""
+    registros, _cadeias, _spans = _analisar_contas(texto)
+    por_fim = {r[0]: r for r in registros}
+    for match in _EXPR_PATTERN.finditer(normalize_math(texto)):
+        a_str, op, b_str, r_str = match.groups()
+        a, b, r = _to_number(a_str), _to_number(b_str), _to_number(r_str)
+        if a is None or b is None or r is None:
+            continue
+        computed = _OPS[op](a, b)
+        if computed is not None and abs(computed - r) < 1e-6 and match.end() not in por_fim:
+            por_fim[match.end()] = (match.end(), Fraction(str(r)), None, False, None)
+    return [por_fim[k] for k in sorted(por_fim)]
+
+
+def _numero(valor):
+    """Fraction -> int/float, como _to_number devolvia (para comparar com _leading_number)."""
+    f = float(valor)
+    return int(f) if f.is_integer() else f
+
+
+def _resultados_binarios(text):
+    """Só as contas 'a op b = r' da regex ANTIGA. Existe para que o ramo
+    textual (4) de check_consistency_detalhado continue sendo alcançado
+    exatamente pelas mesmas questões de antes de 2026-10-10: o motor estendido
+    descobre mais contas, mas o ramo textual tem perfil de falso positivo
+    próprio (ex.: 'corresponde_outra' em notação científica) e não foi o alvo."""
     out = []
     for match in _EXPR_PATTERN.finditer(normalize_math(text)):
         a_str, op, b_str, r_str = match.groups()
@@ -289,7 +753,39 @@ def _fim_da_ultima_conta(texto_normalizado):
         computed = _OPS[op](a, b)
         if computed is not None and abs(computed - r) < 1e-6:
             fim = match.end()
+    # motor estendido (2026-10-10): contas n-árias/encadeadas/com unidade
+    for registro in _contas_ricas(texto_normalizado):
+        fim = max(fim, registro[0])
     return fim
+
+
+def _valor_no_texto(texto, valores):
+    """True se algum de `valores` aparece como número em QUALQUER posição do texto."""
+    alvos = {v for v in valores if v is not None}
+    return bool(alvos) and any(
+        t.k == "NUM" and not t.relogio and _numero(t.v) in alvos
+        for t in _tokenizar(normalize_math(texto)))
+
+
+def _valor_mencionado(resolucao, valores):
+    """True se algum de `valores` aparece na resolução como número FORA de uma
+    igualdade verificada (ex.: "4x = 60 → x = 15 cm" antes de "15 + 30 + 27 = 72").
+
+    Guarda de FALSO POSITIVO medida em 2026-10-10: a resolução acha a resposta
+    por álgebra/prosa e depois ESCREVE UMA CONFERÊNCIA aritmética; a conferência
+    vira o "último resultado" e a questão certa parecia ter a resposta fora das
+    alternativas (train_curado_v3 linha 1336). Um valor que só aparece como
+    OPERANDO de conta ("12 + 8 = 20" com gabarito 12) não conta como menção."""
+    alvos = {v for v in valores if v is not None}
+    if not alvos:
+        return False
+    texto = normalize_math(resolucao)
+    _r, _c, spans = _analisar_contas(texto)
+    for t in _tokenizar(texto):
+        if t.k == "NUM" and not t.relogio and _numero(t.v) in alvos:
+            if not any(ini <= t.ini and t.fim <= fim for ini, fim in spans):
+                return True
+    return False
 
 
 def _valor_na_cauda(resolucao, valores):
@@ -385,7 +881,9 @@ _NDA_PATTERN = re.compile(
 # ASCII curta" porque este último quebrava 14 questões hoje corretas
 # ("450π", "20 PÁGINAS.", "12 unidades de área").
 _NUM_ISOLADO = re.compile(
-    r"^(?:r\$\s*)?(-?\d+(?:[.,]\d+)?)\s*"
+    # 2026-10-10: aceita também "1.250,00" (milhar + vírgula decimal pt-BR),
+    # que antes caía em "textual" e tirava a questão do ramo numérico.
+    r"^(?:r\$\s*)?(-?(?:[1-9]\d{0,2}(?:\.\d{3})+,\d+|\d+(?:[.,]\d+)?))\s*"
     r"(?:%|[a-zà-ÿ²³ºª°/]{0,12}(?:\s+[a-zà-ÿ²³ºª°]{1,12}){0,2})$",
     re.I,
 )
@@ -527,6 +1025,113 @@ def _corresponde(alternativa, frase):
     return pal_a.issubset(pal_f) and let_a.issubset(let_f)
 
 
+# ---------------------------------------------------------------------------
+# Comparação TOLERANTE entre o resultado da resolução e uma alternativa
+# (2026-10-10). Só serve a ABSOLVER (gabarito que bate "aproximadamente") e a
+# decidir "fora das alternativas"; a troca de letra por fix_gabarito continua
+# exigindo igualdade exata, salvo letra ÚNICA por tolerância (ver abaixo).
+#
+# Tolerância explícita: formatação (1.250 = 1250 = "1250 reais" = "R$ 1.250,00";
+# 0,25 = 25%; 2,5 m = 250 cm pela tabela de unidades) é igualdade EXATA depois
+# de normalizar. Arredondamento só vale quando a alternativa tem MENOS casas
+# decimais que o resultado: "33,3" ~ "33%" (|dif| < 10^-casas_da_alternativa);
+# um resultado inteiro nunca "arredonda" para outra alternativa ("120" não casa
+# com "121"; 0,5 não "arredonda" para 0). Arredondamento: meio para cima na
+# casa da alternativa (7,75 ~ 7,8; 7,75 ~ 8); truncamento (0,875 -> 0,87) só quando a alternativa tem casas.
+# Alternativa-fração aceita o decimal que a resolução escreveu arredondado
+# ("0,33" ~ "1/3").
+# ---------------------------------------------------------------------------
+
+def _casas(x):
+    """Casas decimais de uma Fraction (99 se a dízima não termina)."""
+    d, k = x.denominator, 0
+    if d == 1:
+        return 0
+    for fator in (2, 5):
+        e = 0
+        while d % fator == 0:
+            d //= fator
+            e += 1
+        k = max(k, e)
+    return k if d == 1 else 99
+
+
+def _arredonda(x, k):
+    """x arredondado a k casas, meio para cima (7,75 -> 7,8; 0,5 -> 1)."""
+    n = abs(x) * 10 ** k + Fraction(1, 2)
+    r = Fraction(n.numerator // n.denominator, 10 ** k)
+    return -r if x < 0 else r
+
+
+def _trunca(x, k):
+    n = abs(x) * 10 ** k
+    r = Fraction(n.numerator // n.denominator, 10 ** k)
+    return -r if x < 0 else r
+
+
+def _info_alternativa(texto):
+    """Lista de {"v": Fraction, "dec": int|None, "un", "pct", "fracao"} com as
+    leituras de uma alternativa de VALOR (numero/fracao); [] para as demais.
+    "1.250" tem duas leituras (1,25 e 1250); "1.250,00" tem uma (1250)."""
+    classe = classe_alternativa(texto)
+    t = _texto_alternativa(texto)
+    rel = _RELOGIO_ALT.match(t) if classe == "textual" else None
+    if rel and int(rel.group(2)) < 60:  # horário "11h00" = 660 min do dia
+        return [{"v": Fraction(int(rel.group(1)) * 60 + int(rel.group(2))), "dec": 0,
+                 "un": None, "pct": False, "fracao": False}]
+    if classe == "fracao":
+        m = _FRACAO_ISOLADA.match(t)
+        a, b = int(m.group(1)), int(m.group(2))
+        out = [{"v": Fraction(a), "dec": 0, "un": None, "pct": False, "fracao": True}]
+        if b:
+            out.append({"v": Fraction(a, b), "dec": None, "un": None, "pct": False,
+                        "fracao": True})
+        return out
+    if classe != "numero":
+        return []
+    toks = [tk for tk in _tokenizar(t) if tk.k == "NUM"]
+    if not toks:
+        return []
+    tk = toks[0]
+    out = [{"v": tk.v, "dec": tk.dec, "un": tk.un, "pct": tk.pct, "fracao": False}]
+    m = _NUM_MILHAR_RE.search(t)
+    if m and "," not in m.group(0):
+        out.append({"v": Fraction(m.group(0).replace(".", "")), "dec": 0, "un": tk.un,
+                    "pct": tk.pct, "fracao": False})
+    return out
+
+
+def _casa(registro, alt):
+    """O resultado `registro` (de _contas_ricas) corresponde à leitura `alt`?"""
+    _fim, v, un, pct, dec = registro
+    cands = [v]
+    if alt["pct"] and not pct:
+        cands.append(v * 100)
+    if pct and not alt["pct"]:
+        cands.append(v / 100)
+    if un and alt["un"] and un != alt["un"]:
+        f = _fator_unidade(un, alt["un"])
+        if f is not None:
+            cands.append(v * f)
+    a = alt["v"]
+    for x in cands:
+        if x == a:
+            return True
+        if alt["fracao"]:
+            if dec is not None and dec >= 1 and abs(x - a) < Fraction(1, 10 ** dec):
+                return True
+        elif alt["dec"] is not None and _casas(x) > alt["dec"]:
+            if _arredonda(x, alt["dec"]) == a or (
+                    alt["dec"] >= 1 and _trunca(x, alt["dec"]) == a):
+                return True  # arredondamento; ou truncamento (só com casas: 0,875 -> 0,87)
+    return False
+
+
+def _letras_que_casam(registro, infos):
+    """Letras cuja alternativa casa (tolerante) com o registro. infos: {letra: [alt]}"""
+    return [L for L, leituras in infos.items() if any(_casa(registro, a) for a in leituras)]
+
+
 # Motivos devolvidos por check_consistency_detalhado(). São documentação
 # executável: quem chama pode distinguir "gabarito trocado" (recuperável por
 # fix_gabarito) de "resposta fora das alternativas" (irrecuperável).
@@ -551,7 +1156,8 @@ def check_consistency_detalhado(questao):
         return None, None, "sem_gabarito"
 
     resolucao = questao.get("resolucao_passo_a_passo", "")
-    resultados = _computed_results(resolucao)
+    registros = _contas_ricas(resolucao)
+    resultados = [_numero(r[1]) for r in registros]
     if not resultados:
         return None, None, "sem_conta"
 
@@ -564,7 +1170,8 @@ def check_consistency_detalhado(questao):
     if any(v in resultados for v in _valores_alternativa(alternativas.get(gabarito))):
         return True, None, "valor_bate_fracao"
     # Absolvição pela leitura de milhar pt-BR (ver _sem_separador_milhar).
-    resultados_milhar = _computed_results(_sem_separador_milhar(resolucao))
+    rec_milhar = _contas_ricas(_sem_separador_milhar(resolucao))
+    resultados_milhar = [_numero(r[1]) for r in rec_milhar]
     if resultados_milhar != resultados:
         if _leading_number(alternativas.get(gabarito)) in resultados_milhar:
             return True, None, "valor_bate_milhar"
@@ -572,7 +1179,19 @@ def check_consistency_detalhado(questao):
                for v in _valores_alternativa(alternativas.get(gabarito))):
             return True, None, "valor_bate_milhar"
 
+    # (2b) EXTENSÃO 2026-10-10: o gabarito bate com algum resultado só pela
+    # tolerância documentada acima (arredondamento, %, unidade, milhar pt-BR).
+    # Só absolve; nunca acusa.
+    info_gab = _info_alternativa(alternativas.get(gabarito))
+    if info_gab:
+        if any(_casa(r, a) for r in registros + rec_milhar for a in info_gab):
+            return True, None, "valor_bate_aprox"
+
     classes = {letra: classe_alternativa(txt) for letra, txt in alternativas.items()}
+    # Horário "11h00" só ABSOLVE (2b acima, via _info_alternativa); NÃO entra no
+    # ramo numérico: reclassificá-lo fazia "ponteiro no 8 = 40 min" (resposta
+    # "9h40") virar resultado_na_cauda e regredir 2 questões que o ramo textual
+    # aprovava (train_curado_v3 linhas 1731 e 1765).
     de_valor = [L for L, c in classes.items() if c in ("numero", "fracao")]
     textuais = [L for L, c in classes.items() if c == "textual"]
     chaves = [_chave_valor(alternativas[L]) for L in de_valor]
@@ -593,9 +1212,29 @@ def check_consistency_detalhado(questao):
             # própria resolução pode estar errada (malha 3x3 que calcula
             # "3 x 1 = 3"), então não dá para aprovar nem reprovar.
             return None, None, "gabarito_nda"
+        # Guarda de cauda TAMBÉM antes de trocar a letra (2026-10-10): se depois
+        # da última conta verificada a resolução escreve o valor do gabarito
+        # ("... 23,333...%, arredondada para 23,8%"), ela defende o gabarito e o
+        # "final" que bateu com outra alternativa era só um passo (o total 30
+        # de "12 + 8 + 7 + 3 = 30"); trocar a letra gravaria um gabarito errado.
+        valores_gab = ([_leading_number(alternativas.get(gabarito))]
+                       + list(_valores_alternativa(alternativas.get(gabarito))))
         for letra in de_valor:
             if final in _valores_alternativa(alternativas[letra]):
+                if _valor_na_cauda(resolucao, valores_gab) or _valor_mencionado(resolucao, valores_gab):
+                    return None, None, "resultado_na_cauda"
                 return False, letra, "gabarito_errado"
+        # EXTENSÃO 2026-10-10: o resultado final cai numa alternativa só pela
+        # tolerância (33,3 ~ 33%; 1.250 = 1250; 0,25 = 25%). Letra ÚNICA => é o
+        # gabarito certo e o marcado está errado; várias => ambíguo, não acusa.
+        info_alts = {L: _info_alternativa(alternativas[L]) for L in de_valor}
+        aprox = _letras_que_casam(registros[-1], info_alts)
+        if len(aprox) == 1:
+            if _valor_na_cauda(resolucao, valores_gab) or _valor_mencionado(resolucao, valores_gab):
+                return None, None, "resultado_na_cauda"
+            return False, aprox[0], "gabarito_errado_aprox"
+        if len(aprox) > 1:
+            return None, None, "ambiguo_aprox"
         # Nenhuma alternativa contém o resultado final: questão IRRECUPERÁVEL.
         # Ex. real (P12-5º-H21-N5): alternativas 60/100/110/120/130, gabarito
         # C=110, resolução "150 - 80 = 70". Não existe letra para sugerir —
@@ -606,25 +1245,44 @@ def check_consistency_detalhado(questao):
         # Última absolvição: se a leitura de milhar pt-BR produz um resultado
         # que ESTÁ entre as alternativas, o "." era separador e não decimal —
         # a acusação seria artefato de parsing. Degrada para não verificável.
-        if resultados_milhar and any(
+        if resultados_milhar and (any(
             resultados_milhar[-1] in _valores_alternativa(alternativas[L])
             for L in de_valor
-        ):
+        ) or _letras_que_casam(rec_milhar[-1], info_alts)):
             return None, None, "milhar_ambiguo"
         # REGRA E — guarda de cauda. A resolução pode escrever a resposta final
         # DEPOIS da última conta que _EXPR_PATTERN fecha (arredondamento,
         # cadeia de 3+ operandos, unidade entre "=" e o número). Se o valor do
         # gabarito está nessa cauda, o verificador parou de ler cedo demais e a
         # acusação é artefato — degrada para não verificável. Ver _valor_na_cauda.
-        if _valor_na_cauda(resolucao,
-                           [_leading_number(alternativas.get(gabarito))]
-                           + list(_valores_alternativa(alternativas.get(gabarito)))):
+        if _valor_na_cauda(resolucao, valores_gab) or _valor_mencionado(resolucao, valores_gab):
             return None, None, "resultado_na_cauda"
+        # CONFERÊNCIA de dado do enunciado (2026-10-10, achado no val): "3x + 5 =
+        # 26 → 3x7 + 5 = 21 + 5 = 26" (gabarito 7, certo). A última conta só
+        # reproduz o 26 que o ENUNCIADO já dava ao substituir a resposta; o
+        # "final" não é a resposta. Se o resultado final é um número do
+        # enunciado, não dá para afirmar que a resposta falta.
+        # Só vale se o valor do gabarito aparece na resolução (a substituição "3x7"):
+        # sem isso, "10h20min = 10 x 60 + 20 = 620" com gabarito 1020 deixaria de
+        # ser pego só porque 620 min é o horário do enunciado.
+        if (registros[-1][1] in _numeros_do_enunciado_exatos(questao.get("enunciado"))
+                and _valor_no_texto(resolucao, valores_gab)):
+            return None, None, "resultado_e_dado_do_enunciado"
+        # Unidade INCOMPATÍVEL (2026-10-10): o "final" é "120°" e as alternativas
+        # são "12 cm" — o último cálculo foi um passo intermediário (ângulo
+        # central), não a resposta. Não dá para afirmar que a resposta falta.
+        unid_final = registros[-1][2]
+        unid_alts = {a["un"] for L in de_valor for a in info_alts[L] if a["un"]}
+        if unid_final and unid_alts and all(
+                _fator_unidade(unid_final, u) is None for u in unid_alts):
+            return None, None, "unidade_incompativel"
         return False, None, MOTIVO_FORA_DAS_ALTERNATIVAS
 
     # (4) RAMO TEXTUAL/REFERENCIAL — o gabarito é um rótulo, não um valor.
     # A verificação correta é por CORRESPONDÊNCIA entre a alternativa e a
     # conclusão da resolução (sua última frase).
+    if not _resultados_binarios(resolucao):
+        return None, None, "sem_conta_binaria"
     partes = _frases(resolucao)
     if not partes:
         return None, None, "sem_frase"
@@ -642,6 +1300,103 @@ def check_consistency_detalhado(questao):
     # como confirmação: é circular (30/918 disparos, todos concordando com o
     # gabarito, ganho informativo zero) e o padrão frouxo gera falso positivo.
     return None, None, "ambiguo" if casam else "sem_correspondencia"
+
+
+# ---------------------------------------------------------------------------
+# REGRA SUAVE (2026-10-10): "dado inventado". SÓ AVISA; nunca muda status.
+#
+# Um número usado como OPERANDO de uma conta da resolução que não está no
+# enunciado, nem é resultado de passo anterior, nem é constante conhecida, nem
+# número por extenso do enunciado, foi trazido do nada. Caso real (5º H17):
+# enunciado "bolo de 45 minutos ... 10h30", resolução "10h30 + 30 minutos =
+# 11h00" — o 30 não existe no enunciado (o certo seria 45; 11h15). A conta é
+# internamente correta e 11h00 ESTÁ nas alternativas, então nenhuma regra de
+# aritmética pega: só este aviso. Só olha os operandos do primeiro termo de cada
+# igualdade verificada; o "10" e o "30" de um horário "10h30" NÃO são números
+# soltos do enunciado (o horário vale 630 min).
+# ---------------------------------------------------------------------------
+
+_CONSTANTES_CONHECIDAS = frozenset(Fraction(x) for x in (
+    "0", "1", "2", "3", "4", "7", "10", "12", "24", "60", "90", "100", "180", "360",
+    "1000", "1/2", "157/50", "3927/1250"))  # ..., 0,5, 3,14, 3,1416
+_NUMEROS_POR_EXTENSO = {
+    "um": 1, "uma": 1, "dois": 2, "duas": 2, "tres": 3, "quatro": 4, "cinco": 5,
+    "seis": 6, "sete": 7, "oito": 8, "nove": 9, "dez": 10, "onze": 11, "doze": 12,
+    "treze": 13, "catorze": 14, "quatorze": 14, "quinze": 15, "dezesseis": 16,
+    "dezessete": 17, "dezoito": 18, "dezenove": 19, "vinte": 20, "trinta": 30,
+    "quarenta": 40, "cinquenta": 50, "sessenta": 60, "setenta": 70, "oitenta": 80,
+    "noventa": 90, "cem": 100, "cento": 100, "mil": 1000, "duzentos": 200,
+    "trezentos": 300, "quatrocentos": 400, "quinhentos": 500, "seiscentos": 600,
+    "setecentos": 700, "oitocentos": 800, "novecentos": 900, "dobro": 2, "triplo": 3, "quadruplo": 4,
+    "metade": 2, "terco": 3, "quarto": 4, "duzia": 12, "meia": 2, "semana": 7,
+    "dia": 24, "hora": 60, "bimestre": 2, "trimestre": 3, "semestre": 6, "ano": 12,
+}
+
+
+def _numeros_do_enunciado_exatos(enunciado):
+    """Números escritos no enunciado (nas duas leituras do ponto), sem variações."""
+    texto = normalize_math(enunciado)
+    return {t.v for t in _tokenizar(texto) + _tokenizar(_sem_separador_milhar(texto))
+            if t.k == "NUM" and t.v is not None}
+
+
+def _numeros_do_enunciado(enunciado):
+    """Conjunto de Fractions que o enunciado fornece: números escritos (nas duas
+    leituras do ponto), números por extenso e as versões /100 e x100 (percentual)."""
+    texto = normalize_math(enunciado)
+    valores = set()
+    for t in _tokenizar(texto) + _tokenizar(_sem_separador_milhar(texto)):
+        if t.k == "NUM":
+            valores.add(t.v)
+            valores.add(t.v / 100)
+            valores.add(t.v * 100)
+            if not t.relogio and t.v.denominator == 1 and t.v > 9:
+                # algoritmo posicional ("7 + 5 = 12, escreve 2 e vai 1"; "100 + 31"):
+                # dígitos e valores posicionais do número dado não são dado novo
+                digs = str(int(t.v))
+                for k, d in enumerate(reversed(digs)):
+                    valores.add(Fraction(int(d)))
+                    valores.add(Fraction(int(d) * 10 ** k))
+    for palavra in re.findall(r"[a-z]+", _sem_acento(texto.lower())):
+        if palavra in _NUMEROS_POR_EXTENSO:
+            valores.add(Fraction(_NUMEROS_POR_EXTENSO[palavra]))
+    return valores
+
+
+def avisos_consistencia(questao):
+    """Lista de avisos NÃO BLOQUEANTES sobre a resolução. Hoje: "dado_inventado".
+    Cada aviso: {"tipo": "dado_inventado", "valor": número, "posicao": int}."""
+    if not isinstance(questao, dict):
+        return []
+    resolucao = questao.get("resolucao_passo_a_passo") or ""
+    registros, cadeias, _spans = _analisar_contas(resolucao)
+    tokens_res = [t for t in _tokenizar(normalize_math(resolucao)) if t.k == "NUM"]
+    permitidos = _numeros_do_enunciado(questao.get("enunciado") or "") | _CONSTANTES_CONHECIDAS
+    avisos, vistos = [], set()
+    for cad in cadeias:
+        anteriores = set()
+        for reg in registros:
+            if reg[0] <= cad["fim"]:
+                anteriores.add(reg[1])
+                anteriores.add(reg[1] / 100)
+                anteriores.add(reg[1] * 100)
+        # número já escrito na prosa ANTES desta conta ("A variação foi de 40
+        # camisetas. 40/120 = ...") foi derivado pelo autor: não é dado do nada.
+        anteriores.update(t.v for t in tokens_res if t.fim <= cad["ini"])
+        for v in cad["operandos"]:
+            if v in permitidos or v in anteriores or v in vistos:
+                continue
+            vistos.add(v)
+            avisos.append({"tipo": "dado_inventado", "valor": _numero(v), "posicao": cad["fim"]})
+    return avisos
+
+
+def detalhe_consistencia(questao):
+    """check_consistency_detalhado + avisos, num dict (campo de detalhe/relatório):
+    {"consistente", "sugestao", "motivo", "avisos"}. Os avisos não alteram o veredito."""
+    ok, sugestao, motivo = check_consistency_detalhado(questao)
+    return {"consistente": ok, "sugestao": sugestao, "motivo": motivo,
+            "avisos": avisos_consistencia(questao)}
 
 
 def resposta_fora_das_alternativas(questao):

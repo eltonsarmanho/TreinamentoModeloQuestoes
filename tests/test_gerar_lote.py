@@ -212,3 +212,50 @@ class TestTimeoutLlamaCli(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSufixoUmaQuestao(unittest.TestCase):
+    """O app manda 1 questão por chamada: o prompt precisa do sufixo do treino."""
+
+    def test_prompt_com_sufixo_tem_subtema_e_contexto(self):
+        import gerar_lote
+        p, slot = gerar_lote.prompt_com_sufixo("5º", "H03", "Adição de naturais", "Fácil", seed=7)
+        self.assertTrue(p.startswith("Gere 1 questão(ões) de matemática. Ano: 5º ano."))
+        self.assertIn("Dificuldade: Fácil.", p)
+        self.assertIn("Contexto:", p)
+        self.assertIn(slot["contexto_rotulo"], p)
+
+    def test_deterministico_por_seed_e_gira_entre_seeds(self):
+        import gerar_lote
+        a = gerar_lote.prompt_com_sufixo("9º", "H17", "Classificação", "Moderado", seed=1)[0]
+        b = gerar_lote.prompt_com_sufixo("9º", "H17", "Classificação", "Moderado", seed=1)[0]
+        self.assertEqual(a, b)
+        outros = {gerar_lote.prompt_com_sufixo("9º", "H17", "Classificação", "Moderado", seed=s)[0]
+                  for s in range(2, 12)}
+        self.assertGreater(len(outros), 1)
+
+    def test_sem_taxonomia_so_o_contexto_gira(self):
+        import gerar_lote
+        p, slot = gerar_lote.prompt_com_sufixo("9º", "H99", "x", "Fácil", seed=3)
+        self.assertEqual(slot["subtema"], "geral")
+        self.assertIn("Contexto:", p)
+        self.assertNotIn("Subtema:", p)
+
+    def test_acrescentar_sufixo_ao_prompt_do_val(self):
+        import gerar_lote
+        from extract_data import USER_TEMPLATE
+        base = USER_TEMPLATE.format(quantidade=1, ano="5º", habilidade="H03",
+                                    descricao="Utilizar a adição.", dificuldade="Fácil")
+        r = gerar_lote.acrescentar_sufixo(base, seed=5)
+        self.assertTrue(r.startswith(base.rstrip(".")))
+        self.assertIn("Contexto:", r)
+        self.assertEqual(gerar_lote.acrescentar_sufixo("texto livre", 5), "texto livre")
+
+    def test_run_one_uma_questao_usa_o_caminho_planejado(self):
+        import test_model
+        from unittest import mock
+        chamadas = []
+        with mock.patch.object(test_model, "run_planejado",
+                               side_effect=lambda *a, **k: chamadas.append((a, k))):
+            test_model.run_one("cli", "m.gguf", "5º", "H03", "d", "Fácil", 4, 1, quantidade=1)
+        self.assertEqual(len(chamadas), 1)

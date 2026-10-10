@@ -63,6 +63,7 @@ from schema_utils import (
     DIFFICULTY_MAP,
     IMAGE_PATTERN,
     MOTIVO_FORA_DAS_ALTERNATIVAS,
+    avisos_consistencia,
     depende_de_visual_ausente,
     check_consistency,
     check_consistency_detalhado,
@@ -631,6 +632,12 @@ def generate_validated(llama_cli, gguf_path, user_prompt, threads, max_new_token
     motivo_consistencia (aditivo): o motivo de check_consistency_detalhado do
     candidato escolhido — vale schema_utils.MOTIVO_FORA_DAS_ALTERNATIVAS quando
     a falha foi por resposta fora das alternativas.
+    avisos_consistencia (aditivo, 2026-10-10): avisos NÃO bloqueantes de
+    schema_utils.avisos_consistencia (hoje "dado_inventado"); nunca mudam status
+    nem score. "ok" e "nao_verificavel" são contados separadamente em
+    status_counter e RANK_STATUS (gerar_lote) prefere "ok" a "nao_verificavel".
+    O early-return do best-of-N continua em score 6 (nao_verificavel): preferir
+    "ok" aí exigiria re-amostrar, ou seja, chamadas extras ao modelo.
     geometria (aditivo): {"veredito", "motivo", "sugestao", "explicacao", "modo"}
     do candidato escolhido; reprovacoes_geometria: quantos candidatos AMOSTRADOS
     nesta chamada a geometria reprovou (custo da guarda, para medição).
@@ -688,6 +695,7 @@ def generate_validated(llama_cli, gguf_path, user_prompt, threads, max_new_token
             return {"text": text, "obj": questao, "flags": flags,
                     "status": "ok" if score == 8 else "nao_verificavel",
                     "motivo_consistencia": motivo, "geometria": geo,
+                    "avisos_consistencia": avisos_consistencia(questao),
                     "regeneracoes": regeneracoes, "reprovacoes_geometria": reprov_geo,
                     "gen_tps": gen_tps, "elapsed": total_elapsed}
         if attempt < retries:
@@ -728,6 +736,7 @@ def generate_validated(llama_cli, gguf_path, user_prompt, threads, max_new_token
         status = "falha"
     return {"text": text, "obj": questao, "flags": flags, "status": status,
             "motivo_consistencia": motivo, "geometria": geo,
+            "avisos_consistencia": avisos_consistencia(questao),
             "regeneracoes": regeneracoes, "reprovacoes_geometria": reprov_geo,
             "gen_tps": gen_tps, "elapsed": total_elapsed}
 
@@ -762,10 +771,12 @@ STATUS_LABEL = {
 def run_one(llama_cli, gguf_path, ano, habilidade, descricao, dificuldade, threads, n,
             grammar=None, retries=1, quantidade=1, planejado=True,
             max_tentativas_diversidade=2, modo_geometria=None):
-    # quantidade>1: por padrão usa o modo PLANEJADO (gerar_lote.py) — uma
-    # questão por chamada, guiada por plano de subtemas, com TODAS as questões
-    # validadas. --sem-planejamento volta ao pedido único "Gere N questões".
-    if quantidade > 1 and planejado:
+    # Por padrão usa o modo PLANEJADO (gerar_lote.py) — uma questão por chamada,
+    # guiada por plano de subtemas, com TODAS as questões validadas. Vale também
+    # para quantidade=1: o prompt leva o sufixo "Subtema/Tipo de raciocínio/
+    # Contexto" que 92% do treino tem (o prompt puro cai no regime dos ~8% de
+    # itens reais em CAIXA ALTA). --sem-planejamento volta ao prompt puro.
+    if quantidade >= 1 and planejado:
         return run_planejado(llama_cli, gguf_path, ano, habilidade, descricao, dificuldade,
                              threads, n, quantidade, grammar=grammar, retries=retries,
                              max_tentativas_diversidade=max_tentativas_diversidade,
@@ -906,7 +917,8 @@ def interactive(llama_cli, gguf_path, threads, grammar=None, retries=1, modo_geo
 
 
 def batch(llama_cli, gguf_path, threads, num_samples, grammar=None, retries=1, raw=False,
-          val_path=None, report_path=None, modo_geometria=None, seed_rodada=0):
+          val_path=None, report_path=None, modo_geometria=None, seed_rodada=0,
+          sufixo=False):
     """seed_rodada=0 reproduz exatamente as seeds históricas (base_seed=i).
     Rodadas > 0 deslocam a seed de cada item em 1000*rodada: mesma rodada nos
     dois modelos = comparação continua PAREADA, só que sobre outra amostragem
@@ -934,6 +946,11 @@ def batch(llama_cli, gguf_path, threads, num_samples, grammar=None, retries=1, r
                                    "consist_verif": 0, "dif_ok": 0})
     for i, ex in enumerate(examples, 1):
         user_msg = ex["messages"][1]["content"]
+        if sufixo:
+            # Mesmo prompt que o app deve mandar; seed = a da geração, então o
+            # slot é pareado entre baseline e candidato (mesma rodada).
+            from gerar_lote import acrescentar_sufixo  # import tardio (ciclo)
+            user_msg = acrescentar_sufixo(user_msg, i + 1000 * seed_rodada)
         print(f"[{i}/{len(examples)}] {user_msg[:80]}...")
         r = generate_validated(
             llama_cli, gguf_path, user_msg, threads, MAX_NEW_TOKENS,
@@ -1000,6 +1017,13 @@ def batch(llama_cli, gguf_path, threads, num_samples, grammar=None, retries=1, r
             "difficulty_aderente": aderente,
             "geometria": geo.get("veredito"),
             "geometria_motivo": geo.get("motivo"),
+            # Texto da questão ENTREGUE (já pós-fix_gabarito): enunciado,
+            # alternativas, resolução, gabarito, difficulty. Aditivo (P0-4):
+            # nenhum gate lê estes campos; servem às OBSERVAÇÕES do gate
+            # (promover_checkpoint) e à amostra humana (amostra_humana.py).
+            # Relatórios antigos não têm "obj"/"habilidade" e continuam válidos.
+            "habilidade": ex["meta"].get("habilidade"),
+            "obj": dict(obj) if isinstance(obj, dict) else None,
             # Guardar o trecho permite distinguir menção REAL a uma imagem
             # inexistente ("conforme a figura abaixo" — questão quebrada) de
             # falso positivo do IMAGE_PATTERN sobre termo matemático
@@ -1025,7 +1049,7 @@ def batch(llama_cli, gguf_path, threads, num_samples, grammar=None, retries=1, r
         # Configuração que muda o texto gerado (ver MOTOR): o gate multiseed
         # usa este campo para aceitar mesmo sha256 com --comparar-inferencia.
         "inferencia": {"motor": MOTOR, "threads": threads, "n_ctx": N_CTX,
-                       "cache_prompt": MOTOR == "server"},
+                       "cache_prompt": MOTOR == "server", "sufixo": bool(sufixo)},
         "modo": modo,
         "num_amostras": n,
         "seed_rodada": seed_rodada,
@@ -1153,8 +1177,11 @@ def main():
                         help="quantas questões no lote. >1 usa o modo PLANEJADO por padrão "
                              "(uma questão por chamada, cobertura de subtemas; ver gerar_lote.py)")
     parser.add_argument("--sem-planejamento", action="store_true",
-                        help="com --quantidade>1, volta ao modo antigo: uma única chamada pedindo N "
-                             "questões (só a 1ª é verificada)")
+                        help="volta ao modo antigo: prompt puro, sem sufixo (e, com --quantidade>1, "
+                             "uma única chamada pedindo N questões; só a 1ª é verificada)")
+    parser.add_argument("--sufixo", action="store_true",
+                        help="com --batch, acrescenta a cada prompt do val o sufixo de diversidade "
+                             "(Subtema/Tipo de raciocínio/Contexto) que o app deve mandar")
     parser.add_argument("--max-tentativas-diversidade", type=int, default=2,
                         help="regenerações extras por slot quando a questão viola a diversidade")
 
@@ -1202,7 +1229,7 @@ def main():
         batch(llama_cli, gguf_path, args.threads, args.num_samples,
               grammar=grammar, retries=args.retries, raw=args.raw,
               val_path=args.val, report_path=args.report, modo_geometria=args.geometria,
-              seed_rodada=args.seed_rodada)
+              seed_rodada=args.seed_rodada, sufixo=args.sufixo)
     elif args.ano and args.habilidade:
         run_one(
             llama_cli, gguf_path, args.ano, args.habilidade,
