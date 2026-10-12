@@ -162,6 +162,41 @@ RESPOSTAS_USADAS_ADDENDUM = (
     "cuja resposta correta seja OUTRA."
 )
 
+# Ciclo v6 (2026-10-10, decisão D3): representação e restrições do slot vão SÓ para o professor
+# (o prompt de treino continua USER_TEMPLATE + sufixo). Fica FORA de VERSAO_PROMPTS de propósito:
+# aquela versão amarra juízes e filtros (auditar_base --montar a usa para aceitar itens), e estes
+# textos só mudam o gerador; a versão própria é gravada em meta.versao_gerador_v6.
+REPRESENTACAO_V6 = {
+    "numerica": "a questão trabalha com números escritos em algarismos (contas, comparações, sequências)",
+    "verbal": "a questão é apresentada em palavras, com poucos números, e exige interpretar o texto",
+    "medidas": "a questão traz grandezas com unidade (cm, kg, litros, reais, horas) e a unidade faz parte da resposta",
+    "tabela_textual": "os dados vêm numa lista de 'rótulo: valor', um por linha, escrita no enunciado",
+}
+# Reajuste dos distratores (2ª rodada v6): na 1ª, a restrição genérica ("erro típico de alunos") deu só
+# 53,1% de distratores de valor explicáveis por um erro comum, abaixo dos 56,6% da injeção anterior. Agora
+# o método é explícito: cada alternativa errada é o RESULTADO EXATO de um erro nomeado aplicado aos dados.
+DISTRATORES_V6 = (
+    " Distratores (obrigatório): resolva a questão certa primeiro e, ANTES de escrever as alternativas, escolha 4 erros "
+    "diferentes que um aluno deste ano comete NESTA questão e calcule o resultado de cada um com os dados do enunciado: "
+    "(a) operação trocada entre dois números do enunciado (somar em vez de subtrair, multiplicar em vez de dividir); "
+    "(b) parar numa etapa intermediária ou esquecer um passo; (c) errar por um (contar a mais ou a menos, esquecer o "
+    "'vai um'); (d) trocar a ordem de grandeza ou os dígitos (10 vezes mais ou menos, 45 por 54); (e) confundir um "
+    "conceito vizinho (perímetro com área, parte com todo, dobro com metade). Cada alternativa errada é o valor "
+    "exato de UM desses erros, nunca um número inventado perto da resposta. Se a resposta for um texto, cada "
+    "alternativa errada é uma conclusão que um aluno tiraria por um desses erros, falsa pelos dados do enunciado.")
+GERADOR_V6_ADDENDUM = (" Representação pedida: {representacao}. Restrições desta questão: {restricoes}." + DISTRATORES_V6)
+VERSAO_GERADOR_V6 = hashlib.sha1((GERADOR_V6_ADDENDUM + json.dumps(REPRESENTACAO_V6, sort_keys=True))
+                                 .encode("utf-8")).hexdigest()[:12]
+
+
+def addendum_v6(slot):
+    """'' se o slot não traz representacao/restricoes (injeção antiga: nada muda)."""
+    if not slot or not (slot.get("representacao") or slot.get("restricoes")):
+        return ""
+    rep = REPRESENTACAO_V6.get(slot.get("representacao"), slot.get("representacao") or "livre")
+    return GERADOR_V6_ADDENDUM.format(representacao=rep, restricoes="; ".join(slot.get("restricoes") or ["nenhuma"]))
+
+
 # Instrução de posição do gabarito: vai SÓ para o professor (não entra no
 # prompt de treino). Sorteamos a letra para equilibrar A-E (hoje E = 3,1%,
 # porque nos itens reais o E é sempre a NDA sintética).
@@ -1980,6 +2015,7 @@ class Agentes:
         user = dt.prompt_professor(ano, habilidade, descricao, dificuldade, slot)
         if dificuldade == "Difícil" and ano in ANOS_INICIAIS:
             user += DIFICIL_ANOS_INICIAIS_ADDENDUM.format(ano=ano)
+        user += addendum_v6(slot)
         if evitar_respostas:
             user += RESPOSTAS_USADAS_ADDENDUM.format(lista=", ".join(f'"{r}"' for r in evitar_respostas))
         if letra_alvo:
@@ -2007,6 +2043,11 @@ class Agentes:
                                                          {"role": "user", "content": user1}])
         if texto is None:
             return _falha("validador", "erro_api", {"chamadas": chamadas, "permutacao": perm})
+        if resposta_truncada(info):
+            # Ciclo v6 (2026-10-10, invariante "saída truncada nunca é aprovação"): antes
+            # um JSON que ainda fechava valia mesmo com finish_reason="length" (10 de
+            # ~9 mil respostas de juiz nos logs). Agora reprova, como o árbitro Gemini.
+            return _falha("validador", "resposta_truncada", {"chamadas": chamadas, "permutacao": perm})
         f1 = interpretar_fase1(texto)
         if f1 is None:
             return _falha("validador", "veredito_malformado", {"chamadas": chamadas, "permutacao": perm,
@@ -2053,11 +2094,13 @@ class Agentes:
                                           **{L: alts.get(L, "") for L in LETRAS})
                  + "\n\n" + VALIDADOR_FASE2.format(letra=gab, resolucao=questao.get("resolucao_passo_a_passo", "")))
         chamadas += 1
-        texto2, _ = self.chamar("validador_fase2", "fase2", [{"role": "system", "content": VALIDADOR_FASE2_SISTEMA},
-                                                             {"role": "user", "content": user2}])
+        texto2, info2 = self.chamar("validador_fase2", "fase2", [{"role": "system", "content": VALIDADOR_FASE2_SISTEMA},
+                                                                 {"role": "user", "content": user2}])
         base.update(fases=2, chamadas=chamadas)
         if texto2 is None:
             return _falha("validador", "erro_api", base)
+        if resposta_truncada(info2):
+            return _falha("validador", "resposta_truncada", base)
         f2 = interpretar_fase2(texto2)
         if f2 is None:
             return _falha("validador", "veredito_malformado", dict(base, bruto=_sanitizar(texto2, 400)))
@@ -2098,9 +2141,11 @@ class Agentes:
             enunciado=questao.get("enunciado", ""), **{L: alts.get(perm[L], "") for L in LETRAS})
         msgs = [{"role": "system", "content": REVISOR_SISTEMA + (sistema_extra or "")},
                 {"role": "user", "content": user}]
-        texto, _ = chamador(msgs) if chamador else self.chamar("revisor", "revisao_cega", msgs)
+        texto, info = chamador(msgs) if chamador else self.chamar("revisor", "revisao_cega", msgs)
         if texto is None:
             return _falha(nome, "erro_api", {"chamadas": 1, "permutacao": perm})
+        if resposta_truncada(info):
+            return _falha(nome, "resposta_truncada", {"chamadas": 1, "permutacao": perm})
         r = interpretar_revisor(texto)
         if r is None:
             return _falha(nome, "veredito_malformado", {"chamadas": 1, "permutacao": perm,

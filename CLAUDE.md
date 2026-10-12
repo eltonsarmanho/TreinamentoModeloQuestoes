@@ -45,9 +45,13 @@ There is no lint/format command configured in this repo — don't invent one.
 Everything under `src/agentes_questoes.py`, `src/auditar_base.py`,
 `src/injetar_questoes.py`, `src/arbitro_gemini.py`, `src/calibrar_agentes.py`
 calls paid LLM APIs (Maritaca `MARITALK_API_KEY`, optionally Gemini
-`GOOGLE_API_KEY` as a second reviewer). **Every one of these CLIs defaults to
-`--dry-run` or requires an explicit `--real`/budget flag** — never flip that
-default without being asked to spend money. `run_escala_base.sh` is the
+`GOOGLE_API_KEY` as a second reviewer). **None of these CLIs has a `--real`
+flag: outside `--dry-run` they call the paid API and refuse to start without a
+hard `--max-chamadas` cap** (`--max-chamadas-gemini` for Gemini) — never run
+them without `--dry-run` unless asked to spend money. The newer one-off tools
+(`padronizar_enunciado`, `reverificar_gabaritos`, `consolidar_base`,
+`melhorar_resolucoes`) are the opposite: dry-run by default, `--real` plus caps
+to pay. `run_escala_base.sh` is the
 idempotent wrapper that runs the full audit+injection cycle in the background
 (`--status` / `--parar`); it is retryable because every stage is append-only
 and resumes from what's already on disk.
@@ -108,12 +112,17 @@ revisor    — resolves it independently too, checks skill/grade/distractors/cla
            Gemini) on budget exhaustion or 3 consecutive API failures
    │
    ▼
-entra na base (data/train_curado_v3.jsonl)
+aceita -> data/injecao_saeb.jsonl (append-only); the training set
+          (data/train_curado_v3.jsonl) is assembled later by auditar_base.py --montar
 ```
 
-Key invariant: **validator and reviewer never see the gabarito, the
+Key invariant: **validator (phase 1) and reviewer never see the gabarito, the
 resolution, or each other's answer** — they each solve the item from scratch
-and only then compare. This is what catches the "plausible but wrong"
+and only then compare. Only the validator's short phase 2 (`sabia-4`) is shown
+the author's resolution and gabarito letter, after the blind answer already
+matched, to check the resolution itself. A judge answer cut by `max_tokens`
+(`finish_reason="length"`) fails closed as `resposta_truncada` even if its JSON
+parses (2026-10-10; it was accepted before). This is what catches the "plausible but wrong"
 failure mode a same-family judge pair alone would miss (two same-family
 judges can and did agree on the same wrong answer).
 
@@ -124,9 +133,11 @@ single-model mistakes never remove an item unseconded. Human decisions
 
 A **symbolic geometry verifier** (`src/verificador_geometria.py`) checks
 grade-9 triangle/quadrilateral classification questions against their stated
-premises. It runs in **shadow mode**: it logs a verdict but does not block or
-regenerate — it still abstains on ~40% of grade-9 geometry items. Don't flip
-it to active mode without being asked; that's gated on a blind human audit.
+premises. At **inference** it runs in **shadow mode** (`MODO_GEOMETRIA="sombra"`):
+it logs a verdict but does not block or regenerate — it still abstains on ~40%
+of grade-9 geometry items. Don't flip inference to active mode without being
+asked; that's gated on a blind human audit. In the **injection filters** it
+does reject (`geometria`, `geometria_d5` in `filtro_injecao`).
 
 ### Promotion gate (`src/promover_checkpoint.py`)
 
@@ -229,6 +240,22 @@ paired counts (e.g. base_k0 x exp_C: 13 worse / 3 better, p≈0.02).
 `src/padronizar_enunciado.py` converte CAIXA ALTA em caixa normal e restaura acentos (Maritaca `sabia-4`; 20 de 20 passaram no invariante contra 6 de 20 do `sabiazinho-4`). O invariante é a trava: o texto novo tem de ser igual ao original sem acentos e sem diferença de maiúsculas, então o modelo não pode trocar palavra nem número; resposta que viola cai no método determinístico. Escreve só um arquivo novo (`data/train_curado_v4.jsonl`), nunca `train_curado.jsonl`, `train.jsonl` nem `val*`; `--real` exige `--max-chamadas`. `src/auditar_gabaritos_base.py` classifica cada gabarito em CONFIRMADO / JUIZES / FRACO / REFUTADO sem chamada paga, e `src/reverificar_gabaritos.py` resolve às cegas (2 permutações) só os FRACO. As trocas de gabarito que ela sugere são PROPOSTAS: item real do banco e `Doc/decisoes_humanas.json` têm precedência e exigem revisão humana. CONFIRMADO só certifica a aritmética.
 
 `src/consolidar_base.py` fecha o ciclo e gera `data/train_curado_v5.jsonl` (v4 menos os itens sem sustentação, com a letra do gabarito balanceada em 20% cada por `permutar_lote`, um único lote para a base inteira). Fases: `figura` (sabia-4: resolvível só com o texto?), `resolver` (sabia-4-thinking, 2 permutações: lê, resolve, marca o gabarito e escreve a resolução, só para os itens do banco sem justificativa "Correto"; troca de gabarito só com confirmação aritmética, senão remove) e `montar` (sem API). Todas têm `--max-chamadas` e abortam, em vez de remover, se o teto ou a API falharem. `auditar_gabaritos_base.py --base data/train_curado_v5.jsonl --rotulo v5` compara o gabarito do banco por CONTEÚDO (o extrator troca "×" por "x" e travessões por hífen; o banco guarda frações como data de planilha). O banco SQLite e a v3 não são alterados.
+
+### Ciclo v6 da base (2026-10-10, em andamento)
+
+`data/train_curado_v5.jsonl` é entrada imutável (sha em `ciclo_v6/ENTRADAS_IMUTAVEIS.json`,
+`tests/test_entradas_imutaveis.py`). Especificação, portões e decisões pendentes: `ciclo_v6/SPEC.md`;
+evidência: `ciclo_v6/RELATORIO_CICLO_V6.md`. Ferramentas sem API (saída em `outputs/melhoria_v6/`):
+`perfil_base.py` (dimensões que `relatorio_base.py` não mede; entropia normalizada pelo universo da
+taxonomia; near-dup com trigramas coincidentes), `auditar_distratores.py`, `triar_resolucoes.py`
+(5 classes; comprimento é só sinal), `planejar_injecao_v6.py` (reusa `injetar_questoes.lacunas/planejar_slots`;
+prioridade não uniforme que desconta o 'outros' do classificador), `manifesto_v6.py`. Pago, dry-run por
+padrão: `melhorar_resolucoes.py` (reescreve só a explicação; enunciado/alternativas/gabarito congelados;
+discordância do professor vai para revisão humana) sobre `sabia_v6.py` — camada fina sobre o cliente e o
+`Orcamento` de `agentes_questoes` que acrescenta teto em R$ (reserva o pior caso antes de enviar), log com
+versão de prompt/hash do item/custo/resultado e cache por versão de prompt; falha, truncagem ou JSON
+inválido = abstenção. Preços em `ciclo_v6/precos_maritaca.json`, nunca no código. A D3 (dificuldade do
+revisor decide a entrada) continua suspensa: não use `dificuldade_real` como evidência.
 
 ### Secrets
 

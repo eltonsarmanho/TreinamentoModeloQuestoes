@@ -1,0 +1,164 @@
+{
+ "fase": "auditoria",
+ "gerado_em": "2026-10-10T17:40:16-03:00",
+ "codigo": {
+  "commit": "ba7ddbcd76cf3431c4edc7d9f4cc8dd30aeca678",
+  "alteracoes_nao_commitadas": [
+   "M CLAUDE.md",
+   " M src/agentes_questoes.py",
+   " M tests/test_base3_decisoes.py",
+   "?? ciclo_v6/",
+   "?? src/auditar_distratores.py",
+   "?? src/manifesto_v6.py",
+   "?? src/melhorar_resolucoes.py",
+   "?? src/perfil_base.py",
+   "?? src/planejar_injecao_v6.py",
+   "?? src/sabia_v6.py",
+   "?? src/triar_resolucoes.py",
+   "?? tests/test_ciclo_v6.py",
+   "?? tests/test_entradas_imutaveis.py",
+   "?? tests/test_juiz_truncado.py"
+  ]
+ },
+ "entradas_imutaveis": {
+  "data/train_curado_v5.jsonl": {
+   "sha256_travado": "41b8d15941571ec833a135c975b4420e0d85ccb73def3415ef17d0d393dc23cf",
+   "sha256_atual": "41b8d15941571ec833a135c975b4420e0d85ccb73def3415ef17d0d393dc23cf",
+   "intacto": true
+  },
+  "data/train_curado_v3.jsonl": {
+   "sha256_travado": "f10a69fa94c58bc1c08c7a3cdf0b27ddb094d6a02069bb70fd0af5679b15cb41",
+   "sha256_atual": "f10a69fa94c58bc1c08c7a3cdf0b27ddb094d6a02069bb70fd0af5679b15cb41",
+   "intacto": true
+  },
+  "data/train.jsonl": {
+   "sha256_travado": "1ce5e4fa51effff4a11c7e3843373cdcd67592e43b4186ac3a46a55cefd2ef15",
+   "sha256_atual": "1ce5e4fa51effff4a11c7e3843373cdcd67592e43b4186ac3a46a55cefd2ef15",
+   "intacto": true
+  },
+  "data/val.jsonl": {
+   "sha256_travado": "72c59e7db1c7a3efc6be8cf2ad84cdb343e37c16a71335af667c887ce7cd7d9d",
+   "sha256_atual": "72c59e7db1c7a3efc6be8cf2ad84cdb343e37c16a71335af667c887ce7cd7d9d",
+   "intacto": true
+  },
+  "data/val_frozen_v1.jsonl": {
+   "sha256_travado": "4f56633d31694c1d5b0e9ccf696d03ede348f563ebe9ec3895d38a50d99fcc40",
+   "sha256_atual": "4f56633d31694c1d5b0e9ccf696d03ede348f563ebe9ec3895d38a50d99fcc40",
+   "intacto": true
+  },
+  "DB/questoes.db": {
+   "sha256_travado": "3f5edbb6a2e6585d8703c5e8bfe23f7f3a6bbaf9fad5bad6820c056c730d097e",
+   "sha256_atual": "3f5edbb6a2e6585d8703c5e8bfe23f7f3a6bbaf9fad5bad6820c056c730d097e",
+   "intacto": true
+  }
+ },
+ "todas_intactas": true,
+ "versoes": {
+  "VERSAO_PROMPTS": "3358bf312d22",
+  "VERSAO_JUIZES": "j2-d5-validador-g",
+  "VERSAO_FILTROS": "f6-h2-d5-extenso-planilha",
+  "regua_diversidade": "4dd53baebbad99f77019ffd2663c75e99fe400abeccc7f781cd3801e5314dba6",
+  "codigo_sha256": {
+   "src/schema_utils.py": "8c0ee1f7bcf55af042e907dba095186e54a20d26961d4866b65c216c26825f1a",
+   "src/diversidade.py": "3e2f8db778c5dd3ce781dcc917c17c5adb702c9634cf199a82c6a8c109d3a888",
+   "src/verificador_geometria.py": "b05fd0ccac7e4a577d7dc78425f96c8b8a029cd6dbd675fb7f5098f7958480eb",
+   "src/agentes_questoes.py": "2cbe5f603a1aff1e611e60f8a4dfeb3e950d5b6bf629a45e6c9bc91f4e1ae3e6",
+   "src/perfil_base.py": "f2e7a63c0dc746ea0785b40e883fb386f6529294321963a153ff7fdb193ff501",
+   "src/auditar_distratores.py": "c4459752b542750e176e22e37468b8e822b3b6ca6115c38bf1f0cba128cc1815",
+   "src/triar_resolucoes.py": "3a61b8e19e89b3d578fa09869179b299ba1008bb33284678432ddd7600175341",
+   "src/melhorar_resolucoes.py": "e930d2b937fd1aa620d5813e0f8df2ffb2dabbd830189b1cd4a4bc2dd88d3a3a",
+   "src/sabia_v6.py": "fb0cece0a1217a7d7bdc99587b320cabf2bba50c9a5224528e4d83fcf06e19e9",
+   "src/planejar_injecao_v6.py": "a9e4f7230da98902a341121a2193163253269a439a28bd34559705abd4028a93",
+   "src/auditar_gabaritos_base.py": "106c3b7a15d6f5338485895992cecd408cdb7a00e5b9f85e83eb7c3745d4850f",
+   "grammars/questao.gbnf": "57df02bb3d988973a3997abefc2a822a2a346bf2efefebc9e87594d12baf1d22",
+   "data/taxonomia_subtemas.json": "9c3a13d2376c9d9a915c571c1f4d2538b7cca28a47896a161456fe45587bd011",
+   "ciclo_v6/precos_maritaca.json": "c0f5327d435dcc6e28fa13d0d905e371ae168c949b75bd6158523e8d9db3cf71"
+  }
+ },
+ "relatorios": {
+  "distratores_v5.json": {
+   "caminho": "outputs/melhoria_v6/distratores_v5.json",
+   "presente": true,
+   "sha256": "615362b27a6945babfda10a4ce936585d8314ea8466377d38af4481f5733766c",
+   "bytes": 38130
+  },
+  "distratores_v5.md": {
+   "caminho": "outputs/melhoria_v6/distratores_v5.md",
+   "presente": true,
+   "sha256": "8552936a3f90940875935b7b44c5ae8cc2c1ad01a5dacd3225fe82d1cc8c7053",
+   "bytes": 3954
+  },
+  "distratores_v5_itens.jsonl": {
+   "caminho": "outputs/melhoria_v6/distratores_v5_itens.jsonl",
+   "presente": true,
+   "sha256": "c9bde22e4991b0ea3f9d07f70b814a686eebbeb7c384c162de7a3304d27e992c",
+   "bytes": 1623865,
+   "linhas": 2740
+  },
+  "near_dups_v5.jsonl": {
+   "caminho": "outputs/melhoria_v6/near_dups_v5.jsonl",
+   "presente": true,
+   "sha256": "b1a18e73b06e1ae85d8cdc30338a77f1cc103e54e56dc0798efde8f55a63aa98",
+   "bytes": 23339,
+   "linhas": 45
+  },
+  "perfil_v5.json": {
+   "caminho": "outputs/melhoria_v6/perfil_v5.json",
+   "presente": true,
+   "sha256": "5ddddac008772c226bab7caf82dde5443023a2c80a82b429817029ce55a59713",
+   "bytes": 67112
+  },
+  "perfil_v5.md": {
+   "caminho": "outputs/melhoria_v6/perfil_v5.md",
+   "presente": true,
+   "sha256": "1204992d89a6a927f4f9e4c9468539c42d422ad3e8841f19f6f57e62bc161e9f",
+   "bytes": 11769
+  },
+  "plano_injecao_v6.json": {
+   "caminho": "outputs/melhoria_v6/plano_injecao_v6.json",
+   "presente": true,
+   "sha256": "be2f201383cfb0bb69fdb55b318354089c34316ea7a18dd97e7aef19931c4b43",
+   "bytes": 296188
+  },
+  "plano_injecao_v6.md": {
+   "caminho": "outputs/melhoria_v6/plano_injecao_v6.md",
+   "presente": true,
+   "sha256": "8c753d90e889dbc14e45b3ecda8da991033731d8dc7bf295585069808d5fa201",
+   "bytes": 4123
+  },
+  "relatorio_base_v5.json": {
+   "caminho": "outputs/melhoria_v6/relatorio_base_v5.json",
+   "presente": true,
+   "sha256": "fc0c3fae07f4070904fd1848282c7914d03db84cbfb3e5129768f0ee916b6bf2",
+   "bytes": 177117
+  },
+  "relatorio_base_v5.md": {
+   "caminho": "outputs/melhoria_v6/relatorio_base_v5.md",
+   "presente": true,
+   "sha256": "175ac759581d6376b4033d3619388cbc392d3f42ad23859f42ece409df23668e",
+   "bytes": 25671
+  },
+  "resolucoes_v5.json": {
+   "caminho": "outputs/melhoria_v6/resolucoes_v5.json",
+   "presente": true,
+   "sha256": "39f72a4cea695864a9d50d2501aa56dc7aa6b2ab860c2bfe7e12557fc4f2f9c5",
+   "bytes": 833
+  },
+  "resolucoes_v5.md": {
+   "caminho": "outputs/melhoria_v6/resolucoes_v5.md",
+   "presente": true,
+   "sha256": "e6a45f198bf22eb5b487f9a0aabe09d028571c26331e83299ee7edae9c1c0681",
+   "bytes": 1184
+  },
+  "resolucoes_v5_itens.jsonl": {
+   "caminho": "outputs/melhoria_v6/resolucoes_v5_itens.jsonl",
+   "presente": true,
+   "sha256": "b21afe4879a413edf190c1ef3d8ce29d3c848da9730a47230d087fe88499e53e",
+   "bytes": 1103464,
+   "linhas": 2740
+  }
+ },
+ "candidata": {
+  "presente": false
+ }
+}

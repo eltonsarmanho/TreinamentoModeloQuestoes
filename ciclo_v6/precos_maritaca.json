@@ -1,0 +1,14 @@
+{
+  "fonte": "https://docs.maritaca.ai/pt/precos e https://www.maritaca.ai/en/pricing/ (consultado em 2026-10-10)",
+  "moeda": "BRL",
+  "unidade": "por milhão de tokens",
+  "nota": "Preço padrão (sem cache, sem tarifa noturna/batch). Variantes -br-sp custam 30% a mais. Confirme na página oficial antes de autorizar um lote; o código lê este arquivo, nada fica fixo no código.",
+  "modelos": {
+    "sabia-4": {"entrada": 5.0, "saida": 20.0},
+    "sabia-4-thinking": {"entrada": 5.0, "saida": 40.0},
+    "sabiazinho-4": {"entrada": 1.0, "saida": 4.0},
+    "sabia-4-br-sp": {"entrada": 6.5, "saida": 26.0},
+    "sabia-4-thinking-br-sp": {"entrada": 6.5, "saida": 52.0},
+    "sabiazinho-4-br-sp": {"entrada": 1.3, "saida": 5.2}
+  }
+}

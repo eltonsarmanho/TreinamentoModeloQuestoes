@@ -615,15 +615,20 @@ class TestP4CacheSemTruncada(unittest.TestCase):
             cli = self.Cortada()
             ag1 = T.agentes_com(cli, 10)
             ag1.cache_juizes = aq.CacheRespostas([path])
-            ag1.validar(q)
+            v1 = ag1.validar(q)
+            # Ciclo v6 (2026-10-10, "saída truncada nunca é aprovação"): a fase 1 truncada
+            # agora REPROVA na hora (antes seguia para a fase 2 e só ela ia para o cache).
+            self.assertFalse(v1["veredito"])
+            self.assertEqual(v1["erro"], "resposta_truncada")
             self.assertEqual(ag1.cache_juizes.resumo()["truncadas_nao_gravadas"], 1)
-            self.assertEqual(ag1.cache_juizes.resumo()["respostas_novas_gravadas"], 1)  # só a fase 2
+            self.assertEqual(ag1.cache_juizes.resumo()["respostas_novas_gravadas"], 0)
+            self.assertEqual(cli.chamadas["validador_fase2"], 0)
             cli2 = T.Roteiro()
             ag2 = T.agentes_com(cli2, 10)
             ag2.cache_juizes = aq.CacheRespostas([path])
-            ag2.validar(q)
-            self.assertEqual(cli2.chamadas["validador"], 1)       # refeita de verdade
-            self.assertEqual(cli2.chamadas["validador_fase2"], 0)  # a fase 2 veio do cache
+            self.assertTrue(ag2.validar(q)["veredito"])
+            self.assertEqual(cli2.chamadas["validador"], 1)       # refeita de verdade (não veio do cache)
+            self.assertEqual(cli2.chamadas["validador_fase2"], 1)
 
     def test_cache_da_calibracao_tambem(self):
         import calibrar_agentes as ca
@@ -634,8 +639,11 @@ class TestP4CacheSemTruncada(unittest.TestCase):
                                      dormir=lambda s: None, cache_path=d / "c.jsonl",
                                      ledger=ca.Ledger(d / "l.json", 10), rodada="t")
             ag1.validar(T.questao_boa())
-            papeis = [json.loads(x)["papel"] for x in (d / "c.jsonl").read_text(encoding="utf-8").splitlines()]
-            self.assertEqual(papeis, ["validador_fase2"])
+            # ciclo v6: a fase 1 truncada reprova e encerra; nada truncado chega ao cache
+            c = d / "c.jsonl"
+            papeis = [json.loads(x)["papel"] for x in c.read_text(encoding="utf-8").splitlines()] if c.exists() else []
+            self.assertNotIn("validador", papeis)
+            self.assertEqual(papeis, [])
 
     def test_cliente_maritaca_repassa_o_finish_reason(self):
         dados = {"choices": [{"message": {"content": "x"}, "finish_reason": "length"}],

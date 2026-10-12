@@ -1,0 +1,24 @@
+{
+ "versao": 1,
+ "descricao": "Edições HUMANAS de itens do ciclo v6 (precedência sobre as regras automáticas). Cada edição é ligada ao item por codigo_item + hash_questao do conteúdo na v5 (pb.hash_questao); se o conteúdo da v5 mudar, a edição NÃO é aplicada. Só itens NÃO reais.",
+ "edicoes": {
+  "DIST-H01-Fácil-00406": {
+   "hash_v5": "779473de9a715bcb",
+   "autor": "usuário",
+   "data": "2026-10-12",
+   "motivo": "A (4,05) e D (4.05) eram o mesmo valor; C (4,50) repetia B (4,5). D vira 0,45 e C vira 4,005; gabarito continua A. Resolução reescrita sem citar letra.",
+   "alternativas": {
+    "A": "4,05",
+    "B": "4,5",
+    "C": "4,005",
+    "D": "0,45",
+    "E": "405"
+   },
+   "resolucao_passo_a_passo": "Em \"quatro vírgula zero cinco\", a parte inteira é 4. Depois da vírgula, \"zero cinco\" se escreve 05: nenhum décimo e 5 centésimos, ou seja, 0,05. Então 4 + 0,05 = 4,05. Logo, a distância percorrida foi de 4,05 quilômetros.",
+   "campos_editados": [
+    "alternativas",
+    "resolucao_passo_a_passo"
+   ]
+  }
+ }
+}

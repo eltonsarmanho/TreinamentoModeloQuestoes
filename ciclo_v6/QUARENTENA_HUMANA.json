@@ -1,0 +1,31 @@
+{
+ "descricao": "Itens retirados da v6 por defeito real apontado na amostra humana cega (2026-10-12). Ligados por codigo_item + hash (v5 ou injeção).",
+ "itens": {
+  "DIST-H13-Difícil-00321": {
+   "hash": "227ebc88fefa84e5",
+   "motivo": "amostra humana: \"à direita\" sem orientação de Ana; dados suficientes falha",
+   "fonte": "amostra_humana_v6:Q1983",
+   "hash_v5": "227ebc88fefa84e5"
+  },
+  "INJ-2-H18-M-00040": {
+   "hash": "bdf37601476c38b0",
+   "motivo": "amostra humana: data final ambígua (contagem inclusiva ou não de \"4 semanas\"); resposta única e dados suficientes falham",
+   "fonte": "amostra_humana_v6:Q6730"
+  },
+  "INJ-5-H10-D-00105": {
+   "hash": "fec869ad67790291",
+   "motivo": "amostra humana: ponto de encontro com o mesmo nome (P) da Barraca de Pipoca; confunde a leitura do trajeto",
+   "fonte": "amostra_humana_v6:Q5711"
+  },
+  "DIST-H08-Difícil-00156": {
+   "hash": "cb76c4622fcf634d",
+   "motivo": "amostra humana (rodada 3): alternativa C corrompida com texto em chines (\"都无法确定\") em vez de uma opcao em portugues",
+   "fonte": "amostra_humana_v6_aderencia:rodada3"
+  },
+  "DIST-H13-Fácil-00480": {
+   "hash": "5654f05cc75439b7",
+   "motivo": "amostra humana (rodada 3): dados insuficientes -- a questao pede qual planificacao monta uma piramide de base quadrada mas as alternativas so descrevem quantidades de faces, sem mostrar os arranjos/desenhos",
+   "fonte": "amostra_humana_v6_aderencia:rodada3"
+  }
+ }
+}

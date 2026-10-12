@@ -1,0 +1,11 @@
+{
+  "descricao": "Entradas que o ciclo v6 lê e nunca escreve. sha256 medido em 2026-10-10, antes de qualquer alteração do ciclo. tests/test_entradas_imutaveis.py falha se algum mudar.",
+  "arquivos": {
+    "data/train_curado_v5.jsonl": "41b8d15941571ec833a135c975b4420e0d85ccb73def3415ef17d0d393dc23cf",
+    "data/train_curado_v3.jsonl": "f10a69fa94c58bc1c08c7a3cdf0b27ddb094d6a02069bb70fd0af5679b15cb41",
+    "data/train.jsonl": "1ce5e4fa51effff4a11c7e3843373cdcd67592e43b4186ac3a46a55cefd2ef15",
+    "data/val.jsonl": "72c59e7db1c7a3efc6be8cf2ad84cdb343e37c16a71335af667c887ce7cd7d9d",
+    "data/val_frozen_v1.jsonl": "4f56633d31694c1d5b0e9ccf696d03ede348f563ebe9ec3895d38a50d99fcc40",
+    "DB/questoes.db": "3f5edbb6a2e6585d8703c5e8bfe23f7f3a6bbaf9fad5bad6820c056c730d097e"
+  }
+}

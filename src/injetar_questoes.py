@@ -477,6 +477,9 @@ def construir_exemplo(lac, descricao, dificuldade, questao, slot, idx, juizo, mo
     if slot:
         meta.update({"subtema": slot["subtema"], "tipo_raciocinio": slot["tipo_raciocinio"],
                      "contexto": slot["contexto"]})
+        if slot.get("restricoes"):  # ciclo v6: prompt do gerador com representação/restrições
+            meta.update({"versao_gerador_v6": aq.VERSAO_GERADOR_V6, "representacao_pedida": slot.get("representacao"),
+                         "ciclo": "v6"})
     return {
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
@@ -534,6 +537,24 @@ def injetar(args, agentes=None):
     aq._garantir_gravavel(p["saida"])
     with trava_saida(p["saida"]):
         return _injetar(args, p, agentes)
+
+
+def enriquecer_slots_v6(lac, slots, historico, tax):
+    """Ciclo v6: acrescenta representação e restrições (planejar_injecao_v6) aos slots já planejados.
+    O subtema/tipo/contexto/estrutura do slot não mudam."""
+    import planejar_injecao_v6 as pv
+    hab_tax = diversidade.obter_habilidade(lac["ano"], lac["habilidade"], tax)
+    rep = Counter(diversidade.classificar_questao(q, lac["ano"], lac["habilidade"], tax)["representacao"]
+                  for q in historico)
+    out = []
+    for d, s in slots:
+        if s is not None:
+            s = dict(s, dificuldade=d)
+            s["representacao"] = pv.representacao_para(s, hab_tax, rep)
+            rep[s["representacao"]] += 1
+            s["restricoes"] = pv.restricoes_para(s, hab_tax)
+        out.append((d, s))
+    return out
 
 
 def _injetar(args, p, agentes=None):
@@ -609,6 +630,8 @@ def _injetar(args, p, agentes=None):
             continue
         hist = base_qs.get(chave, []) + e["aceitas"]
         slots = planejar_slots(lac, restante, e["dif"], hist, tax, seed=args.seed * 1000 + e["tentativas"])
+        if getattr(args, "slots_v6", False):
+            slots = enriquecer_slots_v6(lac, slots, hist, tax)
         filas[chave] = [{"dif": d, "slot": s, "tent": 0} for d, s in slots]
         # T4: respostas não numéricas já usadas pelas aceitas desta habilidade
         respostas, textos = Counter(), {}
@@ -1128,6 +1151,8 @@ def construir_parser():
     ap.add_argument("--modelo-gemini", default=None, help="padrão: o modelo do árbitro (gemini-2.5-flash)")
     ap.add_argument("--incluir-dificuldade-ausente", action="store_true",
                     help="pede também dificuldades que o banco real nunca usa na habilidade (ex.: Difícil no 1º)")
+    ap.add_argument("--slots-v6", action="store_true",
+                    help="ciclo v6: o prompt do professor leva representação e restrições do slot (D3)")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--taxonomia", default=None, help="padrão: data/taxonomia_subtemas.json (somente leitura)")
     ap.add_argument("--saida", default=None)

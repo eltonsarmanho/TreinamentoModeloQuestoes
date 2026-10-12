@@ -1,0 +1,145 @@
+{
+ "criterios": {
+  "V6-01 entradas imutáveis intactas": true,
+  "V6-09 nenhuma questão real perdida": true,
+  "V6-05 gabarito (por conteúdo) igual ao da v5 em todo item mantido": true,
+  "V6-11 schema igual ao da v5": true,
+  "V6-08 toda questão da candidata tem proveniência (hash)": true,
+  "V6-10 sem enunciado duplicado e sem contaminação com val*": true,
+  "V6-12a REFUTADO = 0 e FRACO = 0": true,
+  "V6-12b matematicamente_problematica = 0": true,
+  "V6-12c % verificável >= v5": true,
+  "V6-12d pouco_explicativas < v5": true,
+  "V6-12e near-dup pares <= v5": true,
+  "V6-12f subtemas vazios < v5": true,
+  "V6-12g entropia de raciocínio >= v5": true,
+  "V6-12h letras entre 18% e 22%": true,
+  "V6-12i explicabilidade dos distratores nos itens novos >= 60,3% (v5)": false
+ },
+ "excecoes_registradas": [
+  "V6-12i explicabilidade dos distratores nos itens novos >= 60,3% (v5)"
+ ],
+ "aprovada": true,
+ "antes_v5": {
+  "questoes": 2740,
+  "exemplos": 2698,
+  "auditoria_gabarito": {
+   "CONFIRMADO": 1716,
+   "CEGO": 102,
+   "JUIZES": 922
+  },
+  "resolucoes": {
+   "adequada": 2085,
+   "correta_pouco_explicativa": 568,
+   "incompleta": 87,
+   "matematicamente_problematica": 0,
+   "nao_avaliavel": 0
+  },
+  "res_lt40": 519,
+  "verificavel_pct": 61.9,
+  "near_dup_pares": 45,
+  "subtemas_vazios": 24,
+  "habilidades_lt30": 22,
+  "nda": 692,
+  "letras": {
+   "B": 549,
+   "D": 548,
+   "A": 548,
+   "E": 548,
+   "C": 547
+  },
+  "origem": {
+   "injetado": 1344,
+   "destilado": 616,
+   "real_L2": 445,
+   "real_banco": 234,
+   "sintetico": 101
+  },
+  "dificuldade": {
+   "Fácil": 1078,
+   "Moderado": 855,
+   "Difícil": 807
+  },
+  "diversidade": {
+   "n": 2740,
+   "subtemas_distintos": 228,
+   "entropia_subtema": 0.943,
+   "entropia_raciocinio": 0.654,
+   "entropia_estrutura": 0.589,
+   "entropia_representacao": 0.492,
+   "entropia_contexto": 0.929,
+   "valores_numericos_distintos": 0.636,
+   "moldes_distintos": 0.993,
+   "pct_outros": 18.6
+  },
+  "distratores": {
+   "explicabilidade_pct": 60.3,
+   "nda": 25.3,
+   "revisao": 0.0
+  }
+ },
+ "depois_v6": {
+  "questoes": 2849,
+  "exemplos": 2807,
+  "auditoria_gabarito": {
+   "CONFIRMADO": 1811,
+   "CEGO": 99,
+   "JUIZES": 939
+  },
+  "resolucoes": {
+   "adequada": 2802,
+   "correta_pouco_explicativa": 24,
+   "incompleta": 23,
+   "matematicamente_problematica": 0,
+   "nao_avaliavel": 0
+  },
+  "res_lt40": 22,
+  "verificavel_pct": 63.4,
+  "near_dup_pares": 45,
+  "subtemas_vazios": 21,
+  "habilidades_lt30": 14,
+  "nda": 692,
+  "letras": {
+   "B": 571,
+   "D": 570,
+   "A": 570,
+   "C": 569,
+   "E": 569
+  },
+  "origem": {
+   "injetado": 1456,
+   "destilado": 613,
+   "real_L2": 445,
+   "real_banco": 234,
+   "sintetico": 101
+  },
+  "dificuldade": {
+   "Fácil": 1105,
+   "Moderado": 894,
+   "Difícil": 850
+  },
+  "diversidade": {
+   "n": 2849,
+   "subtemas_distintos": 231,
+   "entropia_subtema": 0.946,
+   "entropia_raciocinio": 0.654,
+   "entropia_estrutura": 0.58,
+   "entropia_representacao": 0.506,
+   "entropia_contexto": 0.929,
+   "valores_numericos_distintos": 0.638,
+   "moldes_distintos": 0.993,
+   "pct_outros": 19.5
+  },
+  "distratores": {
+   "explicabilidade_pct": 60.0,
+   "nda": 24.3,
+   "revisao": 0.0
+  }
+ },
+ "novos": {
+  "n": 112,
+  "explicabilidade_pct": 55.5,
+  "com_nda": 0
+ },
+ "reais_perdidos": []
+}
