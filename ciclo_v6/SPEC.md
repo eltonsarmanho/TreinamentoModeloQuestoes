@@ -85,6 +85,24 @@ Nenhum nome de modelo é trocado em silêncio: o papel é fixado por flag (`--mo
 | D4 | A alternativa E artificial dos 679 itens reais: manter ou trocar por um 5º distrator plausível? Trocar altera alternativas de item real e exige revisão humana. | manter na v6; piloto de 30 itens com revisão humana para a v7 |
 | D5 | Rótulo de dificuldade: dos 473 injetados pedidos Difícil, o revisor julgou só 5 como Difícil; dos 925 pedidos M/D, julgou 57% Fácil. Mas a D3 está suspensa porque ele diz "Fácil" para 83% dos M/D reais do banco. | não reetiquetar; medir na amostra humana |
 
+## Fechamento do ciclo v6 (2026-10-12)
+
+Decisão do responsável: seguir com a v6 como está (2.807 exemplos, 2.849 questões, 5 itens em
+quarentena pela amostra humana, exceção V6-12i registrada) e treinar. A Camada 2 (auditoria de
+aderência nas 17 habilidades estruturais) **não terminou** — ela achou que o critério C1 do
+revisor Maritaca tem 0% de recall nos 16 casos humanos confirmados como desalinhados (testado nos
+mesmos 50 itens da rodada 3; não é bug, `criterios.C1.ok` veio `True` nas 50 chamadas), e a
+tentativa de usar `typesafe/jev-router` via OpenRouter como juiz falhou tecnicamente em 75% das
+chamadas (conteúdo vazio). Nenhum juiz automático validado está disponível para essa auditoria.
+
+**O problema de fundo não é o modelo, é a arquitetura:** essas 17 habilidades pedem uma modalidade
+(imagem/mapa/moeda/calendário/gráfico) que o app só-texto não tem como oferecer. A correção
+correta é o campo `figura` (dados estruturados por tipo, renderizados pelo front end — NÃO LaTeX/
+TikZ, que não cabe num app 100% offline nem é constrangível por gramática GBNF), adiada para o
+**ciclo v7**, junto da feature de imagem no front end mobile. Até lá, o gap de aderência nas 17
+habilidades (35% × 90%, medido e com IC95 não sobreposto) fica documentado como limitação
+conhecida da v6, não um defeito a corrigir agora.
+
 ## Decisões registradas (2026-10-10)
 
 - **D1 (resultado do protocolo R0, 20 itens fixos, avaliador `sabia-4`):** aprovados `sabiazinho-4` 18, `sabia-4` 19, `sabia-4-thinking` 18; 17 itens aprovados pelos três. Custo real: R$ 0,016 / 0,083 / 0,271 no professor. Regra do protocolo → **`sabiazinho-4`** (perde só 1 item para o melhor e custa cerca de 5 vezes menos que o `sabia-4`). Pendente antes do lote R: leitura humana de 10 pares original × nova. Dados em `outputs/melhoria_v6/r0/`.

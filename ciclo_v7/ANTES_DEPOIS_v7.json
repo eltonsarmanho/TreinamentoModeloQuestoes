@@ -1,0 +1,104 @@
+{
+ "criterios": {
+  "V7-01 schema igual ao da v6": true,
+  "V7-02 sem enunciado duplicado e sem contaminação com val*": true,
+  "V7-03a REFUTADO = 0 e FRACO = 0": false,
+  "V7-03b matematicamente_problematica = 0": true,
+  "V7-03c % verificável >= v6": true,
+  "V7-03d pouco_explicativas <= v6": true,
+  "V7-03e near-dup pares <= v6": true,
+  "V7-03f letras entre 18% e 22%": true,
+  "V7-03g explicabilidade dos distratores >= v6": true
+ },
+ "excecoes_registradas": [],
+ "aprovada": false,
+ "antes_v6": {
+  "exemplos": 2807,
+  "questoes": 2849,
+  "auditoria_gabarito": {
+   "CONFIRMADO": 1811,
+   "CEGO": 99,
+   "JUIZES": 939
+  },
+  "resolucoes": {
+   "adequada": 2802,
+   "correta_pouco_explicativa": 24,
+   "incompleta": 23,
+   "matematicamente_problematica": 0,
+   "nao_avaliavel": 0
+  },
+  "verificavel_pct": 63.4,
+  "near_dup_pares": 45,
+  "letras": {
+   "B": 571,
+   "D": 570,
+   "A": 570,
+   "C": 569,
+   "E": 569
+  },
+  "diversidade": {
+   "n": 2849,
+   "subtemas_distintos": 231,
+   "entropia_subtema": 0.946,
+   "entropia_raciocinio": 0.654,
+   "entropia_estrutura": 0.58,
+   "entropia_representacao": 0.506,
+   "entropia_contexto": 0.929,
+   "valores_numericos_distintos": 0.638,
+   "moldes_distintos": 0.993,
+   "pct_outros": 19.5
+  },
+  "distratores": {
+   "explicabilidade_pct": 60.0,
+   "nda": 24.3,
+   "revisao": 0.0
+  }
+ },
+ "depois_v7": {
+  "exemplos": 2771,
+  "questoes": 2813,
+  "auditoria_gabarito": {
+   "CONFIRMADO": 1802,
+   "CEGO": 95,
+   "REFUTADO": 2,
+   "JUIZES": 914
+  },
+  "resolucoes": {
+   "adequada": 2781,
+   "correta_pouco_explicativa": 18,
+   "incompleta": 14,
+   "matematicamente_problematica": 0,
+   "nao_avaliavel": 0
+  },
+  "verificavel_pct": 63.9,
+  "near_dup_pares": 45,
+  "letras": {
+   "B": 566,
+   "C": 565,
+   "A": 562,
+   "E": 561,
+   "D": 559
+  },
+  "diversidade": {
+   "n": 2813,
+   "subtemas_distintos": 231,
+   "entropia_subtema": 0.945,
+   "entropia_raciocinio": 0.653,
+   "entropia_estrutura": 0.582,
+   "entropia_representacao": 0.502,
+   "entropia_contexto": 0.927,
+   "valores_numericos_distintos": 0.64,
+   "moldes_distintos": 0.993,
+   "pct_outros": 19.6
+  },
+  "distratores": {
+   "explicabilidade_pct": 60.1,
+   "nda": 24.7,
+   "revisao": 0.0
+  }
+ },
+ "distratores_explicabilidade": {
+  "v6": 60.01133626186765,
+  "v7": 60.074042432009115
+ }
+}

@@ -50,7 +50,7 @@ def origem(codigo):
         return "destilado"
     if codigo.startswith("INJ-"):
         return "injetado"
-    if codigo.startswith("SINT-"):
+    if codigo.startswith("SINT-") or codigo.startswith("REFORCO-"):
         return "sintetico"
     if "-L2-2026-09" in codigo:
         return "real_L2"

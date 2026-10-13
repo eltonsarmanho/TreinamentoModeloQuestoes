@@ -22,3 +22,4 @@ pandas>=2.0.0
 # Utilidades
 tqdm>=4.66.0
 python-dotenv>=1.0.0   # carrega HF_TOKEN do .env (rate limit/downloads do HF Hub)
+num2words==0.5.14      # escrita por extenso em pt_BR (src/reforco_distratores_v7.py)
