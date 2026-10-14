@@ -24,7 +24,8 @@ source venv/bin/activate   # or prefix every command with venv/bin/python
 python src/extract_data.py              # DB/questoes.db -> data/{train,val}.jsonl
 python src/generate_synthetic.py        # (optional) adds arithmetic items with Python-computed answers
 python src/distill_teacher.py           # (optional) distills from a larger teacher model, costs HF credits
-python src/train.py                     # QLoRA fine-tune (RTX 3060 6GB); --train/--val/--out/--checkpoints for control runs
+python src/train.py --train <jsonl> --val <jsonl> --out outputs/lora_<v> --checkpoints outputs/checkpoints_<v> [--seed N]
+                                        # QLoRA fine-tune (RTX 3060 6GB); --train/--val are REQUIRED (2026-10-14); writes MANIFESTO_TREINO.json
 python src/export_gguf.py               # merges LoRA + quantizes to GGUF Q4_K_M
 python tests/test_model.py              # interactive: generate one question via the real .gguf/llama-cli
 python tests/test_model.py --batch --val data/val_frozen_v1.jsonl --report outputs/relatorios/eval.json  # add --perfil for a latency breakdown

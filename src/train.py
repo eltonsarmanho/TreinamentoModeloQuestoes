@@ -1,22 +1,35 @@
 """Fine-tuning do Qwen3-1.7B com QLoRA 4-bit (Unsloth + TRL SFTTrainer).
 
-Calibrado para RTX 3060 Laptop 6GB (Ampere/bf16) e dataset pequeno (~300
-exemplos): adaptadores LoRA r=16 sobre o modelo base congelado em NF4 4-bit,
-loss apenas nos tokens do assistant e early stopping por eval_loss.
+Calibrado para RTX 3060 Laptop 6GB (Ampere/bf16): adaptadores LoRA r=16 (alpha=32,
+regra alpha=2r) sobre o modelo base congelado em NF4 4-bit, loss apenas nos tokens
+do assistant e early stopping por eval_loss. Hiperparâmetros conferidos contra a
+literatura de referência (LoRA Without Regret, Thinking Machines/Schulman 2025-09):
+r/alpha, LR 2e-4 (padrão QLoRA), batch efetivo 16 (<32), target_modules em todas as
+projeções lineares (attention + MLP) já seguem a receita; nada disso mudou em 2026-10-13.
 
-Se ocorrer OOM: reduzir MAX_SEQ_LENGTH para 768 ou BATCH_SIZE para 1
-(compensando em GRAD_ACCUMULATION).
+MAX_SEQ_LENGTH = 1024. Testado 2048 em 2026-10-13 (treino v7c, mesma base v7b): o gate
+multiseed reprovou (G2* 1→11 falhas, p=0,006; G3* 98,5%→88,3%, p=0,021; G7). Manter 1024.
+17 exemplos (0,6%) passam de 1024 tokens e são truncados; o efeito disso não foi medido.
 
-Uso:
-    python src/train.py
-Argumentos --train/--val/--out existem para rodar experimentos de CONTROLE
-(mesmo código e mesmos hiperparâmetros, dataset diferente) sem tocar em
-data/train.jsonl nem sobrescrever outputs/lora. Os padrões reproduzem
-exatamente o comportamento anterior.
+Se ocorrer OOM: reduzir BATCH_SIZE para 1 (compensando em GRAD_ACCUMULATION).
+
+Uso (2026-10-14: --train e --val passaram a ser OBRIGATÓRIOS):
+    python src/train.py --train data/train_curado_v7b.jsonl --val data/val_frozen_v1.jsonl \\
+        --out outputs/lora_<v> --checkpoints outputs/checkpoints_<v> [--seed 43]
+
+Motivo: sem argumentos o script treinava data/train.jsonl (963 exemplos), enquanto o ciclo
+v7 usava train_curado_v7b.jsonl (2.846). Um comando que treina o corpus errado sem avisar
+não pode ser o padrão. --out e --checkpoints continuam com padrão (outputs/lora,
+outputs/checkpoints); use nomes versionados para não sobrescrever.
+
+Cada treino grava MANIFESTO_TREINO.json (hash dos dados, versões, GPU, seed, truncagens,
+melhor checkpoint) em --checkpoints (ao iniciar) e ao lado do LoRA (ao terminar).
+Ver src/manifesto_treino.py.
 """
 
 import argparse
 from pathlib import Path
+
 
 from dotenv import load_dotenv
 
@@ -29,6 +42,8 @@ from unsloth.chat_templates import train_on_responses_only
 from datasets import load_dataset
 from transformers import EarlyStoppingCallback
 from trl import SFTConfig, SFTTrainer
+
+import manifesto_treino  # stdlib apenas; ver src/manifesto_treino.py
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"
@@ -51,12 +66,17 @@ SEED = 42
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--train", default=str(DATA_DIR / "train.jsonl"))
-    parser.add_argument("--val", default=str(DATA_DIR / "val.jsonl"))
+    parser.add_argument("--train", required=True,
+                        help="JSONL de treino (obrigatório: sem padrão, para não treinar o corpus errado)")
+    parser.add_argument("--val", required=True,
+                        help="JSONL de validação para eval_loss (obrigatório)")
+    parser.add_argument("--seed", type=int, default=SEED,
+                        help=f"seed de treino (padrão {SEED}); varie para medir a variância entre treinos")
     parser.add_argument("--out", default=str(OUTPUT_DIR / "lora"),
                         help="onde salvar os adaptadores LoRA")
     parser.add_argument("--checkpoints", default=str(OUTPUT_DIR / "checkpoints"))
     args = parser.parse_args()
+    seed = args.seed
 
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name=BASE_MODEL,
@@ -75,7 +95,7 @@ def main():
             "gate_proj", "up_proj", "down_proj",
         ],
         use_gradient_checkpointing="unsloth",
-        random_state=SEED,
+        random_state=seed,
     )
 
     dataset = load_dataset(
@@ -98,6 +118,26 @@ def main():
     dataset = dataset.map(
         format_chat, batched=True, remove_columns=["messages", "meta"]
     )
+
+    # Manifesto de entrada (gravado ANTES do treino: existe mesmo se o treino cair).
+    comprimentos = [len(tokenizer(t, add_special_tokens=False)["input_ids"])
+                    for t in dataset["train"]["text"]]
+    truncagem = manifesto_treino.contagem_truncadas(comprimentos, MAX_SEQ_LENGTH)
+    print(f"Exemplos de treino acima de {MAX_SEQ_LENGTH} tokens (truncados): "
+          f"{truncagem['acima_do_limite']}/{truncagem['exemplos']} (maior: {truncagem['maior']})")
+    import torch
+    gpu = torch.cuda.get_device_name(0) if torch.cuda.is_available() else None
+    manifesto = manifesto_treino.criar(
+        ROOT,
+        {"train": args.train, "val": args.val, "out": args.out, "checkpoints": args.checkpoints},
+        {"base_model": BASE_MODEL, "max_seq_length": MAX_SEQ_LENGTH, "lora_rank": LORA_RANK,
+         "lora_alpha": LORA_ALPHA, "batch_size": BATCH_SIZE, "grad_accumulation": GRAD_ACCUMULATION,
+         "learning_rate": LEARNING_RATE, "epochs": EPOCHS, "seed": seed,
+         "scheduler": "cosine", "warmup_ratio": 0.05, "weight_decay": 0.01,
+         "optim": "adamw_8bit", "bf16": True, "early_stopping_patience": 2,
+         "full_determinism": False},
+        gpu, truncagem)
+    manifesto_treino.gravar(manifesto, args.checkpoints)
 
     trainer = SFTTrainer(
         model=model,
@@ -125,7 +165,7 @@ def main():
             load_best_model_at_end=True,
             metric_for_best_model="eval_loss",
             greater_is_better=False,
-            seed=SEED,
+            seed=seed,
             report_to="none",
         ),
         callbacks=[EarlyStoppingCallback(early_stopping_patience=2)],
@@ -143,6 +183,12 @@ def main():
     lora_dir = Path(args.out)
     model.save_pretrained(str(lora_dir))
     tokenizer.save_pretrained(str(lora_dir))
+    manifesto["resultado"] = manifesto_treino.resumo_resultado(
+        trainer.state.log_history, result.metrics.get("train_loss"),
+        trainer.state.best_model_checkpoint, trainer.state.best_metric)
+    manifesto_treino.gravar(manifesto, args.checkpoints)
+    destino = manifesto_treino.gravar(manifesto, lora_dir)
+    print(f"Manifesto do treino: {destino}")
 
     print("\n===== Treino concluído =====")
     print(f"train_loss final: {result.metrics.get('train_loss', float('nan')):.4f}")

@@ -880,6 +880,30 @@ def houve_ganho_planejado(base_rel, cand_rel, modo="ajustado"):
 # REGRA: G6* aplica a MESMA tolerância (+5pp) ao viés agregado das rodadas
 # (_agregado()["vies_pct"], contagem de letras somada) em vez de exigi-la por
 # rodada. G1, G4, G5, G7 e G8 continuam por rodada.
+#
+# REVISÃO DE 2026-10-14 (G1*, G7*), registrada como feita DEPOIS de dois
+# vereditos reprovados (VEREDITO_v7c e VEREDITO_v7d, mesma base v7b). O DEFEITO
+# é o mesmo de G2/G3/G6, e foi medido: v7b e v7d são o MESMO experimento (mesma
+# base, hiperparâmetros e SEED=42) e deram vereditos opostos. Os dois reprovaram
+# por UM item em subconjuntos pequenos, sem tolerância:
+#   * G1: v7d rodada 1, alternativas_distintas 100 -> 96,7% (1 item em 30);
+#     v7c rodadas 2 e 3, idem.
+#   * G7: v7d rodada 1, 5º ano 100 -> 85,7% (1 item em 7); v7c rodada 3, idem.
+# Num item do 5º ano (n=7) o gate move 14 pp; "não pode cair" não distingue
+# isso de ruído. REGRA (aplicada só quando os relatórios trazem os campos por
+# item; senão vale a regra antiga por rodada, para não reinterpretar relatórios
+# velhos):
+#   * G1*: para cada uma das 7 flags, sobre os pares (rodada, item) somados,
+#     o candidato precisa de >= 99% E não pode piorar de forma significativa
+#     (McNemar exato, p < 0,05, mais pares piorados que melhorados);
+#   * G7*: para cada ano em ANOS_EM_RISCO, sobre os pares (rodada, item) do
+#     ano, o candidato precisa de >= PISO_ESTRUTURA_ANO de itens com estrutura
+#     ok (guarda absoluta, no mesmo espírito do TETO_FALHA_MULTISEED) E não
+#     pode piorar de forma significativa (mesmo teste).
+# Nada além de G1 e G7 foi afrouxado. Esta mudança NÃO foi desenhada para
+# aprovar v7c/v7d: G2* e G3* continuam reprovando-as (ver
+# ciclo_v7/SPEC.md, "Fase 1").
+PISO_ESTRUTURA_ANO = 0.90
 TETO_FALHA_MULTISEED = 0.05
 # Com 1 rodada o perfil seria só a régua frouxa sobre os MESMOS 30 itens; o
 # ganho de resolução vem das rodadas novas. Mínimo fixado junto com a regra.
@@ -917,6 +941,61 @@ def _agregado(rels):
     }
 
 
+def _tem_campos(rels, chaves):
+    return all(all(k in x for k in chaves) for r in rels for x in r.get("detalhes", [])) \
+        and any(r.get("detalhes") for r in rels)
+
+
+def _piorou_signif(jb, jc, pred):
+    piorou, melhorou, p = _mcnemar(jb, jc, pred)
+    return piorou > melhorou and p < 0.05, piorou, melhorou, p
+
+
+def gate_g1_agregado(bases, cands):
+    """G1* (revisão de 2026-10-14). None se os relatórios não trazem as flags por item."""
+    chaves = [f[:-4] for f in FLAGS_ESTRUTURAIS]
+    if not (_tem_campos(bases, chaves) and _tem_campos(cands, chaves)):
+        return None
+    jb, jc = _juntar_detalhes(bases), _juntar_detalhes(cands)
+    n = len(jc["detalhes"])
+    piores = []
+    for ch in chaves:
+        ok_c = sum(bool(x[ch]) for x in jc["detalhes"])
+        pct_c = 100 * ok_c / n if n else 0.0
+        sig, piorou, melhorou, p = _piorou_signif(jb, jc, lambda x, ch=ch: not x[ch])
+        if pct_c < 99.0 or sig:
+            ok_b = sum(bool(x[ch]) for x in jb["detalhes"])
+            piores.append(f"{ch}: {100 * ok_b / len(jb['detalhes']):.1f}% -> {pct_c:.1f}% "
+                          f"(n={n}; piorou {piorou}, melhorou {melhorou}, p={p:.3f})")
+    return Gate("G1*", "Contrato estrutural agregado (>=99% e sem piora signif.)").resolve(
+        not piores, "; ".join(piores) or f"7 flags >= 99% sem piora significativa (n={n})")
+
+
+def gate_g7_agregado(bases, cands):
+    """G7* (revisão de 2026-10-14). None se os relatórios não trazem ano/flags por item."""
+    chaves = [f[:-4] for f in FLAGS_ESTRUTURAIS] + ["ano"]
+    if not (_tem_campos(bases, chaves) and _tem_campos(cands, chaves)):
+        return None
+    ok = lambda x: all(bool(x[f[:-4]]) for f in FLAGS_ESTRUTURAIS)
+    regressoes, resumo = [], []
+    for ano in ANOS_EM_RISCO:
+        jb = {"detalhes": [x for x in _juntar_detalhes(bases)["detalhes"] if x["ano"] == ano]}
+        jc = {"detalhes": [x for x in _juntar_detalhes(cands)["detalhes"] if x["ano"] == ano]}
+        if not jb["detalhes"] or not jc["detalhes"]:
+            continue
+        n = len(jc["detalhes"])
+        frac_c = sum(ok(x) for x in jc["detalhes"]) / n
+        frac_b = sum(ok(x) for x in jb["detalhes"]) / len(jb["detalhes"])
+        sig, piorou, melhorou, p = _piorou_signif(jb, jc, lambda x: not ok(x))
+        txt = (f"{ano}: estrutura {100 * frac_b:.1f}% -> {100 * frac_c:.1f}% (n={n}; "
+               f"piorou {piorou}, melhorou {melhorou}, p={p:.3f})")
+        resumo.append(txt)
+        if frac_c < PISO_ESTRUTURA_ANO or sig:
+            regressoes.append(txt)
+    return Gate("G7*", f"Sem esquecimento em {'/'.join(ANOS_EM_RISCO)} (agregado)").resolve(
+        not regressoes, "; ".join(regressoes) or "; ".join(resumo) or "sem itens por ano")
+
+
 def avalia_multiseed(bases, cands, comparar_inferencia=False):
     """Retorna (gates, ganhos, agregado_base, agregado_cand). Ver bloco acima.
 
@@ -949,11 +1028,24 @@ def avalia_multiseed(bases, cands, comparar_inferencia=False):
             raise SystemExit(f"ABORTADO: rodada {_rodada(b)} com conjuntos de avaliação diferentes.")
         if b.get("retries", 1) != c.get("retries", 1):
             raise SystemExit(f"ABORTADO: rodada {_rodada(b)} com regenerações diferentes.")
+        # 2026-10-14: regime de prompt. O app manda o sufixo de diversidade (~90% do
+        # treino também); relatórios sem o campo valem como sem sufixo (regime antigo).
+        sb = bool((b.get("inferencia") or {}).get("sufixo", False))
+        sc = bool((c.get("inferencia") or {}).get("sufixo", False))
+        if sb != sc:
+            raise SystemExit(f"ABORTADO: rodada {_rodada(b)} com regimes de prompt diferentes "
+                             f"(sufixo baseline={sb}, candidato={sc}).")
 
     por_rodada = [(_rodada(b), avalia(b, c)) for b, c in pares]
     gates = []
+    agregados = {"G1": gate_g1_agregado(bases, cands), "G7": gate_g7_agregado(bases, cands)}
     for i, modelo in enumerate(por_rodada[0][1]):
         if modelo.id in ("G2", "G3", "G6"):
+            continue
+        if agregados.get(modelo.id) is not None:  # revisão de 2026-10-14
+            g = agregados[modelo.id]
+            g.bloqueante = modelo.bloqueante
+            gates.append(g)
             continue
         falhas = [f"rodada {r}: {gs[i].detalhe}" for r, gs in por_rodada if not gs[i].passou]
         gates.append(Gate(modelo.id, modelo.nome + " [todas as rodadas]", modelo.bloqueante).resolve(
@@ -1029,8 +1121,10 @@ def main_multiseed(args, carrega):
     print("=" * 78)
     print(f"  baseline:  {bases[0].get('artefato')}")
     print(f"  candidato: {cands[0].get('artefato')}")
+    com_sufixo = bool((cands[0].get("inferencia") or {}).get("sufixo", False))
     print(f"  rodadas:   {sorted(_rodada(r) for r in cands)}  "
-          f"(amostras pareadas: {ac['n']})\n")
+          f"(amostras pareadas: {ac['n']})")
+    print(f"  prompt:    {'COM sufixo de diversidade (regime do app)' if com_sufixo else 'SEM sufixo (regime antigo; difere do app)'}\n")
     for g in gates:
         marca = "PASSOU" if g.passou else "FALHOU"
         tipo = "bloqueante" if g.bloqueante else "informativo"
@@ -1052,6 +1146,7 @@ def main_multiseed(args, carrega):
             "baseline": bases[0].get("artefato"), "candidato": cands[0].get("artefato"),
             "conjunto_avaliacao": cands[0].get("conjunto_avaliacao"),
             "rodadas": sorted(_rodada(r) for r in cands),
+            "regime_prompt": "com_sufixo" if com_sufixo else "sem_sufixo",
             "inferencia_baseline": bases[0].get("inferencia"),
             "inferencia_candidato": cands[0].get("inferencia"),
             "agregado_baseline": ab, "agregado_candidato": ac, "ganhos": ganhos,

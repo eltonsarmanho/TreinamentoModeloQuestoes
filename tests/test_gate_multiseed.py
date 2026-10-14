@@ -175,5 +175,76 @@ class TestG6Agregado(unittest.TestCase):
         self.assertFalse(_gate(gates, "G6*").passou)  # 20% -> 40%
 
 
+def _rel_flags(rodada, sha, ruins=(), ano_ruim="5º", flag="alternativas_distintas"):
+    """Relatório com flags e ano por item: 7 itens do 5º, 19 do 9º, 4 do 2º."""
+    x = _rel(rodada, sha)
+    anos = ["5º"] * 7 + ["9º"] * 19 + ["2º"] * 4
+    for i, d in enumerate(x["detalhes"]):
+        d["ano"] = anos[i]
+        for f in pc.FLAGS_ESTRUTURAIS:
+            d[f[:-4]] = True
+        if i in ruins:
+            d[flag] = False
+    return x
+
+
+class TestG1G7Agregados(unittest.TestCase):
+    """Revisão de 2026-10-14: G1 e G7 decidem sobre os pares somados, não por rodada."""
+
+    def test_um_item_numa_rodada_nao_reprova_g1_nem_g7(self):
+        """Caso real v7d: 1 item do 5º ano reprovava G1 e G7 numa rodada de 5."""
+        bases = [_rel_flags(r, "b") for r in range(5)]
+        cands = [_rel_flags(r, "c", ruins={0} if r == 1 else ()) for r in range(5)]
+        gates, _, _, _ = pc.avalia_multiseed(bases, cands)
+        self.assertTrue(_gate(gates, "G1*").passou)   # 149/150 = 99,3%
+        self.assertTrue(_gate(gates, "G7*").passou)   # 5º: 34/35
+        self.assertNotIn("G1", [g.id for g in gates])
+        self.assertNotIn("G7", [g.id for g in gates])
+
+    def test_piso_absoluto_de_g1(self):
+        """2 itens ruins em 150 (98,7%) ficam abaixo de 99% e reprovam."""
+        bases = [_rel_flags(r, "b") for r in range(5)]
+        cands = [_rel_flags(r, "c", ruins={0, 10} if r == 0 else ()) for r in range(5)]
+        gates, _, _, _ = pc.avalia_multiseed(bases, cands)
+        self.assertFalse(_gate(gates, "G1*").passou)
+
+    def test_piora_sistematica_no_5o_ano_reprova_g7(self):
+        """Mesmo item ruim em todas as rodadas: 5/35 = 14% abaixo do piso de 90%."""
+        bases = [_rel_flags(r, "b") for r in range(5)]
+        cands = [_rel_flags(r, "c", ruins={0}) for r in range(5)]
+        gates, _, _, _ = pc.avalia_multiseed(bases, cands)
+        self.assertFalse(_gate(gates, "G7*").passou)
+
+    def test_sem_campos_por_item_vale_a_regra_antiga_por_rodada(self):
+        bases = [_rel(r, "b") for r in range(3)]
+        cands = [_rel(r, "c") for r in range(3)]
+        cands[1]["estrutura"]["alternativas_distintas_pct"] = 96.7
+        gates, _, _, _ = pc.avalia_multiseed(bases, cands)
+        g1 = _gate(gates, "G1")
+        self.assertFalse(g1.passou)
+        self.assertIn("rodada 1", g1.detalhe)
+
+
+class TestRegimeDePrompt(unittest.TestCase):
+    """2026-10-14: baseline e candidato têm de ser medidos no mesmo regime de prompt."""
+
+    def test_regimes_diferentes_abortam(self):
+        bases = [_rel(r, "b") for r in range(3)]
+        cands = [_rel(r, "c") for r in range(3)]
+        for c in cands:
+            c["inferencia"] = {"sufixo": True}
+        with self.assertRaises(SystemExit) as cm:
+            pc.avalia_multiseed(bases, cands)
+        self.assertIn("regimes de prompt", str(cm.exception))
+
+    def test_mesmo_regime_com_sufixo_passa(self):
+        bases = [_rel(r, "b") for r in range(3)]
+        cands = [_rel(r, "c") for r in range(3)]
+        for x in bases + cands:
+            x["inferencia"] = {"sufixo": True}
+        gates, _, _, _ = pc.avalia_multiseed(bases, cands)
+        self.assertTrue(_gate(gates, "G2*").passou)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -101,3 +101,124 @@ estática — ainda não rodado.
     venv/bin/python src/reforco_distratores_v7.py --num-per-skill 15   # já gerado
     venv/bin/python src/train.py --train data/train_curado_v7b.jsonl --val data/val.jsonl \
       --out outputs/lora_v7b --checkpoints outputs/checkpoints_v7b
+
+## Gate v7b e amostra humana (2026-10-13)
+
+Treinado em `train_curado_v7b.jsonl`, exportado, 5 rodadas de seed. O gate mecânico
+(`promover_checkpoint.py --perfil multiseed`, n=150) deu **PROMOVIDO**: todos os gates
+bloqueantes passaram, G2*/G3* pioraram sem significância (6 falhas novas pareadas, McNemar
+p=0,125), viés de gabarito melhorou (40,0%→35,3%), "Nenhuma das alternativas anteriores" caiu de
+58,0% para 12,7%. Veredito: `outputs/relatorios/VEREDITO_v7b_multiseed_n150.json`.
+
+A **amostra humana cega** (40 questões, 20 por origem, `outputs/amostra_humana_v7b_vs_baseline/`)
+contradisse o gate: validade geral 35,0% (v7b) contra 45,0% (baseline), IC95 sobrepostos
+(não significativo, mas sem sinal de melhora — mesmo padrão já visto na v6: 35% vs 50%).
+`correcao_matematica` caiu de 70% (baseline) para 60% (v7b), o ponto que o gate tinha dado como
+ganho. Os 6 itens que o professor reprovou por conta errada batem com o padrão do G2*/G3*:
+resolução calcula o valor certo e as 5 alternativas não o contêm. Outros motivos de reprovação
+não são do modelo: figura/tabela ausente no enunciado, geometria com premissa impossível
+(paralelogramo/triângulo), enunciado contraditório.
+
+**Conclusão: o gate mecânico não substitui a amostra humana — v7b não está pronta para
+publicação**, pelo mesmo motivo que travou a v6.
+
+## Correção do auditor de gabaritos (2026-10-13)
+
+`auditar_gabaritos_base.origem()` não reconhecia o prefixo `REFORCO-` dos itens de reforço
+sintético e caía no `real_banco` por padrão, classificando as 135 questões como `FRACO`
+("nunca_julgado_com_os_prompts_atuais") em vez de `sintetico`/`CONFIRMADO`. Bug só de
+rotulagem na auditoria — não afeta `check_consistency` nem o treino. Corrigido em
+`src/auditar_gabaritos_base.py` (prefixo `REFORCO-` tratado como `SINT-`); confirmado:
+0 FRACO, 135 questões agora `CONFIRMADO/sintetico`.
+
+## Não-determinismo de treino encontrado (2026-10-14)
+
+Testada a hipótese de que truncar 17/2.846 exemplos (0,6%) em `max_seq_length=1024`
+prejudicava o modelo: treino **v7c** (mesma base v7b, mesmos hiperparâmetros, `SEED=42`,
+só `max_seq_length=2048`) deu **NÃO PROMOVIDO** no gate (G1, G2*, G3*, G7 falharam).
+Para isolar a causa, rodou-se **v7d**: repetição **exata** da v7b (mesma base, mesmos
+hiperparâmetros, `SEED=42`, `max_seq_length=1024` de volta) — sem nenhuma mudança
+deliberada. **v7d também deu NÃO PROMOVIDO**, pelos mesmos 4 gates, com magnitude parecida
+à da v7c (`outputs/relatorios/VEREDITO_v7{b,c,d}_multiseed_n150.json`).
+
+| | v7b (PROMOVIDO) | v7c (seq=2048) | v7d (repetição de v7b) |
+|---|---|---|---|
+| G2* falhas | 1→6/150 (p=0,125) | 1→11/150 (p=0,006) | 1→9/150 (p=0,021) |
+| G3* consistência | 98,5%→92,9% (p=0,125) | 98,5%→88,3% (p=0,021) | 98,5%→89,7% (p=0,039) |
+| eval_loss (melhor época, sempre época 2) | 0,67204 | 0,67356 | 0,67242 |
+
+As três rodadas escolheram a **mesma época** como melhor checkpoint, com `eval_loss`
+quase idêntico (diferença na 4ª casa decimal) — então o early stopping escolhendo época
+diferente **não** é a causa. `src/train.py` fixa `SEED=42` em `get_peft_model(random_state=...)`
+e `SFTConfig(seed=...)`, mas não usa `full_determinism=True`, `cudnn.deterministic`, nem
+`CUBLAS_WORKSPACE_CONFIG`; o treino roda em bf16 com kernels Triton do Unsloth. Perturbações
+de ponto flutuante não controladas por essas flags, acumuladas ao longo do treino, bastam
+para produzir pesos finais que mudam o veredito do gate.
+
+**Conclusão (subagente Claude + segunda opinião do Jev, `typesafe/jev-router`, convergentes;
+resposta do Jev veio truncada por `max_tokens`, finish_reason=length, então não conta como
+veredito estruturado validado — só como leitura qualitativa):** a pergunta original sobre
+`max_seq_length` continua **sem resposta** — v7c e v7d reprovam pelos mesmos gates com
+magnitude parecida, então não dá para atribuir a reprovação ao `max_seq_length`
+especificamente. Mais grave: o gate mecânico, no tamanho de efeito que está em jogo aqui
+(poucos pontos percentuais em n=150, subconjuntos de ~14-19 itens em G7), decide **dentro do
+próprio ruído de treino-a-treino** — v7b e v7d são o mesmo experimento e deram vereditos
+opostos. Isso é o terceiro ciclo (depois de v6 e v7) em que PROMOVIDO mecânico não é
+confiável sozinho.
+
+**Decisão: não publicar v7b, v7c nem v7d.** v7b já tinha falhado na amostra humana (35%
+contra 45% do baseline, `correcao_matematica` caindo de 70% para 60%) antes mesmo deste
+achado. v7c/v7d reprovam no próprio gate, mas isso pode ser ruído de treino, não prova de
+que sejam piores. O baseline permanece em produção.
+
+**Pendências para o próximo ciclo, em ordem de custo-benefício** (não executadas ainda):
+1. Estudo de variância de seed: treinar a mesma config com 3-5 `SEED` diferentes e comparar
+   a distribuição dos gates, não um único ponto, antes de aceitar qualquer veredito de
+   promoção ou de hiperparâmetro.
+2. Ampliar a amostra humana (hoje n=20 por braço, ICs largos) para n≥100 por braço, ou
+   calibrar um juiz automático contra as 40 anotações já feitas.
+3. Medir quantos dos itens que o professor reprovou por "conta errada" tinham
+   `status="ok"` no verificador determinístico — quantifica a taxa de falso-positivo do
+   G2*/G3* atual.
+
+## Fase 1 do plano de melhoria: confiabilidade do treino e da medição (2026-10-14)
+
+Plano em `Doc/PROPOSTAS_MELHORIA_TREINO_2026-10.md`, seção 6c. Nenhum treino, export ou avaliação
+foi executado nesta fase.
+
+**1.1 Treino rastreável (feito).** `src/train.py` agora exige `--train` e `--val` (antes o padrão
+era `data/train.jsonl`, 963 exemplos, enquanto o ciclo usava `train_curado_v7b.jsonl`, 2.846),
+aceita `--seed` e grava `MANIFESTO_TREINO.json` em `--checkpoints` ao iniciar e ao lado do LoRA ao
+terminar: sha256 e nº de linhas de treino, validação e `DB/questoes.db`, commit do git, versões de
+unsloth/trl/transformers/peft/torch/bitsandbytes, GPU, hiperparâmetros, seed, nº de exemplos
+truncados por `MAX_SEQ_LENGTH` e melhor checkpoint. Código em `src/manifesto_treino.py`
+(`tests/test_manifesto_treino.py`). README e CLAUDE.md atualizados.
+
+**1.3 G1* e G7* agregados (feito, regra revisada DEPOIS de v7c e v7d reprovarem).** Em
+`src/promover_checkpoint.py`, perfil multiseed: G1 e G7 deixam de reprovar por 1 item numa
+rodada de 30 (ou de 7 no 5º ano). G1*: cada uma das 7 flags precisa de >= 99% nos pares somados
+e não pode piorar de forma significativa (McNemar). G7*: por ano de risco, >= 90% de estrutura
+ok nos pares somados e sem piora significativa. Vale só quando o relatório traz as flags e o ano
+por item; senão segue a regra antiga. Reaplicado aos relatórios reais, sem sobrescrever vereditos:
+
+| Candidato | Veredito com a regra nova | Gates que reprovam |
+|---|---|---|
+| v7b | PROMOVIDO (igual ao anterior) | nenhum |
+| v7c | NÃO PROMOVIDO | G1* (alternativas_distintas 100 -> 98,7%, 2 itens), G2*, G3* |
+| v7d | NÃO PROMOVIDO | G2*, G3* |
+
+A mudança não aprova v7c nem v7d: G2* e G3* continuam reprovando. Ela só retira G1/G7 como causa
+de reprovação por um item. `tests/test_gate_multiseed.py` cobre o caso real.
+
+**1.4 Regime de prompt (feito no gate; medição pendente).** O gate multiseed passa a abortar se
+baseline e candidato foram medidos em regimes diferentes (com e sem `--sufixo`), imprime o regime
+no veredito e grava `regime_prompt` no JSON. Os vereditos v6, v7b, v7c e v7d foram todos
+`sem_sufixo`, que é o regime de cerca de 10% do treino; o app e 90% do treino usam o sufixo.
+Para medir no regime do app é preciso reavaliar o baseline e o candidato com `--sufixo`
+(5 rodadas cada); isso é compute de GPU e fica para a Fase 2.
+
+**1.2 `val.jsonl` idêntico ao congelado (pendente de autorização).** Confirmado: `data/val.jsonl`
+e `data/val_frozen_v1.jsonl` têm os mesmos 30 `codigo_item`, em ordem diferente, e `val.jsonl`
+tem `meta.lote` a mais (sha256 distintos; `baseline_v1/val.jsonl` é idêntico ao congelado).
+Como a seed de geração vem do índice da linha, os dois arquivos não são intercambiáveis. O gate
+já aborta se os nomes diferem. Falta decidir se `val.jsonl` é regerado como cópia do congelado.

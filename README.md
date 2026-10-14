@@ -27,9 +27,10 @@ DB/questoes.db ──▶ extract_data.py ──▶ data/{train,val}.jsonl
 source venv/bin/activate
 pip install -r requirements.txt
 
-python src/extract_data.py            # 1. SQLite -> JSONL (303 questões textuais, split 90/10)
+python src/extract_data.py            # 1. SQLite -> JSONL (split 90/10; a contagem atual está nos relatórios de `Doc/`, não aqui)
 python src/generate_synthetic.py      # 1b. (opcional) aumenta data/train.jsonl com aritmética sintética
-python src/train.py                   # 2. fine-tuning QLoRA na RTX 3060 6GB
+python src/train.py --train data/train_curado_v7b.jsonl --val data/val_frozen_v1.jsonl \
+    --out outputs/lora_<v> --checkpoints outputs/checkpoints_<v>   # 2. QLoRA na RTX 3060 6GB; --train/--val obrigatórios (grava MANIFESTO_TREINO.json); --seed N para medir variância
 python src/evaluate.py                # 3. métricas de qualidade + tempo de resposta (GPU, dev)
 python src/evaluate.py --baseline     # (opcional) comparação A/B com o modelo base
 python src/export_gguf.py             # 4. GGUF Q4_K_M (~1.1GB) para o app
