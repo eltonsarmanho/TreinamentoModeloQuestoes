@@ -75,11 +75,20 @@ def main():
     parser.add_argument("--out", default=str(OUTPUT_DIR / "lora"),
                         help="onde salvar os adaptadores LoRA")
     parser.add_argument("--checkpoints", default=str(OUTPUT_DIR / "checkpoints"))
+    # 2026-10-14 (Fase 3.1): o Qwen3-4B zero-shot superou o 1.7B fine-tunado na amostra humana
+    # (núcleo 70% x 50%, ciclo_v7/SPEC.md). Estes argumentos permitem treinar o 4B com a mesma
+    # receita; os padrões reproduzem exatamente o treino do 1.7B.
+    parser.add_argument("--base-model", default=BASE_MODEL,
+                        help=f"modelo base (padrão {BASE_MODEL}; ex.: unsloth/Qwen3-4B-unsloth-bnb-4bit)")
+    parser.add_argument("--batch-size", type=int, default=BATCH_SIZE,
+                        help="batch por passo; reduza no 4B (6 GB de VRAM) e compense em --grad-accum")
+    parser.add_argument("--grad-accum", type=int, default=GRAD_ACCUMULATION)
     args = parser.parse_args()
     seed = args.seed
+    base_model, batch_size, grad_accum = args.base_model, args.batch_size, args.grad_accum
 
     model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name=BASE_MODEL,
+        model_name=base_model,
         max_seq_length=MAX_SEQ_LENGTH,
         load_in_4bit=True,
     )
@@ -130,8 +139,8 @@ def main():
     manifesto = manifesto_treino.criar(
         ROOT,
         {"train": args.train, "val": args.val, "out": args.out, "checkpoints": args.checkpoints},
-        {"base_model": BASE_MODEL, "max_seq_length": MAX_SEQ_LENGTH, "lora_rank": LORA_RANK,
-         "lora_alpha": LORA_ALPHA, "batch_size": BATCH_SIZE, "grad_accumulation": GRAD_ACCUMULATION,
+        {"base_model": base_model, "max_seq_length": MAX_SEQ_LENGTH, "lora_rank": LORA_RANK,
+         "lora_alpha": LORA_ALPHA, "batch_size": batch_size, "grad_accumulation": grad_accum,
          "learning_rate": LEARNING_RATE, "epochs": EPOCHS, "seed": seed,
          "scheduler": "cosine", "warmup_ratio": 0.05, "weight_decay": 0.01,
          "optim": "adamw_8bit", "bf16": True, "early_stopping_patience": 2,
@@ -148,9 +157,9 @@ def main():
             output_dir=args.checkpoints,
             dataset_text_field="text",
             max_seq_length=MAX_SEQ_LENGTH,
-            per_device_train_batch_size=BATCH_SIZE,
-            per_device_eval_batch_size=BATCH_SIZE,
-            gradient_accumulation_steps=GRAD_ACCUMULATION,
+            per_device_train_batch_size=batch_size,
+            per_device_eval_batch_size=batch_size,
+            gradient_accumulation_steps=grad_accum,
             num_train_epochs=EPOCHS,
             learning_rate=LEARNING_RATE,
             lr_scheduler_type="cosine",

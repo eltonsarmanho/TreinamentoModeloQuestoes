@@ -413,13 +413,25 @@ autorização sua antes · **[humano]** depende do professor.
 
 ### Fase 3: ciclo v8 de dados (3–4 dias, sem API ou com teto)
 
+**Revisão de 2026-10-14**, depois da Fase 2 e da amostra humana (ver `ciclo_v7/SPEC.md` e
+`outputs/amostra_humana/ANALISE_ERROS_CORRECAO.md`). Fatos que a motivam: 1 de 6 vereditos do gate
+passou entre as 3 seeds do v7b; o v7b teve 25% de validade humana contra 15% do baseline (ICs sobrepostos)
+e correção matemática de 25% contra 45%; 9 de 13 itens `ok` do candidato foram reprovados pelo professor;
+os erros se concentram em geometria e probabilidade (0/8 válidas nos dois braços). Mudanças em relação à
+versão original: 2 braços em vez de 3, 1 seed por braço na triagem, e a etapa 3.0 antes de qualquer treino.
+
 | # | Ação | Custo |
 |---|---|---|
+| 3.0 | Fechar o diagnóstico antes de treinar: (a) aviso não bloqueante `gabarito_so_em_passo_intermediario` no verificador (Q6415, Q1944) e (b) revisar uma amostra dos 66 itens de `train_curado_v7b` que ele atingiria, para saber se o corpus de treino contém o mesmo defeito | [sem API] |
 | 3.1 | Dividir os 75 `REFORCO-` e os demais multi-questão em exemplos de `quantidade=1` | [sem API] |
-| 3.2 | Remover a alternativa E fixa na extração (contrato aceita 4 ou 5 alternativas; grammar e verificador ajustados) | [sem API] |
-| 3.3 | Montar os 3 braços: (i) v7b completa, (ii) v7b filtrada a CONFIRMADO + `ok` + juiz cego, (iii) 963 originais + injeções CONFIRMADO | [sem API] |
-| 3.4 | Treinar 3 braços × 3 seeds = 9 treinos; export e gate multiseed em cada | GPU local |
-| 3.5 | Teste dentro do protocolo: 2 épocas contra 3 épocas no melhor braço | GPU local |
+| 3.2 | Remover a alternativa E fixa na extração (contrato aceita 4 ou 5 alternativas; grammar e verificador ajustados). Só se o professor aprovar o efeito: hoje o baseline usa "nenhuma das anteriores" em ~60% das questões, o v7b em 4–8% | [sem API] |
+| 3.3 | Montar 2 braços: (i) v7b completa (controle, já treinada), (ii) v7b filtrada: CONFIRMADO + `ok` + sem o aviso de 3.0 + juiz cego, com reforço de geometria e probabilidade só de itens revisados por humano ou verificados por regra, nunca gerados pelo próprio modelo. O braço dos 963 originais fica como opção, se (ii) piorar | [sem API] |
+| 3.4 | Treinar o braço (ii) com seed 44 (a que passou), export e gate multiseed nos dois regimes. Só se o gate e a leitura dos erros indicarem melhora, repetir com as seeds 42 e 43 | GPU local |
+| 3.5 | Teste 2 épocas contra 3 só no braço que sobreviver, dentro do protocolo (seed 43 usou o checkpoint da época 1 por `load_best_model_at_end`; ver `MANIFESTO_TREINO.json`) | GPU local |
+
+**Parada da Fase 3:** se o braço (ii) não melhorar a correção matemática nos itens revisados e a taxa
+de erros em geometria e probabilidade, não gastar mais treinos; a causa está no gerador e na curadoria,
+não na quantidade de dados ou nas épocas. Gate ou treino sem amostra humana nunca decide sozinho.
 
 ### Fase 4: aceitação humana (1 semana, depende do professor)
 

@@ -1391,12 +1391,45 @@ def avisos_consistencia(questao):
     return avisos
 
 
+def avisos_gabarito(questao):
+    """Aviso NÃO BLOQUEANTE "gabarito_so_em_passo_intermediario" (2026-10-14).
+
+    Origem: amostra humana cega do v7b seed 44. A regra (1) de check_consistency_detalhado
+    aprova o gabarito se o seu valor é resultado de QUALQUER conta da resolução, inclusive
+    passo parcial (preservada para não regredir itens hoje `ok`). Dois itens que o professor
+    reprovou passaram só por isso: soma 200+300+500+250 = 1250 com gabarito 1000 (a soma
+    parcial 500+500), e "45π" com gabarito "1500 - 300π" (casou o 1500 do outro volume).
+
+    Dispara quando o motivo é `valor_bate` e o resultado FINAL da resolução não é o valor do
+    gabarito. Nunca muda status nem o veredito; sinal de revisão, não de rejeição: em
+    train_curado_v7b atinge ~2,2% dos itens, em sua maioria legítimos (sistemas em que o
+    passo final não é a resposta), contra ~4% no v7b s44. Ver
+    outputs/amostra_humana/ANALISE_ERROS_CORRECAO.md.
+    Retorna [] ou [{"tipo": "gabarito_so_em_passo_intermediario", "final": número}].
+    """
+    if not isinstance(questao, dict):
+        return []
+    ok, _sug, motivo = check_consistency_detalhado(questao)
+    if motivo != "valor_bate":
+        return []
+    alternativas = questao["alternativas"]
+    gabarito = questao["resposta_correta"]
+    resultados = [_numero(r[1]) for r in _contas_ricas(questao.get("resolucao_passo_a_passo", ""))]
+    if not resultados:
+        return []
+    final = resultados[-1]
+    if final == _leading_number(alternativas.get(gabarito)) or \
+            final in _valores_alternativa(alternativas.get(gabarito)):
+        return []
+    return [{"tipo": "gabarito_so_em_passo_intermediario", "final": final}]
+
+
 def detalhe_consistencia(questao):
     """check_consistency_detalhado + avisos, num dict (campo de detalhe/relatório):
     {"consistente", "sugestao", "motivo", "avisos"}. Os avisos não alteram o veredito."""
     ok, sugestao, motivo = check_consistency_detalhado(questao)
     return {"consistente": ok, "sugestao": sugestao, "motivo": motivo,
-            "avisos": avisos_consistencia(questao)}
+            "avisos": avisos_consistencia(questao) + avisos_gabarito(questao)}
 
 
 def resposta_fora_das_alternativas(questao):

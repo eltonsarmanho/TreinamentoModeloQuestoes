@@ -64,6 +64,7 @@ from schema_utils import (
     IMAGE_PATTERN,
     MOTIVO_FORA_DAS_ALTERNATIVAS,
     avisos_consistencia,
+    avisos_gabarito,
     depende_de_visual_ausente,
     check_consistency,
     check_consistency_detalhado,
@@ -76,7 +77,10 @@ from verificador_geometria import GEO_REJEITA, MODO_GEOMETRIA, MODOS_GEOMETRIA, 
 
 ROOT = Path(__file__).resolve().parent.parent
 DB_PATH = ROOT / "DB" / "questoes.db"
-VAL_PATH = ROOT / "data" / "val.jsonl"
+# 2026-10-14: o padrão é o conjunto CONGELADO. data/val.jsonl tem os mesmos 30 itens em outra
+# ordem, e a seed de geração deriva do índice da linha (base_seed=i), então os dois arquivos
+# NÃO são intercambiáveis. val.jsonl fica só como histórico.
+VAL_PATH = ROOT / "data" / "val_frozen_v1.jsonl"
 REPORT_PATH = ROOT / "outputs" / "eval_report_gguf.json"
 GRAMMAR_PATH = ROOT / "grammars" / "questao.gbnf"
 
@@ -94,6 +98,14 @@ DEFAULT_THREADS = max(1, min(8, (os.cpu_count() or 8) // 2))
 # arredondamento numérico, por isso a troca passou pelo gate multiseed.
 MOTORES = ("server", "cli")
 MOTOR = "server"
+# 2026-10-14 (Fase 3.1): adaptador LoRA em GGUF aplicado em tempo de execução sobre o .gguf base
+# (--lora). Usado no Qwen3-4B fine-tunado: o merge em fp16 de um 4B não cabe no disco. O
+# artefato avaliado passa a ser o PAR (base, adaptador), e o sha256 do relatório cobre os dois.
+LORA_PATH = None
+
+
+def _args_lora():
+    return ["--lora", str(LORA_PATH)] if LORA_PATH else []
 # MEDIDO (2026-09, tokenizer Qwen/Qwen3-1.7B) sobre as 1.188 respostas ACEITAS
 # dos relatórios outputs/diversidade_*.json, reconstruídas como
 # json.dumps({"questoes": [q]}, ensure_ascii=False) — a unidade real, já que
@@ -230,7 +242,7 @@ class _Servidor:
 
     @classmethod
     def garantir(cls, llama_cli, gguf_path, threads):
-        chave = (str(gguf_path), int(threads))
+        chave = (str(gguf_path), int(threads), str(LORA_PATH))
         if cls.proc is not None and cls.chave == chave and cls.proc.poll() is None:
             return cls.url
         cls.parar()
@@ -243,7 +255,7 @@ class _Servidor:
         # -np 1: com slots automáticos o -c seria dividido entre eles e o
         # pior prompt (890 tokens) não caberia; e um slot só mantém o KV do
         # prefixo comum entre chamadas consecutivas.
-        cmd = [str(binario), "-m", str(gguf_path), "--jinja", "-rea", "off",
+        cmd = [str(binario), "-m", str(gguf_path), *_args_lora(), "--jinja", "-rea", "off",
                "-c", str(N_CTX), "-np", "1", "-t", str(threads),
                "--host", "127.0.0.1", "--port", str(porta), "--log-disable"]
         inicio = time.perf_counter()
@@ -327,7 +339,7 @@ def generate(llama_cli, gguf_path, user_prompt, threads, max_new_tokens, seed=No
                                 max_new_tokens, seed, grammar)
     cmd = [
         str(llama_cli),
-        "-m", str(gguf_path),
+        "-m", str(gguf_path), *_args_lora(),
         "--jinja",
         "-sys", SYSTEM_PROMPT,
         "-p", user_prompt,
@@ -695,7 +707,7 @@ def generate_validated(llama_cli, gguf_path, user_prompt, threads, max_new_token
             return {"text": text, "obj": questao, "flags": flags,
                     "status": "ok" if score == 8 else "nao_verificavel",
                     "motivo_consistencia": motivo, "geometria": geo,
-                    "avisos_consistencia": avisos_consistencia(questao),
+                    "avisos_consistencia": avisos_consistencia(questao) + avisos_gabarito(questao),
                     "regeneracoes": regeneracoes, "reprovacoes_geometria": reprov_geo,
                     "gen_tps": gen_tps, "elapsed": total_elapsed}
         if attempt < retries:
@@ -736,7 +748,7 @@ def generate_validated(llama_cli, gguf_path, user_prompt, threads, max_new_token
         status = "falha"
     return {"text": text, "obj": questao, "flags": flags, "status": status,
             "motivo_consistencia": motivo, "geometria": geo,
-            "avisos_consistencia": avisos_consistencia(questao),
+            "avisos_consistencia": avisos_consistencia(questao) + avisos_gabarito(questao),
             "regeneracoes": regeneracoes, "reprovacoes_geometria": reprov_geo,
             "gen_tps": gen_tps, "elapsed": total_elapsed}
 
@@ -1041,9 +1053,18 @@ def batch(llama_cli, gguf_path, threads, num_samples, grammar=None, retries=1, r
     # diferentes" rodaram sobre o mesmo .gguf sem que nada acusasse. Com o
     # hash no relatório, dois relatórios com o mesmo artefato são detectáveis.
     artefato_sha256 = hashlib.sha256(Path(gguf_path).read_bytes()).hexdigest()
+    base_sha256, lora_sha256 = artefato_sha256, None
+    if LORA_PATH:
+        # Base + adaptador: o par é o artefato. Sem isto, o braço zero-shot e o fine-tunado
+        # (mesmo .gguf base) teriam o mesmo sha256 e o gate os trataria como o mesmo modelo.
+        lora_sha256 = hashlib.sha256(Path(LORA_PATH).read_bytes()).hexdigest()
+        artefato_sha256 = hashlib.sha256((base_sha256 + lora_sha256).encode()).hexdigest()
     report = {
-        "artefato": str(gguf_path),
+        "artefato": str(gguf_path) + (f" + lora {LORA_PATH}" if LORA_PATH else ""),
         "artefato_sha256": artefato_sha256,
+        "base_sha256": base_sha256,
+        "lora": str(LORA_PATH) if LORA_PATH else None,
+        "lora_sha256": lora_sha256,
         "conjunto_avaliacao": str(val_path or VAL_PATH),
         "motor": f"llama.cpp (llama-{MOTOR})",
         # Configuração que muda o texto gerado (ver MOTOR): o gate multiseed
@@ -1160,13 +1181,15 @@ def batch(llama_cli, gguf_path, threads, num_samples, grammar=None, retries=1, r
 
 
 def main():
-    global PERFIL_CHAMADAS, MOTOR
+    global PERFIL_CHAMADAS, MOTOR, LORA_PATH
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("--llama-cli", help="caminho do binário llama-cli")
     parser.add_argument("--model", help="caminho do .gguf (padrão: acha em outputs/)")
     parser.add_argument("--threads", type=int, default=DEFAULT_THREADS)
+    parser.add_argument("--lora", default=None,
+                        help="adaptador LoRA em .gguf aplicado sobre --model (llama.cpp --lora)")
 
     parser.add_argument("--ano", help="ex: 5º — pula o modo interativo")
     parser.add_argument("--habilidade", help="ex: H08")
@@ -1185,9 +1208,9 @@ def main():
     parser.add_argument("--max-tentativas-diversidade", type=int, default=2,
                         help="regenerações extras por slot quando a questão viola a diversidade")
 
-    parser.add_argument("--batch", action="store_true", help="roda sobre data/val.jsonl")
+    parser.add_argument("--batch", action="store_true", help="roda sobre data/val_frozen_v1.jsonl")
     parser.add_argument("--num-samples", type=int, default=None)
-    parser.add_argument("--val", default=None, help="conjunto de avaliação (padrão: data/val.jsonl)")
+    parser.add_argument("--val", default=None, help="conjunto de avaliação (padrão: data/val_frozen_v1.jsonl)")
     parser.add_argument("--report", default=None, help="arquivo de saída do relatório")
     parser.add_argument("--seed-rodada", type=int, default=0,
                         help="rodada de seeds do batch (0 = seeds históricas); use a MESMA "
@@ -1212,6 +1235,10 @@ def main():
     args = parser.parse_args()
 
     MOTOR = args.motor
+    if args.lora:
+        LORA_PATH = Path(args.lora)
+        if not LORA_PATH.exists():
+            raise SystemExit(f"adaptador LoRA não encontrado: {LORA_PATH}")
     if args.perfil:
         PERFIL_CHAMADAS = []
 

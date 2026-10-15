@@ -77,9 +77,13 @@ data/train_curado.jsonl                   (the curated corpus most tooling reads
 data/train_curado_v3.jsonl                (current training set: ~2.7k examples, 79 skills, all 6 grades)
 ```
 
-`data/val.jsonl` and `data/val_frozen_v1.jsonl` are **byte-identical across
-every cycle** — no new item is ever added — so every promotion gate compares
-models on exactly the same questions. `data/val_novos_v1.jsonl` is a separate
+`data/val_frozen_v1.jsonl` is **byte-identical across every cycle** — no new item
+is ever added — so every promotion gate compares models on exactly the same
+questions. It is the default evaluation set of `tests/test_model.py` and
+`src/evaluate.py`, and the `--val` to pass to `train.py`. `data/val.jsonl` holds the
+same 30 `codigo_item` in a different order (and an extra `meta.lote`), so it is
+**not interchangeable**: generation seeds derive from the line index. Keep it as
+history only; a test fails if a script defaults to it for evaluation. `data/val_novos_v1.jsonl` is a separate
 holdout used only to measure coverage of grades the base set didn't originally
 have. **Never write to `data/train_curado.jsonl`, `data/train.jsonl` or any
 `val*.jsonl`** unless explicitly asked — most pipeline scripts treat these as

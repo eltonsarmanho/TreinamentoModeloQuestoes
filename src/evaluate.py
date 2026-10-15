@@ -45,7 +45,7 @@ from schema_utils import (
 )
 
 ROOT = Path(__file__).resolve().parent.parent
-VAL_PATH = ROOT / "data" / "val.jsonl"
+VAL_PATH = ROOT / "data" / "val_frozen_v1.jsonl"  # 2026-10-14: congelado; val.jsonl só histórico
 LORA_DIR = ROOT / "outputs" / "lora"
 REPORT_PATH = ROOT / "outputs" / "eval_report.json"
 
@@ -98,7 +98,7 @@ def main():
     parser.add_argument("--model-path", default=None,
                         help="caminho explícito do modelo/adaptador a avaliar")
     parser.add_argument("--val", default=str(VAL_PATH),
-                        help="conjunto de avaliação (padrão: data/val.jsonl)")
+                        help="conjunto de avaliação (padrão: data/val_frozen_v1.jsonl)")
     parser.add_argument("--report", default=str(REPORT_PATH),
                         help="arquivo de saída do relatório")
     args = parser.parse_args()

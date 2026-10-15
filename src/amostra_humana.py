@@ -53,6 +53,11 @@ LETRAS = ("A", "B", "C", "D", "E")
 DIMENSOES = ("correcao_matematica", "resposta_unica", "dados_suficientes",
              "aderencia_ano_habilidade", "contexto_plausivel", "dificuldade_adequada")
 OBRIGATORIAS = DIMENSOES + ("valida_geral",)
+# Critério NÚCLEO (decisão do responsável, 2026-10-14): a questão tem de sair com enunciado completo e
+# correto, gabarito correto e distratores consistentes. A dificuldade deixa de decidir (o professor usa
+# uma régua uma casa abaixo do rótulo empírico do SAEB, também nos itens reais: ver ciclo_v7/SPEC.md).
+# `valida_geral` continua sendo apurada, mas a leitura principal passa a ser a validade_nucleo.
+NUCLEO = ("correcao_matematica", "resposta_unica", "dados_suficientes")
 COLUNAS_FOLHA = (["id", "ano", "habilidade", "descricao_habilidade", "dificuldade_pedida",
                   "enunciado"] + list(LETRAS) + ["resolucao", "gabarito_modelo"]
                  + list(OBRIGATORIAS) + ["comentario"])
@@ -312,6 +317,8 @@ def apurar_linhas(validas, chave):
 
     def bloco(linhas):
         return {"validade": _taxa(sum(l["valida_geral"] == "s" for l in linhas), len(linhas)),
+                "validade_nucleo": _taxa(sum(all(l[d] == "s" for d in NUCLEO) for l in linhas),
+                                         len(linhas)),
                 "dimensoes": {d: _taxa(sum(l[d] == "s" for l in linhas), len(linhas))
                               for d in DIMENSOES}}
     por_u, por_o = grupo(lambda i: i["unidade"]), grupo(lambda i: i["origem"])
@@ -335,6 +342,10 @@ def _linha(rotulo, t):
 def imprimir(res):
     print("=" * 74 + "\nAMOSTRA HUMANA — validade (valida_geral = s), IC de Wilson 95%\n" + "=" * 74)
     print(_linha("GERAL", res["geral"]["validade"]))
+    print(f"\nVALIDADE NÚCLEO ({' + '.join(NUCLEO)}), critério principal")
+    print(_linha("GERAL (núcleo)", res["geral"]["validade_nucleo"]))
+    for o, b in res["por_origem"].items():
+        print(_linha(f"{o} (núcleo)", b["validade_nucleo"]))
     print("\nPor unidade temática")
     for u, b in res["por_unidade"].items():
         print(_linha(u, b["validade"]))
