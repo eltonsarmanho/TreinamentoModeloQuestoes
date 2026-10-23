@@ -33,6 +33,15 @@ python src/promover_checkpoint.py --perfil multiseed \
   --baseline-gguf-seeds <3 reports> --candidato-gguf-seeds <3 reports>  # promotion gate, see below
 python src/push_to_hub.py --repo-id <org>/<name> --lora-dir ... --gguf-dir ... --data-dir ... --model-card ...
 
+# Gemma 3 1B variant (scripts in src/gemma/, outputs in outputs/gemma3/; full pipeline: Doc/PIPELINE_GEMMA3.md)
+python src/gemma/train_gemma.py --checar-formato --train data/train_curado_v7b_fix1.jsonl --val data/val_frozen_v1.jsonl  # no GPU
+python src/gemma/export_gguf_gemma.py --base-only --out outputs/gemma3/gguf_zeroshot      # zero-shot baseline; writes to <out>/ or <out>_gguf/ (varies) — use the path it prints
+python src/gemma/train_gemma.py --train data/train_curado_v7b_fix1.jsonl --val data/val_frozen_v1.jsonl \
+  --out outputs/gemma3/lora_s42 --checkpoints outputs/gemma3/checkpoints_s42 --seed 42
+python src/gemma/export_gguf_gemma.py --lora outputs/gemma3/lora_s42 --out outputs/gemma3/gguf_s42
+python src/gemma/verificar_template_gemma.py --gguf <.gguf printed above> [--tokenizer outputs/gemma3/lora_s42]
+python src/promover_checkpoint.py --perfil multiseed --sem-dificuldade --baseline-gguf-seeds <gemma zs> --candidato-gguf-seeds <gemma ft>
+
 # Tests (plain pytest; unittest-style TestCase classes, no pytest.ini)
 venv/bin/python -m pytest -q tests                              # full suite
 venv/bin/python -m pytest -q tests/test_gate_multiseed.py       # one file
@@ -167,6 +176,16 @@ Three profiles, selected with `--perfil`:
   it requires the same sha256 and a different `report["inferencia"]`, and
   counts latency as a gain.
 
+  **2026-10-22 (owner decision, taken before measuring v8rftb, not a post-reproval revision):** in the
+  multiseed CLI, G5 (difficulty) and G8 (speed) are informative and G9 is dropped; difficulty leaves
+  the gains. `--gates-completos` restores the previous rule to reproduce old verdicts. The function
+  `avalia_multiseed` keeps the old default (`sem_g5_g8_g9=False`).
+
+  **2026-10-23 (post-reproval revision, owner decision):** G1\* counts only delivered items
+  (`status != "falha"`). The v8rftb verdict was reproved by one discarded item (B = D, 89/90 = 98.9%)
+  that G2\* already counts. A delivered item with a bad structural flag still reproves. Same switch:
+  on in the CLI, off with `--gates-completos`; `avalia_multiseed(g1_so_entregues=False)` by default.
+
 **Observations and the blind human sample (P0-4, informative only).** Every
 verdict (profiles `n1` and `multiseed`) ends with an `OBSERVAÇÃO (não
 bloqueante)` block and writes it to `observacoes` in the output JSON
@@ -261,6 +280,45 @@ discordância do professor vai para revisão humana) sobre `sabia_v6.py` — cam
 versão de prompt/hash do item/custo/resultado e cache por versão de prompt; falha, truncagem ou JSON
 inválido = abstenção. Preços em `ciclo_v6/precos_maritaca.json`, nunca no código. A D3 (dificuldade do
 revisor decide a entrada) continua suspensa: não use `dificuldade_real` como evidência.
+
+### Variante Gemma 3 1B-it (2026-10-19)
+
+A second model family lives in this repo: `unsloth/gemma-3-1b-it` (`Gemma3ForCausalLM`, pure text),
+QLoRA. **Everything Gemma-specific goes in `src/gemma/`** (`train_gemma.py`, `export_gguf_gemma.py`,
+`verificar_template_gemma.py`, `gemma_formato.py`); artifacts go in `outputs/gemma3/` and
+`outputs/relatorios/gemma3/`. It reuses the shared data, `val_frozen_v1.jsonl`, `tests/test_model.py`,
+`manifesto_treino.py` and the gate. `src/gguf_meta.py` stays in `src/` because the harness writes
+`familia_modelo` (GGUF `general.architecture`) into every report for both families.
+`src/train.py` / `src/export_gguf.py` remain the Qwen line; don't add Gemma logic to them.
+
+A Gemma 4 E2B attempt (`Gemma4ForConditionalGeneration`) was tried first and abandoned: that class
+is excluded from Unsloth's fused cross-entropy kernel (`unsloth_zoo/fused_losses/forward_install.py`,
+`_is_eligible_class` only accepts `*ForCausalLM`), so it OOM'd on this GPU (5.67 GB usable) even at
+QLoRA 4-bit and `max_seq_length=768`. Its code, cached weights (~17 GB) and partial output artifacts
+were removed — don't reintroduce Gemma 4 without first checking Unsloth added fused-loss coverage
+for `ForConditionalGeneration`. Full writeup: `Doc/PIPELINE_GEMMA3.md` ("Histórico").
+
+- **Never compare Gemma with Qwen.** Not in the gate, not as the baseline of a Gemma promotion, and
+  not in human samples used to promote. The Gemma baseline is Gemma 3 1B-it zero-shot, exported by
+  `export_gguf_gemma.py --base-only` (same conversion/quantization path as the candidate, so the two
+  differ only in the adapter). `promover_checkpoint.avalia_multiseed` aborts when the reports'
+  `familia_modelo` differ. Don't weaken that guard.
+- **Gates:** `multiseed` with `--sem-dificuldade`. G5 (difficulty adherence) is informative and
+  difficulty is out of the gains. This was the owner's decision for this family, not a post-reproval
+  revision. Since 2026-10-22 the multiseed CLI makes G5 informative for every family (see the gate section); `--gates-completos` restores the old rule. All other gates are unchanged.
+- **Corpus:** `data/train_curado_v7b_fix1.jsonl`. **Eval regime:** `--sufixo`, ≥3 (prefer 5) seed rounds
+  per arm, ≥3 training seeds before trusting a verdict. The human blind sample (núcleo criterion) decides.
+- Neither Gemma 2 nor Gemma 3 has a true `system` turn: Gemma 2's template raises an exception on a
+  `system` message; Gemma 3's silently folds it as a prefix of the first `user` turn. `gemma_formato.py`
+  / `train_gemma.py` pass the repo's (system, user, assistant) messages straight to
+  `apply_chat_template`, which the Gemma 3 template handles without preprocessing.
+- Gemma 3 1B GGUF export uses Unsloth's `save_pretrained_gguf` directly (same pattern as
+  `src/export_gguf.py` for Qwen) — no merge/convert workaround needed, unlike the abandoned Gemma 4
+  attempt. Run `verificar_template_gemma.py` on both `.gguf` before the gate. It fails if the
+  llama-server prompt (`--jinja -rea off`) differs from the training render (no `<bos>`).
+- `save_pretrained_gguf` writes the merged 16-bit model to `<out>/` and the quantized `.gguf` to
+  `<out>_gguf/` (an Unsloth quirk, not consistent across runs — same as the Qwen export). Always use
+  the exact path `export_gguf_gemma.py` prints (or glob both dirs), never assume `<out>/<name>.gguf`.
 
 ### Secrets
 

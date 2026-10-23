@@ -951,23 +951,40 @@ def _piorou_signif(jb, jc, pred):
     return piorou > melhorou and p < 0.05, piorou, melhorou, p
 
 
-def gate_g1_agregado(bases, cands):
-    """G1* (revisão de 2026-10-14). None se os relatórios não trazem as flags por item."""
+def gate_g1_agregado(bases, cands, so_entregues=False):
+    """G1* (revisão de 2026-10-14). None se os relatórios não trazem as flags por item.
+
+    so_entregues (revisão de 2026-10-23, PÓS-REPROVAÇÃO, decisão do responsável): conta só os itens
+    entregues (status != "falha"). Veredito reprovado: VEREDITO_v8rftb_vs_v7b_multiseed_G1_todos_reprovado.json, G1*
+    alternativas_distintas 100% -> 98,9% por 1 item em 90 (rodada 1, item 0, B = D), p=1,000. Esse
+    item já era status="falha": generate_validated o descarta (o app nunca o mostra) e o G2* já o
+    conta. Contá-lo aqui de novo é contagem dupla, e com n=90 o piso de 99% vira tolerância zero.
+    Um item com flag estrutural ruim que é ENTREGUE continua reprovando como antes."""
     chaves = [f[:-4] for f in FLAGS_ESTRUTURAIS]
     if not (_tem_campos(bases, chaves) and _tem_campos(cands, chaves)):
         return None
     jb, jc = _juntar_detalhes(bases), _juntar_detalhes(cands)
-    n = len(jc["detalhes"])
+    if so_entregues:
+        ruim = lambda x, ch: x.get("status") != "falha" and not x[ch]
+        entregues = lambda det: [x for x in det if x.get("status") != "falha"]
+    else:
+        ruim = lambda x, ch: not x[ch]
+        entregues = lambda det: det
+    db, dc = entregues(jb["detalhes"]), entregues(jc["detalhes"])
+    n = len(dc)
     piores = []
     for ch in chaves:
-        ok_c = sum(bool(x[ch]) for x in jc["detalhes"])
+        ok_c = sum(bool(x[ch]) for x in dc)
         pct_c = 100 * ok_c / n if n else 0.0
-        sig, piorou, melhorou, p = _piorou_signif(jb, jc, lambda x, ch=ch: not x[ch])
+        sig, piorou, melhorou, p = _piorou_signif(jb, jc, lambda x, ch=ch: ruim(x, ch))
         if pct_c < 99.0 or sig:
-            ok_b = sum(bool(x[ch]) for x in jb["detalhes"])
-            piores.append(f"{ch}: {100 * ok_b / len(jb['detalhes']):.1f}% -> {pct_c:.1f}% "
+            ok_b = sum(bool(x[ch]) for x in db)
+            piores.append(f"{ch}: {100 * ok_b / len(db):.1f}% -> {pct_c:.1f}% "
                           f"(n={n}; piorou {piorou}, melhorou {melhorou}, p={p:.3f})")
-    return Gate("G1*", "Contrato estrutural agregado (>=99% e sem piora signif.)").resolve(
+    nome = "Contrato estrutural agregado (>=99% e sem piora signif.)"
+    if so_entregues:
+        nome += " [só entregues: revisão 2026-10-23]"
+    return Gate("G1*", nome).resolve(
         not piores, "; ".join(piores) or f"7 flags >= 99% sem piora significativa (n={n})")
 
 
@@ -996,14 +1013,37 @@ def gate_g7_agregado(bases, cands):
         not regressoes, "; ".join(regressoes) or "; ".join(resumo) or "sem itens por ano")
 
 
-def avalia_multiseed(bases, cands, comparar_inferencia=False):
+def avalia_multiseed(bases, cands, comparar_inferencia=False, sem_dificuldade=False, sem_g5_g8_g9=False,
+                     g1_so_entregues=False):
     """Retorna (gates, ganhos, agregado_base, agregado_cand). Ver bloco acima.
 
     comparar_inferencia (2026-10-09): compara CONFIGURAÇÕES de inferência do
     MESMO .gguf (motor, threads, cache de prompt), que mudam o texto gerado por
     arredondamento. Inverte a trava de sha256 (tem de ser o mesmo artefato e
     report["inferencia"] tem de diferir) e conta latência como ganho. Os gates
-    bloqueantes não mudam."""
+    bloqueantes não mudam.
+
+    sem_g5_g8_g9 (2026-10-22, ciclo v8 do Qwen3-4B): DECISÃO DO RESPONSÁVEL, tomada ANTES de medir o
+    candidato v8rftb e, portanto, NÃO é revisão pós-reprovação (a prática do projeto pede reprovação
+    antes de mudar critério; o responsável foi avisado e decidiu assim). G5 (dificuldade) e G8
+    (velocidade) passam a informativos e G9 (perplexidade, já informativo e nunca medido) sai da lista.
+    Motivos registrados: G5 mede o rótulo emitido, que é copiado do pedido (100% nos dois lados), e a
+    dificuldade saiu do critério núcleo do professor; G8 reprovou 6 de 18 vereditos multiseed por
+    tamanho de modelo ou aquecimento da GPU (26,4 -> 20,0 tok/s no mesmo GGUF, ciclo_v7/SPEC.md), não
+    por regressão do candidato. A aderência à dificuldade sai dos ganhos. Os números continuam
+    impressos. `--gates-completos` no CLI restaura o comportamento anterior (reprodução de vereditos).
+
+    g1_so_entregues (2026-10-23, revisão PÓS-REPROVAÇÃO): ver gate_g1_agregado. O CLI liga junto com
+    sem_g5_g8_g9 e `--gates-completos` também a desliga.
+
+    sem_dificuldade (2026-10-18, variante Gemma, decisão do responsável e NÃO
+    revisão pós-reprovação): G5 vira informativo e a aderência à dificuldade sai
+    dos ganhos. Motivo: o professor usa uma régua uma casa abaixo do rótulo SAEB
+    (kappa 0,20-0,24, ciclo_v7/SPEC.md) e a dificuldade já saiu do critério núcleo
+    da amostra humana. O padrão (False) mantém G5 bloqueante para a linha Qwen.
+
+    Trava de família (2026-10-18): relatórios com `familia_modelo` diferente
+    (ex.: gemma3 x qwen3) abortam. Gemma só se compara com Gemma."""
     rb = sorted(_rodada(r) for r in bases)
     rc = sorted(_rodada(r) for r in cands)
     if len(rc) < MIN_RODADAS_MULTISEED:
@@ -1014,6 +1054,10 @@ def avalia_multiseed(bases, cands, comparar_inferencia=False):
     pares = sorted(zip(sorted(bases, key=_rodada), sorted(cands, key=_rodada)),
                    key=lambda p: _rodada(p[0]))
     for b, c in pares:
+        fb, fc = b.get("familia_modelo"), c.get("familia_modelo")
+        if fb and fc and fb != fc:
+            raise SystemExit(f"ABORTADO: rodada {_rodada(b)} compara famílias diferentes "
+                             f"({fb} x {fc}). Gemma e Qwen não se comparam no gate.")
         hb, hc = b.get("artefato_sha256"), c.get("artefato_sha256")
         if comparar_inferencia:
             if not (hb and hb == hc):
@@ -1038,7 +1082,7 @@ def avalia_multiseed(bases, cands, comparar_inferencia=False):
 
     por_rodada = [(_rodada(b), avalia(b, c)) for b, c in pares]
     gates = []
-    agregados = {"G1": gate_g1_agregado(bases, cands), "G7": gate_g7_agregado(bases, cands)}
+    agregados = {"G1": gate_g1_agregado(bases, cands, g1_so_entregues), "G7": gate_g7_agregado(bases, cands)}
     for i, modelo in enumerate(por_rodada[0][1]):
         if modelo.id in ("G2", "G3", "G6"):
             continue
@@ -1048,7 +1092,14 @@ def avalia_multiseed(bases, cands, comparar_inferencia=False):
             gates.append(g)
             continue
         falhas = [f"rodada {r}: {gs[i].detalhe}" for r, gs in por_rodada if not gs[i].passou]
-        gates.append(Gate(modelo.id, modelo.nome + " [todas as rodadas]", modelo.bloqueante).resolve(
+        nome, bloqueante = modelo.nome + " [todas as rodadas]", modelo.bloqueante
+        if sem_g5_g8_g9 and modelo.id == "G9":
+            continue
+        if sem_dificuldade and modelo.id == "G5":
+            nome, bloqueante = nome + " [--sem-dificuldade]", False
+        if sem_g5_g8_g9 and modelo.id in ("G5", "G8"):
+            nome, bloqueante = nome + " [informativo: decisão 2026-10-22]", False
+        gates.append(Gate(modelo.id, nome, bloqueante).resolve(
             not falhas, "; ".join(falhas) or f"passou nas {len(pares)} rodadas"))
 
     jb, jc = _juntar_detalhes(bases), _juntar_detalhes(cands)
@@ -1081,6 +1132,8 @@ def avalia_multiseed(bases, cands, comparar_inferencia=False):
                                  ("falhas", "falhas", -1),
                                  ("regenerações", "regeneracoes", -1)):
         vb, vc = ab.get(chave), ac.get(chave)
+        if (sem_dificuldade or sem_g5_g8_g9) and chave == "aderencia_pct":
+            continue
         if nome == "regenerações" and any(
                 _modo_geometria(b) != _modo_geometria(c) for b, c in pares):
             continue
@@ -1114,13 +1167,21 @@ def main_multiseed(args, carrega):
         raise SystemExit("perfil multiseed exige o MESMO número de relatórios nos dois lados")
     bases = [carrega(p) for p in args.baseline_gguf_seeds]
     cands = [carrega(p) for p in args.candidato_gguf_seeds]
-    gates, ganhos, ab, ac = avalia_multiseed(bases, cands, args.comparar_inferencia)
+    sem_dificuldade = bool(getattr(args, "sem_dificuldade", False))
+    sem_g5_g8_g9 = not bool(getattr(args, "gates_completos", False))
+    gates, ganhos, ab, ac = avalia_multiseed(bases, cands, args.comparar_inferencia,
+                                             sem_dificuldade, sem_g5_g8_g9,
+                                             g1_so_entregues=sem_g5_g8_g9)
+    familia = cands[0].get("familia_modelo")
 
     print("=" * 78)
     print("GATES DE PROMOÇÃO — MULTISEED, conjunto congelado, comparação pareada")
     print("=" * 78)
     print(f"  baseline:  {bases[0].get('artefato')}")
     print(f"  candidato: {cands[0].get('artefato')}")
+    print(f"  família:   {familia or 'n/d (relatório antigo)'}"
+          f"{'  | G5 (dificuldade) informativo' if sem_dificuldade else ''}"
+          f"{'  | G5/G8 informativos, G9 fora (decisão 2026-10-22); G1* só entregues (2026-10-23)' if sem_g5_g8_g9 else ''}")
     com_sufixo = bool((cands[0].get("inferencia") or {}).get("sufixo", False))
     print(f"  rodadas:   {sorted(_rodada(r) for r in cands)}  "
           f"(amostras pareadas: {ac['n']})")
@@ -1142,6 +1203,8 @@ def main_multiseed(args, carrega):
     if args.saida:
         Path(args.saida).write_text(json.dumps({
             "decisao": veredito, "motivo": motivo, "perfil": "multiseed",
+            "familia_modelo": familia, "sem_dificuldade": sem_dificuldade,
+            "sem_g5_g8_g9": sem_g5_g8_g9, "g1_so_entregues": sem_g5_g8_g9,
             "observacoes": obs,  # informativo (P0-4): não entra no veredito
             "baseline": bases[0].get("artefato"), "candidato": cands[0].get("artefato"),
             "conjunto_avaliacao": cands[0].get("conjunto_avaliacao"),
@@ -1168,6 +1231,12 @@ def main():
     parser.add_argument("--comparar-inferencia", action="store_true",
                         help="multiseed: mesmo .gguf, configurações de inferência diferentes "
                              "(report['inferencia']); latência conta como ganho")
+    parser.add_argument("--sem-dificuldade", action="store_true",
+                        help="multiseed: G5 (aderência à dificuldade) informativo e fora dos "
+                             "ganhos. Padrão da variante Gemma (ver Doc/PIPELINE_GEMMA3.md)")
+    parser.add_argument("--gates-completos", action="store_true",
+                        help="multiseed: restaura G5 e G8 bloqueantes, G9 na lista e o G1* sobre todos os itens "
+                             "(regras anteriores a 2026-10-22/23); use para reproduzir vereditos antigos")
     parser.add_argument("--planejado-baseline", nargs="+",
                         help="relatórios avaliar_diversidade.py do baseline (1 por seed)")
     parser.add_argument("--planejado-candidato", nargs="+")

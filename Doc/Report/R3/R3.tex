@@ -1,0 +1,650 @@
+\documentclass[aspectratio=169,11pt]{beamer}
+
+% ============================================================
+% R3. Reunião de 23/10/2026: ciclo v8 do Qwen3-4B (19 a 23/10/2026).
+% Fontes dos números (todas em /home/nees/Documents/VSCodigo/TreinamentoModeloQuestoes):
+%   ciclo_v8/SPEC.md                                        (decisões, auditoria, resultados)
+%   outputs/melhoria_v8/F/apuracao_parcial.json             (professor, 222 itens do 4B v7b)
+%   outputs/melhoria_v8/validacao_jev_fora_da_amostra.json  (calibração do Jev)
+%   outputs/melhoria_v8/calibracao_maritaca.json            (calibração da Maritaca)
+%   outputs/melhoria_v8/avaliar_jev_*.jsonl + cache Maritaca (juízes pareados, 800/400 pares)
+%   outputs/relatorios/VEREDITO_v8rftb_vs_v7b_multiseed.json (gate, 90 pares)
+%   outputs/relatorios/VEREDITO_v8rftb_vs_v7b_multiseed_G1_todos_reprovado.json
+%   ciclo_v7/SPEC.md, outputs/gemma3/amostra_humana_s44/apuracao.json (modelos antigos)
+%   data/aval_{v7b,v8rft,v8rftb}.jsonl                      (letras e "Nenhuma", 800 amostras)
+% ============================================================
+
+\usetheme{Madrid}
+\usecolortheme{default}
+\setbeamertemplate{navigation symbols}{}
+\setbeamertemplate{footline}[frame number]
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[brazil]{babel}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta, positioning, shapes.geometric, fit, backgrounds, calc}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.17}
+\pgfkeys{/pgf/number format/.cd, use comma, 1000 sep={}}
+\usepackage{fontawesome5}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{array}
+\usepackage{colortbl}
+\usepackage{tcolorbox}
+\tcbuselibrary{skins}
+
+% ---------- paleta (mesma do R1 e do R2) ----------
+\definecolor{okgreen}{RGB}{34,139,34}
+\definecolor{warnorange}{RGB}{204,102,0}
+\definecolor{badred}{RGB}{178,34,34}
+\definecolor{basegray}{RGB}{90,90,90}
+\definecolor{accentblue}{RGB}{31,78,121}
+\definecolor{lightblue}{RGB}{221,235,247}
+\definecolor{lightgreen}{RGB}{226,240,217}
+\definecolor{lightred}{RGB}{248,225,225}
+\definecolor{lightorange}{RGB}{252,235,214}
+
+\setbeamercolor{structure}{fg=accentblue}
+
+\newcommand{\okmark}{{\color{okgreen}\faCheckCircle}}
+\newcommand{\warnmark}{{\color{warnorange}\faExclamationTriangle}}
+\newcommand{\badmark}{{\color{badred}\faTimesCircle}}
+\newcommand{\pendmark}{{\color{basegray}\faHourglassHalf}}
+
+% Ilustrações externas: se o arquivo ainda não existir em img/, mostra um
+% quadro tracejado com o nome do arquivo a baixar (Freepik/Pixabay/Pexels).
+\newcommand{\figext}[3][0.3\textwidth]{%
+  \IfFileExists{img/#2}{\includegraphics[width=#1]{img/#2}}{%
+    \begin{tikzpicture}
+      \node[draw=basegray, dashed, rounded corners, minimum width=#1, minimum height=0.55*#1,
+            align=center, text=basegray, font=\tiny, inner sep=3pt]
+        {\faImage\\[2pt]\texttt{\detokenize{img/#2}}\\[1pt]#3};
+    \end{tikzpicture}}}
+
+\newtcolorbox{caixa}[2][]{enhanced, colback=#2!40!white, colframe=#2!70!black, boxrule=0.5pt,
+  arc=2pt, left=4pt, right=4pt, top=3pt, bottom=3pt, fontupper=\small, #1}
+
+\tikzset{
+  etapa/.style={draw=accentblue, fill=lightblue, rounded corners, align=center,
+                font=\scriptsize, minimum height=0.9cm, text width=2.2cm},
+  seta/.style={-{Stealth[length=2mm]}, thick, accentblue},
+}
+
+\title[R3, 23/10/2026]{R3. Reunião de acompanhamento}
+\subtitle{Ciclo v8 do Qwen3-4B: base de dados, juízes, gate e expectativa para o aplicativo}
+\author{Relatório de execução de 19 a 23 de outubro de 2026}
+\institute{Qwen3-4B + QLoRA + GGUF, geração offline de questões SAEB de Matemática}
+\date{23 de outubro de 2026}
+
+\begin{document}
+
+% ------------------------------------------------------------
+\begin{frame}
+  \titlepage
+\end{frame}
+
+% ------------------------------------------------------------
+\begin{frame}{Roteiro}
+  \begin{columns}[T]
+    \begin{column}{0.55\textwidth}
+      \begin{enumerate}
+        \item Resumo executivo
+        \item Ponto de partida: o que o professor mediu
+        \item Como decidimos o caminho
+        \item Melhorias na base de dados
+        \item Juízes automáticos calibrados
+        \item Resultados: juízes pareados e gate
+        \item Comparação com os modelos anteriores
+        \item Expectativa para o aplicativo
+        \item Riscos e próximos passos
+      \end{enumerate}
+    \end{column}
+    \begin{column}{0.4\textwidth}
+      \centering
+      \figext[0.95\textwidth]{reuniao_equipe_relatorio.png}{reunião de equipe com gráficos}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+% ------------------------------------------------------------
+\section{Resumo}
+\begin{frame}{Resumo executivo}
+  \begin{columns}[T]
+    \begin{column}{0.32\textwidth}
+      \begin{caixa}{lightblue}
+        \textbf{\faDatabase\ Base}\\[2pt]
+        2.918 questões reordenadas para \emph{resolver antes de escrever as alternativas}, mais
+        875 questões novas aprovadas por juiz. Total de 3.793, com gabarito em 20\% por letra.
+      \end{caixa}
+    \end{column}
+    \begin{column}{0.32\textwidth}
+      \begin{caixa}{lightgreen}
+        \textbf{\faBalanceScale\ Juízes}\\[2pt]
+        Jev: 64,6\% $\rightarrow$ \textbf{73,4\%} de aceitação (800 pares, $p<0{,}001$).
+        Maritaca: 60,2\% $\rightarrow$ 66,5\% (400 pares, $p=0{,}065$). Os dois apontam a mesma direção.
+      \end{caixa}
+    \end{column}
+    \begin{column}{0.32\textwidth}
+      \begin{caixa}{lightgreen}
+        \textbf{\faCheckCircle\ Gate}\\[2pt]
+        v8rftb contra v7b: \textbf{PROMOVIDO}. Consistência sobe de 93,6\% para 100\% e as
+        falhas caem de 3 para 1 em 90.
+      \end{caixa}
+    \end{column}
+  \end{columns}
+  \vspace{4pt}
+  \begin{caixa}{lightred}
+    \textbf{\faExclamationTriangle\ O professor não confirmou o ganho:} núcleo de \textbf{65,4\%} (51 de 78,
+    IC95 [54,3; 75,0]), contra 68,9\% do v7b. A diferença está dentro do ruído e a meta de 80\% não foi atingida.
+    \textbf{Recomendação: não publicar o v8rftb.} O 9º ano e a Geometria seguem como pontos fracos.
+  \end{caixa}
+\end{frame}
+
+% ------------------------------------------------------------
+\section{Ponto de partida}
+\begin{frame}{Ponto de partida: 222 questões do 4B v7b avaliadas pelo professor}
+  \begin{columns}[T]
+    \begin{column}{0.48\textwidth}
+      \small
+      O professor avaliou às cegas 222 questões do melhor modelo da época (Qwen3-4B v7b).
+      A questão é válida no critério \textbf{núcleo} quando a matemática está correta, só uma
+      alternativa responde e os dados bastam.
+      \vspace{4pt}
+      \begin{itemize}
+        \item Núcleo: \textbf{68,9\%}, IC95 [62,5; 74,6]
+        \item A base de treino tem 97,9\% de núcleo. O gargalo é o modelo, não os dados.
+        \item Hiperparâmetros não mostraram efeito acima do ruído entre seeds.
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.5\textwidth}
+      \centering
+      \begin{tikzpicture}
+        \begin{axis}[
+          xbar, width=0.98\textwidth, height=4.6cm,
+          xmin=0, xmax=100, xlabel={\scriptsize validade núcleo (\%)},
+          symbolic y coords={9º ano, 5º ano, 2º ano, Geometria, Álgebra, Números},
+          ytick=data, yticklabel style={font=\scriptsize}, xticklabel style={font=\scriptsize},
+          nodes near coords, nodes near coords style={font=\tiny},
+          bar width=7pt, enlarge y limits=0.12,
+        ]
+          \addplot[fill=accentblue!70, draw=accentblue] coordinates {
+            (54,9º ano) (70,5º ano) (82,2º ano) (42,Geometria) (51,Álgebra) (58,Números)};
+        \end{axis}
+      \end{tikzpicture}
+
+      {\scriptsize 9º ano e Geometria concentram as falhas.}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+% ------------------------------------------------------------
+\begin{frame}{Por que as 69 questões falharam}
+  \begin{columns}[c]
+    \begin{column}{0.55\textwidth}
+      \centering
+      \begin{tikzpicture}
+        \begin{axis}[
+          xbar, width=0.62\textwidth, height=4.4cm,
+          xmin=0, xmax=30, xlabel={\scriptsize questões},
+          symbolic y coords={Valor fora das alternativas, Mais de uma correta, Conta ou conceito errado, Enunciado mal posto},
+          ytick=data, yticklabel style={font=\scriptsize, align=right, text width=3.2cm},
+          xticklabel style={font=\scriptsize},
+          nodes near coords, nodes near coords style={font=\scriptsize},
+          bar width=9pt, enlarge y limits=0.18,
+        ]
+          \addplot[fill=badred!60, draw=badred] coordinates {
+            (12,Valor fora das alternativas) (14,Mais de uma correta)
+            (19,Conta ou conceito errado) (24,Enunciado mal posto)};
+        \end{axis}
+      \end{tikzpicture}
+    \end{column}
+    \begin{column}{0.42\textwidth}
+      \small
+      A causa mais comum é o enunciado mal posto, com dados contraditórios ou inventados.
+      Depois vêm a conta errada e a resposta duplicada.
+      \vspace{4pt}
+
+      Reordenar o JSON resolve só a última barra, que vale cerca de \textbf{5 pontos}.
+      Para as outras três, era preciso filtrar o que o modelo aprende. Daí veio o RFT (\emph{Rejection Fine-Tuning}, ou ajuste fino por rejeição): o modelo gera várias questões, um juiz descarta as ruins e o modelo é treinado de novo só com as aprovadas.
+    \end{column}
+  \end{columns}
+\end{frame}
+
+% ------------------------------------------------------------
+\section{Decisão}
+\begin{frame}{Como decidimos o caminho}
+  \centering
+  \begin{tikzpicture}[node distance=0.55cm and 0.5cm]
+    \node[etapa] (f) {\textbf{F. Medir}\\professor, 222 itens};
+    \node[etapa, right=of f] (j) {\textbf{Jev}\\consultado 2 vezes};
+    \node[etapa, right=of j, fill=lightgreen, draw=okgreen] (b) {\textbf{B. RFT}\\filtrar o que o modelo aprende};
+    \node[etapa, below=of b, fill=lightgreen, draw=okgreen] (a) {\textbf{A. Ordem v8}\\resolver antes das alternativas};
+    \node[etapa, right=of b] (t) {\textbf{v8rftb}\\um único treino};
+    \draw[seta] (f) -- (j);
+    \draw[seta] (j) -- node[above, font=\tiny] {1º} (b);
+    \draw[seta] (j) |- node[pos=0.75, below, font=\tiny] {junto} (a);
+    \draw[seta] (b) -- (t);
+    \draw[seta] (a) -| (t);
+  \end{tikzpicture}
+  \vspace{6pt}
+
+  \small
+  \begin{tabularx}{0.92\textwidth}{@{}lX@{}}
+    \toprule
+    Consulta & Resultado \\
+    \midrule
+    1ª, antes da medição & A primeiro (probabilidade média 0,76). A medição F era pré-requisito (0,94). \\
+    2ª, com a medição    & B primeiro nas 4 ordens testadas (B 0,67 contra A 0,30). A e B se complementam. \\
+    Hiperparâmetros      & Sem evidência de ganho acima do ruído entre seeds (0,05). Ficaram de fora. \\
+    \bottomrule
+  \end{tabularx}
+\end{frame}
+
+% ------------------------------------------------------------
+\section{Base de dados}
+\begin{frame}{Melhorias na base de dados}
+  \centering
+  \begin{tikzpicture}[node distance=0.6cm]
+    \tikzset{etapa/.append style={minimum height=0.75cm, font=\tiny}}
+    \node[etapa, text width=2.3cm] (v7) {\textbf{v7b\_fix1}\\2.948 questões, núcleo 97,9\%};
+    \node[etapa, right=of v7, text width=2.5cm] (v8) {\textbf{v8}\\2.918 questões, ordem nova};
+    \node[etapa, right=of v8, text width=2.5cm, fill=lightorange, draw=warnorange] (rft) {\textbf{RFT}\\+875 aprovadas pelo Jev};
+    \node[etapa, right=of rft, text width=2.5cm, fill=lightgreen, draw=okgreen] (bal) {\textbf{v8\_rft\_bal}\\3.793 questões, 20\% por letra};
+    \draw[seta] (v7) -- (v8);
+    \draw[seta] (v8) -- (rft);
+    \draw[seta] (rft) -- (bal);
+  \end{tikzpicture}
+  \vspace{2pt}
+
+  \scriptsize
+  \begin{tabularx}{\textwidth}{@{}lX@{}}
+    \toprule
+    Mudança & Por que importa \\
+    \midrule
+    Resolução antes das alternativas & O valor calculado já existe quando o modelo escreve as opções. \\
+    Uma questão por exemplo (47 divididos) & É o formato real do aplicativo, que pede uma questão por chamada. \\
+    Resolução sem citar ``alternativa B'' & As alternativas ainda não existem nessa ordem. Isso também permite embaralhar as opções no app. \\
+    Trava do verificador & Se a limpeza mudasse o veredito, a questão saía. Saíram 30 injetadas e nenhum item real do banco. \\
+    Extras com letras permutadas & Os extras chegaram com 34,5\% de gabarito A. A permutação corrige para 20\% cada. \\
+    \bottomrule
+  \end{tabularx}
+\end{frame}
+
+% ------------------------------------------------------------
+\begin{frame}{RFT (ajuste fino por rejeição): o modelo gera, o juiz filtra, o modelo reaprende}
+  \centering
+  \begin{tikzpicture}
+    \pgfmathsetmacro{\escala}{7.5/2400}
+    \foreach \y/\n/\rot/\cor in {
+        0/2400/geradas pelo 4B v7b (400 prompts $\times$ 6)/accentblue,
+        -0.75/2067/passaram no filtro determinístico/accentblue,
+        -1.5/1461/julgadas pelo Jev/warnorange,
+        -2.25/1109/aceitas pelo Jev/okgreen,
+        -3.0/875/entraram no treino (teto de 30\% da base)/okgreen} {
+      \fill[\cor!55, draw=\cor] (0,\y) rectangle ({\n*\escala},{\y+0.55});
+      \node[anchor=west, font=\scriptsize, text=white] at (0.1,{\y+0.275}) {\textbf{\n}};
+      \node[anchor=west, font=\scriptsize] at ({\n*\escala+0.15},{\y+0.275}) {\rot};
+    }
+  \end{tikzpicture}
+  \vspace{6pt}
+
+  \small
+  \begin{itemize}
+    \item 606 amostras ficaram sem julgamento quando o crédito do OpenRouter acabou. Mesmo assim, as 79 habilidades receberam extras.
+    \item Também saíram 282 pares bom/ruim, guardados para um treino ORPO futuro.
+  \end{itemize}
+\end{frame}
+
+% ------------------------------------------------------------
+\section{Juízes}
+\begin{frame}{Dois juízes calibrados contra o professor}
+  \small
+  Antes de usar um juiz para decidir, conferimos se ele concorda com o professor nas mesmas 222 questões.
+  \vspace{6pt}
+
+  \centering
+  \begin{tabular}{@{}lcc@{}}
+    \toprule
+    & \textbf{Jev} (TypeSafe) & \textbf{Maritaca} (sabiá-4) \\
+    \midrule
+    Concordância com o professor ($\kappa$) & \textbf{0,795} & 0,725 \\
+    Inválidos que o juiz pega (recall)      & 81,2\% & \textbf{90,9\%} \\
+    Válidos que o juiz perde                & \textbf{3,9\%} & 13,7\% \\
+    Válidos entre os aceitos                & 91,9\% & \textbf{95,7\%} \\
+    Custo da calibração                     & US\$ 0,01 & R\$ 5,36 \\
+    Papel neste ciclo                       & filtro do RFT e 1º juiz & 2º juiz, independente do filtro \\
+    \bottomrule
+  \end{tabular}
+  \vspace{6pt}
+
+  \raggedright
+  \small A meta era $\kappa \geq 0{,}6$, e os dois passaram. A Maritaca é mais rígida e não participou do filtro
+  de treino, então ela confirma o ganho sem viés de construção. Os dois rodam por API, por isso servem para medir e
+  filtrar dados, mas não vão para o celular.
+\end{frame}
+
+% ------------------------------------------------------------
+\section{Resultados}
+\begin{frame}{Resultados: os mesmos prompts e seeds nos dois modelos}
+  \begin{columns}[c]
+    \begin{column}{0.55\textwidth}
+      \centering
+      \begin{tikzpicture}
+        \begin{axis}[
+          ybar, width=\textwidth, height=5.2cm,
+          ymin=0, ymax=85, ylabel={\scriptsize aceitação (\%)},
+          symbolic x coords={Jev, Maritaca},
+          xtick=data, xticklabel style={font=\scriptsize}, yticklabel style={font=\scriptsize},
+          nodes near coords, nodes near coords style={font=\tiny},
+          bar width=16pt, enlarge x limits=0.45,
+          legend style={font=\scriptsize, at={(0.5,1.02)}, anchor=south, legend columns=3},
+        ]
+          \addplot[fill=basegray!50, draw=basegray] coordinates {(Jev,64.6) (Maritaca,60.2)};
+          \addplot[fill=warnorange!60, draw=warnorange] coordinates {(Jev,73.6)};
+          \addplot[fill=okgreen!60, draw=okgreen] coordinates {(Jev,73.4) (Maritaca,66.5)};
+          \legend{v7b, v8rft, v8rftb}
+        \end{axis}
+      \end{tikzpicture}
+    \end{column}
+    \begin{column}{0.43\textwidth}
+      \footnotesize
+      \begin{tabular}{@{}lcc@{}}
+        \toprule
+        Pareado & Jev & Maritaca \\
+        \midrule
+        Pares & 800 & 400 \\
+        Só o v7b aceita & 110 & 72 \\
+        Só o v8rftb aceita & \textbf{180} & \textbf{97} \\
+        McNemar $p$ & $<0{,}001$ & 0,065 \\
+        \bottomrule
+      \end{tabular}
+      \vspace{6pt}
+
+      \small
+      O balanceamento não custou qualidade, porque o v8rft e o v8rftb ficam empatados no Jev.
+      No 9º ano, a aceitação do Jev sobe de 55\% para 68\%.
+    \end{column}
+  \end{columns}
+\end{frame}
+
+% ------------------------------------------------------------
+\begin{frame}{Gate mecânico: v8rftb contra v7b (3 rodadas, 90 pares)}
+  \centering
+  \footnotesize
+  \begin{tabularx}{\textwidth}{@{}l>{\raggedright\arraybackslash}Xccc@{}}
+    \toprule
+    Gate & O que verifica & v7b & v8rftb & \\
+    \midrule
+    G1* & Estrutura do JSON nas questões entregues & 100\% & 100\% (n=89) & \okmark \\
+    G2* & Falhas depois das tentativas (teto 5\%) & 3/90 & \textbf{1/90} & \okmark \\
+    G3* & Gabarito consistente com a conta & 93,6\% & \textbf{100\%} & \okmark \\
+    G4  & Dependência de figura & 0 & 0 & \okmark \\
+    G6* & Letra mais frequente (limite: base + 5 pontos) & 40,0\% & 41,1\% & \okmark \\
+    G7* & Sem esquecimento no 5º e 9º anos & 100\% & 100\% & \okmark \\
+    \midrule
+    G5  & Dificuldade (informativo) & 100\% & 100\% & \okmark \\
+    G8  & Velocidade (informativo) & 13,8 tok/s & 15,0 tok/s & \okmark \\
+    \bottomrule
+  \end{tabularx}
+  \vspace{6pt}
+
+  \begin{caixa}{lightgreen}
+    \textbf{Veredito: PROMOVIDO.} O gate garante que nada piorou, mas não mede se a matemática está certa.
+    Quem mede isso é o professor.
+  \end{caixa}
+\end{frame}
+
+% ------------------------------------------------------------
+\begin{frame}{Mudanças nas regras do gate, com transparência}
+  \small
+  \begin{tabularx}{\textwidth}{@{}lX>{\raggedright\arraybackslash}p{3.3cm}@{}}
+    \toprule
+    Data & Mudança e motivo & Tipo \\
+    \midrule
+    22/10 & G5 e G8 viram informativos e G9 sai. G5 só copiava o rótulo pedido (100\% nos dois lados).
+            G8 reprovou 6 de 18 vereditos por tamanho do modelo ou aquecimento da GPU. & Decisão do responsável, antes de medir o candidato \\
+    23/10 & O G1* passa a contar só as questões entregues. O único item reprovado tinha B igual a D, mas já tinha sido
+            descartado como falha e contado no G2*. Com 90 pares, o limite de 99\% virava tolerância zero. & Revisão depois de uma reprovação, documentada no código \\
+    \bottomrule
+  \end{tabularx}
+  \vspace{6pt}
+
+  \begin{itemize}\small
+    \item Uma questão entregue com estrutura ruim continua reprovando. Três testes novos garantem isso.
+    \item Com \texttt{--gates-completos}, a regra antiga volta e o veredito antigo (NÃO PROMOVIDO) se reproduz.
+    \item O veredito reprovado ficou guardado como evidência.
+  \end{itemize}
+\end{frame}
+
+% ------------------------------------------------------------
+\section{Comparação}
+\begin{frame}{Comparação com os modelos anteriores}
+  \centering
+  \scriptsize
+  \begin{tabularx}{\textwidth}{@{}l c c c >{\raggedright\arraybackslash}X@{}}
+    \toprule
+    Modelo & Tamanho & Núcleo (professor) & Gate & Melhor contribuição \\
+    \midrule
+    Gemma 3 1B zero-shot & 0,8 GB & 15\% (n=20) & base & Pipeline Gemma pronto e trava que impede comparar famílias diferentes \\
+    Gemma 3 1B fine-tune & 0,8 GB & 0\% (n=20) & \badmark\ 3 seeds & Mostrou que 1B não comporta a tarefa \\
+    Qwen3-1.7B v3 & 1,1 GB & 50\% (n=20)\textsuperscript{a} & \okmark & Primeiro modelo publicado, gramática GBNF e gate multiseed \\
+    Qwen3-1.7B v6 & 1,1 GB & 35\% (n=20) & \okmark & Mostrou que passar no gate não garante qualidade, e a amostra humana passou a decidir \\
+    Qwen3-1.7B v7b & 1,1 GB & 35 a 50\% (n=20) & \okmark & Base com 97,9\% de núcleo, o que mostrou que o gargalo é o modelo \\
+    Qwen3-4B zero-shot & 2,4 GB & 65 a 70\% (n=20) & base & Teste de teto: o tamanho do modelo pesa mais que a curadoria \\
+    Qwen3-4B v7b & 2,5 GB & \textbf{68,9\%} (n=222) & \okmark & Primeira medida confiável, taxonomia de falhas e calibração dos juízes \\
+    \rowcolor{lightgreen}
+    Qwen3-4B v8rftb & 2,5 GB & 65,4\% (n=78) & \okmark & Gate e juízes melhoraram, mas o professor não viu ganho. Mostrou o limite do filtro por juiz de API \\
+    \bottomrule
+  \end{tabularx}
+  \vspace{4pt}
+
+  \raggedright
+  \tiny \textsuperscript{a} Valor do baseline\_v1 do 1.7B na amostra contra o v6. Com n=20, o intervalo de confiança tem cerca de $\pm$20 pontos,
+  por isso as linhas do 1.7B se sobrepõem. Tamanho do 4B fine-tunado: GGUF Q4\_K\_M de 2,4 GB mais adaptador LoRA de 66 MB.
+\end{frame}
+
+% ------------------------------------------------------------
+\begin{frame}{A evolução em um gráfico}
+  \centering
+  \begin{tikzpicture}
+    \begin{axis}[
+      ybar, width=0.92\textwidth, height=5.6cm,
+      ymin=0, ymax=100, ylabel={\scriptsize validade núcleo (\%)},
+      symbolic x coords={Gemma 1B FT, 1.7B v6, 1.7B v7b, 4B ZS, 4B v7b, 4B v8rftb}, xticklabel style={font=\scriptsize}, yticklabel style={font=\scriptsize},
+      nodes near coords, nodes near coords style={font=\tiny},
+      bar width=20pt, enlarge x limits=0.1, bar shift=0pt,
+      xtick={Gemma 1B FT, 1.7B v6, 1.7B v7b, 4B ZS, 4B v7b, 4B v8rftb},
+    ]
+      \addplot[fill=accentblue!60, draw=accentblue] coordinates {
+        (Gemma 1B FT,0) (1.7B v6,35) (1.7B v7b,35) (4B ZS,65) (4B v7b,68.9)};
+      \addplot[fill=warnorange!50, draw=warnorange] coordinates {(4B v8rftb,65.4)};
+      \draw[badred, dashed, thick] (axis cs:Gemma 1B FT,80) -- (axis cs:4B v8rftb,80)
+        node[pos=0.03, above, font=\tiny, text=badred] {meta 80\%};
+    \end{axis}
+  \end{tikzpicture}
+
+  \footnotesize Todas as barras são medidas do professor (n=20 nos modelos pequenos, n=222 no 4B v7b e n=78 no v8rftb).
+  O v8rftb (65,4\%) e o v7b (68,9\%) têm intervalos que se sobrepõem, e nenhum chega à meta de 80\%.
+\end{frame}
+
+% ------------------------------------------------------------
+\section{Aplicativo}
+\begin{frame}{Expectativa para o aplicativo mobile}
+  \begin{columns}[T]
+    \begin{column}{0.64\textwidth}
+      \scriptsize
+      \begin{tabular}{@{}lll@{}}
+        \toprule
+        Item & Qwen3-1.7B (hoje) & Qwen3-4B v8rftb \\
+        \midrule
+        Arquivo do modelo & 1,1 GB & 2,4 GB + 66 MB \\
+        Memória estimada\textsuperscript{b} & cerca de 1,4 GB & cerca de 3 GB \\
+        Velocidade (CPU do PC) & 27 tok/s & 15 tok/s \\
+        Tempo por questão (PC) & cerca de 8 s & cerca de 21 s \\
+        Núcleo (professor) & 35 a 50\% & 65\% (n=78) \\
+        Gramática enviada & \texttt{questao.gbnf} & \texttt{questao\_v8.gbnf} \\
+        \bottomrule
+      \end{tabular}
+      \vspace{2pt}
+
+      \tiny \textsuperscript{b} Pesos mais o cache de 2.048 tokens (cerca de 0,3 GB no 4B). Estimativa de cálculo, ainda sem medida no aparelho.
+    \end{column}
+    \begin{column}{0.33\textwidth}
+      \centering
+      \figext[0.9\textwidth]{celular_offline_questoes.png}{celular com questão de matemática, modo avião}
+    \end{column}
+  \end{columns}
+  \vspace{4pt}
+
+  \begin{caixa}{lightblue}
+    \footnotesize
+    \textbf{O que esperar:} correção parecida com a do v7b (65 a 69\%), bem acima do 1.7B, ao custo de cerca de 2,5 vezes mais tempo por questão e 2 vezes mais memória.
+    Pela estimativa, o 4B pede aparelhos com 6 GB de RAM ou mais. Em celulares, a velocidade deve ficar abaixo da do PC.
+    Por isso é preciso medir em um aparelho real antes de publicar.
+  \end{caixa}
+\end{frame}
+
+% ------------------------------------------------------------
+\begin{frame}{O que muda na integração com o app}
+  \small
+  \begin{enumerate}
+    \item \textbf{Trocar a gramática junto com o modelo.} O v8 só funciona com \texttt{questao\_v8.gbnf}, que o app envia inline.
+          As chaves do JSON continuam as mesmas, então a leitura por nome de chave não muda.
+    \item \textbf{Embaralhar as alternativas no app.} A resolução do v8 não cita letras, então o app pode sortear a
+          ordem das opções e remapear o gabarito. Assim o viés de letra deixa de importar para o aluno.
+    \item \textbf{Descartar o que vier como falha.} O pipeline já marca e descarta. O aluno nunca vê essa questão.
+    \item \textbf{Escolher o empacotamento.} Uma opção é usar o modelo base e o adaptador separados, como foi medido. A outra é um GGUF único
+          com o adaptador mesclado, que exige passar pelo gate de novo.
+    \item \textbf{Manter o 1.7B como alternativa} para aparelhos com pouca memória.
+  \end{enumerate}
+\end{frame}
+
+% ------------------------------------------------------------
+\section{Riscos e próximos passos}
+\begin{frame}{Pontos de atenção}
+  \begin{columns}[T]
+    \begin{column}{0.5\textwidth}
+      \centering
+      \begin{tikzpicture}
+        \begin{axis}[
+          ybar, width=\textwidth, height=4.6cm,
+          ymin=0, ymax=55, ylabel={\scriptsize \% das questões},
+          symbolic x coords={Gabarito A, Nenhuma das anteriores},
+          xtick=data, xticklabel style={font=\scriptsize}, yticklabel style={font=\scriptsize},
+          nodes near coords, nodes near coords style={font=\tiny},
+          bar width=11pt, enlarge x limits=0.45,
+          legend style={font=\tiny, at={(0.5,1.02)}, anchor=south, legend columns=3},
+        ]
+          \addplot[fill=basegray!50, draw=basegray] coordinates {(Gabarito A,33.7) (Nenhuma das anteriores,14.2)};
+          \addplot[fill=warnorange!60, draw=warnorange] coordinates {(Gabarito A,44.0) (Nenhuma das anteriores,26.9)};
+          \addplot[fill=okgreen!60, draw=okgreen] coordinates {(Gabarito A,41.8) (Nenhuma das anteriores,28.3)};
+          \legend{v7b, v8rft, v8rftb}
+        \end{axis}
+      \end{tikzpicture}
+
+      {\tiny 800 amostras pareadas por modelo. O equilíbrio seria 20\% por letra.}
+    \end{column}
+    \begin{column}{0.48\textwidth}
+      \small
+      \begin{itemize}
+        \item \warnmark\ \textbf{O viés de letra persiste.} Balancear o treino levou o gabarito A de 44,0\% para só 41,8\%.
+              O gate passou porque o v7b também deu 40\% nas rodadas dele. Embaralhar as opções no app resolve isso.
+        \item \warnmark\ \textbf{Nenhuma das anteriores} dobrou. O corpus tem cerca de 21\%, então o modelo está copiando o treino.
+              O professor deve dizer se isso prejudica.
+        \item \warnmark\ \textbf{9º ano e Geometria} continuam como os pontos fracos.
+      \end{itemize}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+% ------------------------------------------------------------
+\begin{frame}{Resultado do professor e diagnóstico das 27 reprovadas}
+  \begin{columns}[T]
+    \begin{column}{0.5\textwidth}
+      \footnotesize
+      \begin{tabular}{@{}lcc@{}}
+        \toprule
+        Recorte & Núcleo & n \\
+        \midrule
+        Geral & \textbf{65,4\%} & 78 \\
+        2º ano & 83\% & 23 \\
+        5º ano & 59\% & 22 \\
+        9º ano & 50\% & 26 \\
+        Geometria & 46\% & 13 \\
+        Grandezas e medidas & 46\% & 13 \\
+        Números & 58\% & 33 \\
+        Verificador \texttt{ok} & 79\% & 42 \\
+        Verificador não verificável & 50\% & 36 \\
+        \bottomrule
+      \end{tabular}
+    \end{column}
+    \begin{column}{0.48\textwidth}
+      \small
+      Causas das 27 reprovadas, no texto do professor:
+      \begin{itemize}\footnotesize
+        \item cerca de 11 com enunciado contraditório (passageiros, troco, totais),
+        \item cerca de 6 com mais de uma resposta correta,
+        \item cerca de 4 com conta ou resolução errada e
+        \item o restante com situação mal definida.
+      \end{itemize}
+      \footnotesize
+      \textbf{Nenhuma das anteriores} não pesou (59\% contra 68\%, dentro do ruído).
+      O filtro determinístico atual só marca o que não consegue verificar, então não separa bem.
+    \end{column}
+  \end{columns}
+\end{frame}
+
+% ------------------------------------------------------------
+\begin{frame}{Próximos passos}
+  \centering
+  \begin{tikzpicture}[node distance=0.5cm and 0.45cm]
+    \node[etapa, fill=lightred, draw=badred] (r) {\textbf{v8rftb}\\65,4\%\\abaixo de 80\%};
+    \node[etapa, right=of r, fill=lightgreen, draw=okgreen, text width=2.6cm] (c) {\textbf{Auditoria dos extras}\\feita: 88,3\% de núcleo};
+    \node[etapa, right=of c, fill=lightorange, draw=warnorange, text width=2.6cm] (j) {\textbf{Gerar e conferir}\\resolver às cegas, no app};
+    \node[etapa, right=of j, text width=2.6cm] (o) {\textbf{ORPO}\\descartado por ora};
+    \draw[seta] (r) -- (c);
+    \draw[seta] (c) -- (j);
+    \draw[seta] (j) -- (o);
+  \end{tikzpicture}
+  \vspace{4pt}
+
+  \footnotesize
+  \begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{5.6cm}X@{}}
+    \toprule
+    Ação & Motivo \\
+    \midrule
+    Manter o v7b como referência & Mesmo núcleo do v8rftb, sem adotar um modelo não confirmado \\
+    Auditoria dos extras do RFT, já feita & Núcleo de 88,3\% (n=60) contra 65,4\% do modelo: os dados são bons e o gargalo é a geração \\
+    Validar a resposta na hora de gerar, dentro do app & Gerar, resolver de novo às cegas e aceitar só se concordar, sem API \\
+    Medir em um celular real e embaralhar as alternativas & Pendências do app, independentes do modelo \\
+    Descartar o ORPO por ora & Os dados já são bons e os pares vêm do mesmo filtro, então não atacam a causa \\
+    \bottomrule
+  \end{tabularx}
+\end{frame}
+
+% ------------------------------------------------------------
+\appendix
+\begin{frame}{Apêndice: arquivos de evidência}
+  \scriptsize
+  \begin{tabularx}{\textwidth}{@{}>{\ttfamily}lX@{}}
+    \toprule
+    Arquivo & Conteúdo \\
+    \midrule
+    ciclo\_v8/SPEC.md & Hipótese, decisões, auditoria e resultados do ciclo \\
+    outputs/melhoria\_v8/F/ & Folha do professor (222 itens) e apuração \\
+    outputs/melhoria\_v8/validacao\_jev\_fora\_da\_amostra.json & Calibração do Jev \\
+    outputs/melhoria\_v8/calibracao\_maritaca.json & Calibração da Maritaca \\
+    data/train\_curado\_v8\_rft\_bal.jsonl & Corpus treinado (3.793 questões) \\
+    data/aval\_\{v7b,v8rftb\}.jsonl & 800 amostras pareadas por modelo \\
+    outputs/relatorios/VEREDITO\_v8rftb\_vs\_v7b\_multiseed.json & Gate PROMOVIDO \\
+    outputs/relatorios/VEREDITO\_v8rftb\_\dots\_G1\_todos\_reprovado.json & Veredito anterior à revisão do G1* \\
+    outputs/qwen3\_4b/lora\_4b\_v8rftb\_s44.f16.gguf & Adaptador do candidato (66 MB) \\
+    \bottomrule
+  \end{tabularx}
+\end{frame}
+
+\end{document}

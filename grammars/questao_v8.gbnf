@@ -1,0 +1,29 @@
+# Grammar GBNF v8 (llama.cpp): MESMO contrato do app (wrapper {"questoes": [...]}, 5 alternativas
+# A-E, resposta_correta em A-E, difficulty em EASY/MEDIUM/HARD), com a ORDEM DE EMISSÃO trocada:
+#     enunciado -> resolucao_passo_a_passo -> alternativas -> resposta_correta -> difficulty
+# O modelo resolve ANTES de escrever as cinco alternativas, então o valor calculado já existe quando
+# as opções são escritas. Motivo medido: o erro mais frequente apontado pelo professor é "a resolução
+# calcula o valor certo e ele não está entre as alternativas / a letra não bate" (ciclo_v8/SPEC.md).
+# JSON é lido por NOME de chave pelo app (json.loads / JSON.parse), então o contrato não muda.
+#
+# ATENÇÃO: só use esta gramática com um modelo TREINADO nesta ordem (data/train_curado_v8.jsonl).
+# Com um modelo treinado na ordem antiga (questao.gbnf) ela força uma ordem que ele nunca viu.
+# E o inverso: o app precisa enviar a gramática CORRETA para o modelo que carrega.
+#
+# Uso: llama-server/llama-cli ... --grammar-file grammars/questao_v8.gbnf
+
+root ::= "{" ws "\"questoes\"" ws ":" ws "[" ws questao (ws "," ws questao)* ws "]" ws "}"
+
+questao ::= "{" ws "\"enunciado\"" ws ":" ws string ws "," ws "\"resolucao_passo_a_passo\"" ws ":" ws string ws "," ws "\"alternativas\"" ws ":" ws alts ws "," ws "\"resposta_correta\"" ws ":" ws letra ws "," ws "\"difficulty\"" ws ":" ws difficulty ws "}"
+
+alts ::= "{" ws "\"A\"" ws ":" ws string ws "," ws "\"B\"" ws ":" ws string ws "," ws "\"C\"" ws ":" ws string ws "," ws "\"D\"" ws ":" ws string ws "," ws "\"E\"" ws ":" ws string ws "}"
+
+letra ::= "\"A\"" | "\"B\"" | "\"C\"" | "\"D\"" | "\"E\""
+
+difficulty ::= "\"EASY\"" | "\"MEDIUM\"" | "\"HARD\""
+
+string ::= "\"" char* "\""
+
+char ::= [^"\\\x7F\x00-\x1F] | "\\" (["\\/bfnrt] | "u" [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F])
+
+ws ::= [ \t\n]*

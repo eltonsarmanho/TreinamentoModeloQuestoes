@@ -33,6 +33,7 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tests"))
 
 import diversidade as dv  # noqa: E402
+import unidades_tematicas as ut  # noqa: E402
 import test_model as tm  # noqa: E402
 from gerar_lote import prompt_com_sufixo  # noqa: E402
 
@@ -46,10 +47,18 @@ COLUNAS_AVALIACAO = ["correcao_matematica", "resposta_unica", "dados_suficientes
                      "valida_geral", "comentario"]
 
 
-def sortear_combinacoes(n, seed):
-    """Pares (ano, habilidade) da taxonomia, sorteados com seed; dificuldade em rodízio."""
+# Unidades temáticas oficiais (BNCC), mesma fonte usada na apuração da amostra humana
+# (src/unidades_tematicas.py): Números, Álgebra, Geometria, Grandezas e medidas,
+# Probabilidade e estatística. Substitui a classificação por palavras-chave usada antes
+# (2026-10-18): esta é a fonte única do projeto, testada em tests/test_unidades_tematicas.py.
+CONTEUDOS = list(ut.UNIDADES)
+
+
+def sortear_combinacoes(n, seed, conteudo=None):
+    """Pares (ano, habilidade) da taxonomia, sorteados com seed; dificuldade em rodízio.
+    Com `conteudo`, só habilidades daquela unidade temática (ut.unidade_de)."""
     tax = dv.carregar_taxonomia()
-    pares = sorted(k for k in tax["habilidades"] if k.split("|")[0] in ANOS)
+    pares = sorted(tax["habilidades"].keys())
     rng = random.Random(seed)
     rng.shuffle(pares)
     combos = []
@@ -58,16 +67,20 @@ def sortear_combinacoes(n, seed):
         desc = (tax["habilidades"][chave].get("descricoes") or [""])[0]
         if not desc:
             continue
+        if conteudo and ut.unidade_de(ano, hab) != conteudo:
+            continue
         combos.append((ano, hab, desc, DIFICULDADES[i % len(DIFICULDADES)]))
     return combos
 
 
-def gerar(n, seed, gguf, lora, max_tentativas=3):
+def gerar(n, seed, gguf, lora, conteudo=None, max_tentativas=3):
     """Gera até `n` questões ENTREGUES (não falhas). Retorna lista de registros."""
     tm.LORA_PATH = Path(lora) if lora else None
     llama_cli = tm.find_llama_cli(None)
     grammar = tm.GRAMMAR_PATH if tm.GRAMMAR_PATH.exists() else None
-    combos = sortear_combinacoes(n * max_tentativas, seed)
+    combos = sortear_combinacoes(n * max_tentativas, seed, conteudo)
+    if not combos:
+        raise SystemExit(f"nenhuma habilidade na categoria {conteudo!r}")
     entregues, tentativas = [], 0
     for i, (ano, hab, desc, dif) in enumerate(combos):
         if len(entregues) >= n:
@@ -125,12 +138,21 @@ def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--gguf", required=True, help="GGUF base (ex.: Qwen3-4B Q4_K_M ou o 1.7B v3)")
     p.add_argument("--lora", default=None, help="adaptador LoRA em GGUF (opcional)")
+    p.add_argument("--gramatica", default=None,
+                   help="GBNF a usar (padrão grammars/questao.gbnf; modelos v8 exigem grammars/questao_v8.gbnf)")
     p.add_argument("--rotulo", required=True, help="nome do modelo na chave (ex.: ft4b, v3)")
     p.add_argument("--n", type=int, default=40)
     p.add_argument("--seed", type=int, default=20261015)
     p.add_argument("--saida-dir", required=True)
+    p.add_argument("--conteudo", choices=CONTEUDOS, default=None,
+                   help="só habilidades desta unidade temática BNCC (ver src/unidades_tematicas.py)")
+    p.add_argument("--flash-attn", action="store_true",
+                   help="opt-in: passa -fa on ao llama-server (mais rápido no prefill; não é o padrão)")
     a = p.parse_args()
-    registros = gerar(a.n, a.seed, a.gguf, a.lora)
+    if a.gramatica:
+        tm.GRAMMAR_PATH = Path(a.gramatica).resolve()
+    tm.FLASH_ATTN = a.flash_attn
+    registros = gerar(a.n, a.seed, a.gguf, a.lora, a.conteudo)
     total = montar_folha(registros, a.rotulo, Path(a.saida_dir), a.seed)
     print(f"folha: {a.saida_dir}/folha_professor.csv ({total} questões)")
     print("chave: NÃO entregar ao professor.")

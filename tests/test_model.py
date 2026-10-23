@@ -57,6 +57,7 @@ from pathlib import Path
 # módulos irmãos (extract_data, schema_utils) estão em src/, não ao lado dele.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+import gguf_meta  # noqa: E402
 from extract_data import SYSTEM_PROMPT, USER_TEMPLATE
 from schema_utils import (
     ALTERNATIVE_LETTERS,
@@ -102,6 +103,9 @@ MOTOR = "server"
 # (--lora). Usado no Qwen3-4B fine-tunado: o merge em fp16 de um 4B não cabe no disco. O
 # artefato avaliado passa a ser o PAR (base, adaptador), e o sha256 do relatório cobre os dois.
 LORA_PATH = None
+# 2026-10-18: opt-in. `-fa on` (flash attention) deu +6% de prefill no bench (i7-11800H, 8 threads),
+# sem mudar a geração de forma medida. Não é o padrão e não passou pelo gate: só liga com --flash-attn.
+FLASH_ATTN = False
 
 
 def _args_lora():
@@ -242,7 +246,7 @@ class _Servidor:
 
     @classmethod
     def garantir(cls, llama_cli, gguf_path, threads):
-        chave = (str(gguf_path), int(threads), str(LORA_PATH))
+        chave = (str(gguf_path), int(threads), str(LORA_PATH), FLASH_ATTN)
         if cls.proc is not None and cls.chave == chave and cls.proc.poll() is None:
             return cls.url
         cls.parar()
@@ -257,6 +261,7 @@ class _Servidor:
         # prefixo comum entre chamadas consecutivas.
         cmd = [str(binario), "-m", str(gguf_path), *_args_lora(), "--jinja", "-rea", "off",
                "-c", str(N_CTX), "-np", "1", "-t", str(threads),
+               *(["-fa", "on"] if FLASH_ATTN else []),
                "--host", "127.0.0.1", "--port", str(porta), "--log-disable"]
         inicio = time.perf_counter()
         cls.proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -1065,8 +1070,16 @@ def batch(llama_cli, gguf_path, threads, num_samples, grammar=None, retries=1, r
         "base_sha256": base_sha256,
         "lora": str(LORA_PATH) if LORA_PATH else None,
         "lora_sha256": lora_sha256,
+        # general.architecture do .gguf ("qwen3", "gemma3"): o gate recusa comparar famílias.
+        "familia_modelo": gguf_meta.arquitetura(gguf_path),
         "conjunto_avaliacao": str(val_path or VAL_PATH),
         "motor": f"llama.cpp (llama-{MOTOR})",
+        # 2026-10-19 (ciclo v8): a gramática define a ORDEM de emissão das chaves e cada modelo só
+        # funciona com a do seu treino (questao.gbnf = ordem antiga; questao_v8.gbnf = resolve antes
+        # das alternativas). Registrada para a comparação baseline x candidato ser auditável.
+        "gramatica": ({"arquivo": str(grammar),
+                       "sha256": hashlib.sha256(Path(grammar).read_bytes()).hexdigest()}
+                      if grammar else None),
         # Configuração que muda o texto gerado (ver MOTOR): o gate multiseed
         # usa este campo para aceitar mesmo sha256 com --comparar-inferencia.
         "inferencia": {"motor": MOTOR, "threads": threads, "n_ctx": N_CTX,
@@ -1181,13 +1194,15 @@ def batch(llama_cli, gguf_path, threads, num_samples, grammar=None, retries=1, r
 
 
 def main():
-    global PERFIL_CHAMADAS, MOTOR, LORA_PATH
+    global PERFIL_CHAMADAS, MOTOR, LORA_PATH, GRAMMAR_PATH
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("--llama-cli", help="caminho do binário llama-cli")
     parser.add_argument("--model", help="caminho do .gguf (padrão: acha em outputs/)")
     parser.add_argument("--threads", type=int, default=DEFAULT_THREADS)
+    parser.add_argument("--flash-attn", action="store_true",
+                        help="opt-in: -fa on no llama-server (mais rápido no prefill)")
     parser.add_argument("--lora", default=None,
                         help="adaptador LoRA em .gguf aplicado sobre --model (llama.cpp --lora)")
 
@@ -1216,6 +1231,9 @@ def main():
                         help="rodada de seeds do batch (0 = seeds históricas); use a MESMA "
                              "rodada no baseline e no candidato para manter o pareamento")
 
+    parser.add_argument("--gramatica", default=None,
+                        help="arquivo GBNF a usar no lugar de grammars/questao.gbnf. O modelo treinado na "
+                             "ordem v8 (resolução antes das alternativas) exige grammars/questao_v8.gbnf")
     parser.add_argument("--no-grammar", action="store_true",
                         help="não usar a grammar GBNF (estrutura fica por conta do modelo)")
     parser.add_argument("--retries", type=int, default=1,
@@ -1235,6 +1253,8 @@ def main():
     args = parser.parse_args()
 
     MOTOR = args.motor
+    global FLASH_ATTN
+    FLASH_ATTN = args.flash_attn
     if args.lora:
         LORA_PATH = Path(args.lora)
         if not LORA_PATH.exists():
@@ -1246,6 +1266,8 @@ def main():
     gguf_path = find_gguf(args.model)
 
     grammar = None
+    if args.gramatica:
+        GRAMMAR_PATH = Path(args.gramatica).resolve()
     if not args.no_grammar and not args.raw:
         if GRAMMAR_PATH.exists():
             grammar = GRAMMAR_PATH

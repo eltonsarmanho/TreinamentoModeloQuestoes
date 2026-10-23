@@ -225,6 +225,31 @@ class TestG1G7Agregados(unittest.TestCase):
         self.assertIn("rodada 1", g1.detalhe)
 
 
+class TestG1SoEntregues(unittest.TestCase):
+    """Revisão de 2026-10-23 (pós-reprovação do v8rftb): item status=falha não conta no G1*."""
+
+    def _caso(self, status):
+        bases = [_rel_flags(r, "b") for r in range(3)]
+        cands = [_rel_flags(r, "c", ruins={0} if r == 1 else ()) for r in range(3)]
+        cands[1]["detalhes"][0]["status"] = status
+        return bases, cands
+
+    def test_item_descartado_nao_reprova(self):
+        bases, cands = self._caso("falha")
+        gates, _, _, _ = pc.avalia_multiseed(bases, cands, g1_so_entregues=True)
+        self.assertTrue(_gate(gates, "G1*").passou)
+
+    def test_item_descartado_reprova_na_regra_antiga(self):
+        bases, cands = self._caso("falha")
+        gates, _, _, _ = pc.avalia_multiseed(bases, cands)
+        self.assertFalse(_gate(gates, "G1*").passou)   # 89/90 = 98,9%
+
+    def test_item_entregue_ruim_continua_reprovando(self):
+        bases, cands = self._caso("nao_verificavel")
+        gates, _, _, _ = pc.avalia_multiseed(bases, cands, g1_so_entregues=True)
+        self.assertFalse(_gate(gates, "G1*").passou)
+
+
 class TestRegimeDePrompt(unittest.TestCase):
     """2026-10-14: baseline e candidato têm de ser medidos no mesmo regime de prompt."""
 
@@ -248,3 +273,24 @@ class TestRegimeDePrompt(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestDecisao20261022(unittest.TestCase):
+    """G5/G8 informativos e G9 fora quando sem_g5_g8_g9=True; padrão da função inalterado."""
+
+    def test_g8_lento_nao_reprova_e_g9_some(self):
+        bases = [_rel(r, "base") for r in range(3)]
+        cands = [_rel(0, "cand"), _rel(1, "cand", tps=10.0), _rel(2, "cand")]
+        gates, _, _, _ = pc.avalia_multiseed(bases, cands, sem_g5_g8_g9=True)
+        g8 = _gate(gates, "G8")
+        self.assertFalse(g8.passou)
+        self.assertFalse(g8.bloqueante)
+        self.assertFalse(_gate(gates, "G5").bloqueante)
+        self.assertNotIn("G9", [g.id for g in gates])
+
+    def test_padrao_da_funcao_continua_bloqueante(self):
+        bases = [_rel(r, "base") for r in range(3)]
+        cands = [_rel(0, "cand"), _rel(1, "cand", tps=10.0), _rel(2, "cand")]
+        gates, _, _, _ = pc.avalia_multiseed(bases, cands)
+        self.assertTrue(_gate(gates, "G8").bloqueante)
+        self.assertIn("G9", [g.id for g in gates])
