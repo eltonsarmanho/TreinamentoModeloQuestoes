@@ -12,6 +12,16 @@
 %   outputs/relatorios/VEREDITO_v8rftb_vs_v7b_multiseed_G1_todos_reprovado.json
 %   ciclo_v7/SPEC.md, outputs/gemma3/amostra_humana_s44/apuracao.json (modelos antigos)
 %   data/aval_{v7b,v8rft,v8rftb}.jsonl                      (letras e "Nenhuma", 800 amostras)
+%   outputs/melhoria_v8/folha_v8rftb/                       (professor, 78 itens do v8rftb)
+%   outputs/melhoria_v8/auditoria_extras_rft/apuracao.json  (professor, 60 extras + 20 controles)
+%   outputs/melhoria_v8/auto_conferencia/apuracao_cot_perm*.json (gerar e conferir)
+% Auditoria de 23/10 (todos os números conferidos contra os arquivos acima). Correções:
+%   - núcleo por unidade: as versões anteriores usavam o bloco por_unidade_e_origem de
+%     amostra_humana.py, que mede valida_geral (7 dimensões), não o núcleo;
+%   - comparação entre modelos: v6 e baseline_v1 vinham da validade geral; agora tudo é núcleo
+%     somado das amostras (v6 não tem núcleo medido);
+%   - causas das 27 reprovadas do v8rftb recontadas item a item (5/6/7/9);
+%   - letra A e "Nenhuma" recalculadas sobre as questões geradas (mesma definição do SPEC).
 % ============================================================
 
 \usetheme{Madrid}
@@ -99,6 +109,8 @@
         \item Juízes automáticos calibrados
         \item Resultados: juízes pareados e gate
         \item Comparação com os modelos anteriores
+        \item Professor no v8rftb e auditoria dos extras
+        \item Gerar e conferir: o modelo confere a própria questão
         \item Expectativa para o aplicativo
         \item Riscos e próximos passos
       \end{enumerate}
@@ -113,19 +125,20 @@
 % ------------------------------------------------------------
 \section{Resumo}
 \begin{frame}{Resumo executivo}
+  \tcbset{fontupper=\footnotesize}
   \begin{columns}[T]
     \begin{column}{0.32\textwidth}
       \begin{caixa}{lightblue}
         \textbf{\faDatabase\ Base}\\[2pt]
-        2.918 questões reordenadas para \emph{resolver antes de escrever as alternativas}, mais
-        875 questões novas aprovadas por juiz. Total de 3.793, com gabarito em 20\% por letra.
+        2.918 questões com a resolução antes das alternativas, mais 875 aprovadas por juiz.
+        Total de 3.793, com gabarito em 20\% por letra.
       \end{caixa}
     \end{column}
     \begin{column}{0.32\textwidth}
       \begin{caixa}{lightgreen}
         \textbf{\faBalanceScale\ Juízes}\\[2pt]
-        Jev: 64,6\% $\rightarrow$ \textbf{73,4\%} de aceitação (800 pares, $p<0{,}001$).
-        Maritaca: 60,2\% $\rightarrow$ 66,5\% (400 pares, $p=0{,}065$). Os dois apontam a mesma direção.
+        Jev: 64,6\% $\rightarrow$ \textbf{73,4\%} (800 pares, $p<0{,}001$).
+        Maritaca: 60,2\% $\rightarrow$ 66,5\% (400 pares, $p=0{,}065$).
       \end{caixa}
     \end{column}
     \begin{column}{0.32\textwidth}
@@ -136,11 +149,16 @@
       \end{caixa}
     \end{column}
   \end{columns}
-  \vspace{4pt}
-  \begin{caixa}{lightred}
-    \textbf{\faExclamationTriangle\ O professor não confirmou o ganho:} núcleo de \textbf{65,4\%} (51 de 78,
-    IC95 [54,3; 75,0]), contra 68,9\% do v7b. A diferença está dentro do ruído e a meta de 80\% não foi atingida.
-    \textbf{Recomendação: não publicar o v8rftb.} O 9º ano e a Geometria seguem como pontos fracos.
+  \vspace{2pt}
+  \begin{caixa}[fontupper=\footnotesize, before skip=3pt, after skip=3pt]{lightred}
+    \textbf{\faExclamationTriangle\ O professor não confirmou o ganho:} núcleo de \textbf{65,4\%} (51 de 78, IC95 [54,3; 75,0])
+    contra 68,9\% do v7b, dentro do ruído e abaixo da meta de 80\%. \textbf{Não publicar o v8rftb.}
+    Os extras do treino têm 88\% de núcleo, então o limite está na geração.
+  \end{caixa}
+  \vspace{2pt}
+  \begin{caixa}[fontupper=\footnotesize, before skip=3pt, after skip=0pt]{lightorange}
+    \textbf{\faRedo\ Nova alavanca, sem API:} o 4B base resolve a questão às cegas e ela só vale se chegar ao mesmo gabarito.
+    Na versão crítica, que julga cada alternativa e os dados, o núcleo do v8rftb vai a \textbf{85,2\%} perdendo 10\% das válidas. O custo é de cerca de 50 s por questão no PC.
   \end{caixa}
 \end{frame}
 
@@ -164,19 +182,19 @@
       \centering
       \begin{tikzpicture}
         \begin{axis}[
-          xbar, width=0.98\textwidth, height=4.6cm,
+          xbar, width=0.88\textwidth, height=4.6cm,
           xmin=0, xmax=100, xlabel={\scriptsize validade núcleo (\%)},
-          symbolic y coords={9º ano, 5º ano, 2º ano, Geometria, Álgebra, Números},
+          symbolic y coords={9º ano, 5º ano, 2º ano, Geometria, Álgebra, Prob. e estat., Números, Grandezas},
           ytick=data, yticklabel style={font=\scriptsize}, xticklabel style={font=\scriptsize},
           nodes near coords, nodes near coords style={font=\tiny},
-          bar width=7pt, enlarge y limits=0.12,
+          bar width=6pt, enlarge y limits=0.08,
         ]
           \addplot[fill=accentblue!70, draw=accentblue] coordinates {
-            (54,9º ano) (70,5º ano) (82,2º ano) (42,Geometria) (51,Álgebra) (58,Números)};
+            (54,9º ano) (70,5º ano) (82,2º ano) (54,Geometria) (59,Álgebra) (72,Prob. e estat.) (76,Números) (82,Grandezas)};
         \end{axis}
       \end{tikzpicture}
 
-      {\scriptsize 9º ano e Geometria concentram as falhas.}
+      {\scriptsize 9º ano e Geometria concentram as falhas (54\% cada).}
     \end{column}
   \end{columns}
 \end{frame}
@@ -208,7 +226,7 @@
       Depois vêm a conta errada e a resposta duplicada.
       \vspace{4pt}
 
-      Reordenar o JSON resolve só a última barra, que vale cerca de \textbf{5 pontos}.
+      Reordenar o JSON resolve só a barra ``valor fora das alternativas'', que vale cerca de \textbf{5 pontos}.
       Para as outras três, era preciso filtrar o que o modelo aprende. Daí veio o RFT (\emph{Rejection Fine-Tuning}, ou ajuste fino por rejeição): o modelo gera várias questões, um juiz descarta as ruins e o modelo é treinado de novo só com as aprovadas.
     \end{column}
   \end{columns}
@@ -431,20 +449,21 @@
     \midrule
     Gemma 3 1B zero-shot & 0,8 GB & 15\% (n=20) & base & Pipeline Gemma pronto e trava que impede comparar famílias diferentes \\
     Gemma 3 1B fine-tune & 0,8 GB & 0\% (n=20) & \badmark\ 3 seeds & Mostrou que 1B não comporta a tarefa \\
-    Qwen3-1.7B v3 & 1,1 GB & 50\% (n=20)\textsuperscript{a} & \okmark & Primeiro modelo publicado, gramática GBNF e gate multiseed \\
-    Qwen3-1.7B v6 & 1,1 GB & 35\% (n=20) & \okmark & Mostrou que passar no gate não garante qualidade, e a amostra humana passou a decidir \\
-    Qwen3-1.7B v7b & 1,1 GB & 35 a 50\% (n=20) & \okmark & Base com 97,9\% de núcleo, o que mostrou que o gargalo é o modelo \\
-    Qwen3-4B zero-shot & 2,4 GB & 65 a 70\% (n=20) & base & Teste de teto: o tamanho do modelo pesa mais que a curadoria \\
+    Qwen3-1.7B v3 (baseline\_v1) & 1,1 GB & 40\% (n=40) & \okmark & Primeiro modelo publicado, gramática GBNF e gate multiseed \\
+    Qwen3-1.7B v6 & 1,1 GB & n/d\textsuperscript{a} & \okmark & Mostrou que passar no gate não garante qualidade, e a amostra humana passou a decidir \\
+    Qwen3-1.7B v7b & 1,1 GB & 41\% (n=80) & \okmark & Base com 97,9\% de núcleo, o que mostrou que o gargalo é o modelo \\
+    Qwen3-4B zero-shot & 2,5 GB & 68\% (n=40) & base & Teste de teto: o tamanho do modelo pesa mais que a curadoria \\
     Qwen3-4B v7b & 2,5 GB & \textbf{68,9\%} (n=222) & \okmark & Primeira medida confiável, taxonomia de falhas e calibração dos juízes \\
     \rowcolor{lightgreen}
-    Qwen3-4B v8rftb & 2,5 GB & 65,4\% (n=78) & \okmark & Gate e juízes melhoraram, mas o professor não viu ganho. Mostrou o limite do filtro por juiz de API \\
+    Qwen3-4B v8rftb & 2,5 GB & 65,4\% (n=78) & \okmark & Gate e juízes melhoraram, mas o professor não viu ganho. Com dados bons (88\%), o limite é a geração \\
     \bottomrule
   \end{tabularx}
   \vspace{4pt}
 
   \raggedright
-  \tiny \textsuperscript{a} Valor do baseline\_v1 do 1.7B na amostra contra o v6. Com n=20, o intervalo de confiança tem cerca de $\pm$20 pontos,
-  por isso as linhas do 1.7B se sobrepõem. Tamanho do 4B fine-tunado: GGUF Q4\_K\_M de 2,4 GB mais adaptador LoRA de 66 MB.
+  \tiny Núcleo somado das amostras cegas de cada modelo. O 1.7B v7b variou de 25\% a 55\% entre quatro amostras de 20, e o baseline\_v1 deu 25\% e 55\%.
+  \textsuperscript{a} As folhas do v6 não tinham as colunas do núcleo. Na validade geral (7 dimensões), o v6 deu 35\% e o baseline\_v1 50\%.
+  Tamanho do 4B fine-tunado: GGUF Q4\_K\_M de 2,5 GB mais adaptador LoRA de 66 MB.
 \end{frame}
 
 % ------------------------------------------------------------
@@ -454,21 +473,171 @@
     \begin{axis}[
       ybar, width=0.92\textwidth, height=5.6cm,
       ymin=0, ymax=100, ylabel={\scriptsize validade núcleo (\%)},
-      symbolic x coords={Gemma 1B FT, 1.7B v6, 1.7B v7b, 4B ZS, 4B v7b, 4B v8rftb}, xticklabel style={font=\scriptsize}, yticklabel style={font=\scriptsize},
+      symbolic x coords={Gemma 1B FT, 1.7B v3, 1.7B v7b, 4B ZS, 4B v7b, 4B v8rftb, v8rftb + cot, v8rftb + crítica}, xticklabel style={font=\scriptsize, text width=1.5cm, align=center}, yticklabel style={font=\scriptsize},
       nodes near coords, nodes near coords style={font=\tiny},
-      bar width=20pt, enlarge x limits=0.1, bar shift=0pt,
-      xtick={Gemma 1B FT, 1.7B v6, 1.7B v7b, 4B ZS, 4B v7b, 4B v8rftb},
+      bar width=18pt, enlarge x limits=0.08, bar shift=0pt,
+      xtick={Gemma 1B FT, 1.7B v3, 1.7B v7b, 4B ZS, 4B v7b, 4B v8rftb, v8rftb + cot, v8rftb + crítica},
     ]
       \addplot[fill=accentblue!60, draw=accentblue] coordinates {
-        (Gemma 1B FT,0) (1.7B v6,35) (1.7B v7b,35) (4B ZS,65) (4B v7b,68.9)};
+        (Gemma 1B FT,0) (1.7B v3,40) (1.7B v7b,41) (4B ZS,68) (4B v7b,68.9)};
       \addplot[fill=warnorange!50, draw=warnorange] coordinates {(4B v8rftb,65.4)};
-      \draw[badred, dashed, thick] (axis cs:Gemma 1B FT,80) -- (axis cs:4B v8rftb,80)
+      \addplot[fill=okgreen!50, draw=okgreen] coordinates {(v8rftb + cot,72.7) (v8rftb + crítica,85.2)};
+      \draw[badred, dashed, thick] (axis cs:Gemma 1B FT,80) -- (axis cs:v8rftb + crítica,80)
         node[pos=0.03, above, font=\tiny, text=badred] {meta 80\%};
     \end{axis}
   \end{tikzpicture}
 
-  \footnotesize Todas as barras são medidas do professor (n=20 nos modelos pequenos, n=222 no 4B v7b e n=78 no v8rftb).
-  O v8rftb (65,4\%) e o v7b (68,9\%) têm intervalos que se sobrepõem, e nenhum chega à meta de 80\%.
+  \footnotesize Núcleo medido pelo professor (n=20 a 80 nos modelos pequenos, 222 no 4B v7b e 78 no v8rftb).
+  As barras verdes são as questões do v8rftb que passaram na conferência (66 na cot e 54 na crítica). Só a crítica passa da meta de 80\%, ainda com IC95 [73; 92].
+\end{frame}
+
+% ------------------------------------------------------------
+\section{Professor e auditoria}
+\begin{frame}{Professor no v8rftb: 78 questões às cegas}
+  \begin{columns}[T]
+    \begin{column}{0.47\textwidth}
+      \footnotesize
+      \begin{tabular}{@{}lcc@{}}
+        \toprule
+        Recorte & Núcleo & n \\
+        \midrule
+        Geral & \textbf{65,4\%} & 78 \\
+        2º ano & 83\% & 23 \\
+        5º ano & 59\% & 22 \\
+        9º ano & \textbf{50\%} & 26 \\
+        Números & 67\% & 33 \\
+        Geometria & 62\% & 13 \\
+        Grandezas e medidas & 69\% & 13 \\
+        Prob. e estatística & 70\% & 10 \\
+        Álgebra & 56\% & 9 \\
+        Verificador \texttt{ok} & 79\% & 42 \\
+        Verificador não verificável & 50\% & 36 \\
+        \bottomrule
+      \end{tabular}
+    \end{column}
+    \begin{column}{0.5\textwidth}
+      \small
+      Causas das 27 reprovadas, item a item, pelo comentário do professor:
+      \begin{itemize}\footnotesize
+        \item 9 com situação mal definida ou dado que falta,
+        \item 7 com conta ou resolução errada,
+        \item 6 com mais de uma alternativa correta e
+        \item 5 com dados que se contradizem no enunciado.
+      \end{itemize}
+      \footnotesize
+      O 9º ano segue como o ponto fraco. Por unidade, nenhuma se destaca, porque cada uma tem só 9 a 33 questões.
+      \textbf{Nenhuma das anteriores} não pesou (59\% contra 68\%, dentro do ruído).
+      O filtro determinístico atual só marca o que não consegue verificar, então não separa bem.
+    \end{column}
+  \end{columns}
+\end{frame}
+
+% ------------------------------------------------------------
+\begin{frame}{Auditoria dos extras do RFT: os dados de treino são bons}
+  \begin{columns}[c]
+    \begin{column}{0.52\textwidth}
+      \centering
+      \begin{tikzpicture}
+        \begin{axis}[
+          xbar, width=0.78\textwidth, height=4.4cm,
+          xmin=0, xmax=120, xtick={0,20,40,60,80,100}, xlabel={\scriptsize núcleo (\%), mesmo professor},
+          symbolic y coords={Modelo v8rftb, Modelo v7b, Extras do RFT, Controles da base},
+          ytick=data, yticklabel style={font=\scriptsize}, xticklabel style={font=\scriptsize},
+          nodes near coords, nodes near coords style={font=\tiny},
+          bar width=9pt, enlarge y limits=0.18,
+        ]
+          \addplot[fill=accentblue!60, draw=accentblue] coordinates {
+            (65.4,Modelo v8rftb) (68.9,Modelo v7b) (88.3,Extras do RFT) (100,Controles da base)};
+        \end{axis}
+      \end{tikzpicture}
+    \end{column}
+    \begin{column}{0.45\textwidth}
+      \small
+      Folha cega com 60 extras que o Jev aprovou e 20 questões da base, misturados.
+      \begin{itemize}\footnotesize
+        \item Extras: \textbf{53/60 = 88,3\%}, IC95 [77,8; 94,2]
+        \item Controles: 20/20 = 100\% (Fisher $p=0{,}18$)
+        \item Extras contra o v8rftb: $p=0{,}0025$
+      \end{itemize}
+      \vspace{2pt}
+      \footnotesize
+      O modelo treinou com dados de 88\% a 100\% de núcleo e mesmo assim gera 65\%.
+      Melhorar só os dados não basta. O limite está na geração.
+    \end{column}
+  \end{columns}
+\end{frame}
+
+% ------------------------------------------------------------
+\section{Gerar e conferir}
+\begin{frame}{Gerar e conferir: o modelo confere a própria questão}
+  \centering
+  \begin{tikzpicture}[node distance=0.4cm and 0.45cm]
+    \node[etapa] (g) {\textbf{Gerar}\\v7b ou v8rftb};
+    \node[etapa, right=of g] (e) {\textbf{Embaralhar}\\alternativas};
+    \node[etapa, right=of e] (r) {\textbf{Resolver às cegas}\\4B base, sem gabarito};
+    \node[etapa, right=of r, fill=lightgreen, draw=okgreen] (c) {\textbf{Mesma letra?}\\sim: entrega\\não: gera outra};
+    \draw[seta] (g) -- (e); \draw[seta] (e) -- (r); \draw[seta] (r) -- (c);
+  \end{tikzpicture}
+  \vspace{4pt}
+
+  \scriptsize
+  \begin{tabular}{@{}lcccc@{}}
+    \toprule
+    & \multicolumn{2}{c}{350 questões já rotuladas} & \multicolumn{2}{c}{78 questões do v8rftb} \\
+    \cmidrule(lr){2-3}\cmidrule(lr){4-5}
+    Regra & Mantidas & Núcleo & Mantidas & Núcleo \\
+    \midrule
+    Sem filtro & 350 & 65,4\% & 78 & 65,4\% \\
+    Só a letra, sem raciocínio & 44\% & 74,0\% & -- & -- \\
+    \textbf{Raciocínio curto (cot)} & \textbf{74\%} & \textbf{82,7\%} & \textbf{85\%} & \textbf{72,7\%} [61; 82] \\
+    Verificador \texttt{ok} & 45\% & 82,9\% & 54\% & 78,6\% \\
+    cot e verificador \texttt{ok} & 39\% & 91,2\% & 47\% & 83,8\% [69; 92] \\
+    \bottomrule
+  \end{tabular}
+  \vspace{4pt}
+
+  \raggedright\footnotesize
+  A conferência perde só 6\% das questões válidas. Sem raciocínio, o resolvedor acerta metade das válidas e não serve.
+  No PC, cada conferência leva cerca de 11,5 s. As 350 questões misturam a base (96\% válida), por isso o número é mais alto ali.
+\end{frame}
+
+% ------------------------------------------------------------
+\begin{frame}{Modo crítica: julgar cada alternativa e os dados}
+  \begin{columns}[T]
+    \begin{column}{0.52\textwidth}
+      \scriptsize
+      \begin{tabular}{@{}lccc@{}}
+        \toprule
+        Regra (78 do v8rftb) & Mantidas & Núcleo & Perde \\
+        \midrule
+        Sem filtro & 78 & 65,4\% & -- \\
+        cot & 66 & 72,7\% & 6\% \\
+        \textbf{Crítica} & \textbf{54} & \textbf{85,2\%} & \textbf{10\%} \\
+        Crítica, sem 5 do ajuste & 51 & 84,3\% & 10\% \\
+        cot e crítica & 51 & 88,2\% & 12\% \\
+        Crítica e \texttt{ok} & 31 & 96,8\% & -- \\
+        \bottomrule
+      \end{tabular}
+      \vspace{4pt}
+
+      \footnotesize
+      O 4B base resolve, julga cada alternativa e diz se há contradição ou dado faltando. Só passa com uma única correta, igual ao gabarito.
+      A primeira versão do prompt chutava sem fazer conta e foi trocada depois de 5 questões.
+    \end{column}
+    \begin{column}{0.45\textwidth}
+      \small
+      Ainda passam 8 inválidas:
+      \begin{itemize}\footnotesize
+        \item 5 com ambiguidade que o modelo não percebe (losango, 1,4 igual a 1,40, variável não definida) e
+        \item 3 com \textbf{resolução errada}. A crítica não lê a resolução.
+      \end{itemize}
+      \begin{caixa}{lightorange}
+        \footnotesize
+        \textbf{Cautela:} o IC95 vai de 73\% a 92\%, e o método foi desenhado olhando os erros destas mesmas 78 questões.
+        Falta validar em questões novas.
+      \end{caixa}
+    \end{column}
+  \end{columns}
 \end{frame}
 
 % ------------------------------------------------------------
@@ -481,17 +650,19 @@
         \toprule
         Item & Qwen3-1.7B (hoje) & Qwen3-4B v8rftb \\
         \midrule
-        Arquivo do modelo & 1,1 GB & 2,4 GB + 66 MB \\
+        Arquivo do modelo & 1,1 GB & 2,5 GB + 66 MB \\
         Memória estimada\textsuperscript{b} & cerca de 1,4 GB & cerca de 3 GB \\
         Velocidade (CPU do PC) & 27 tok/s & 15 tok/s \\
         Tempo por questão (PC) & cerca de 8 s & cerca de 21 s \\
-        Núcleo (professor) & 35 a 50\% & 65\% (n=78) \\
+        Núcleo (professor) & cerca de 40\% (n=80) & 65\% (n=78) \\
+        Com crítica\textsuperscript{c} & -- & 85\%, cerca de 105 s \\
         Gramática enviada & \texttt{questao.gbnf} & \texttt{questao\_v8.gbnf} \\
         \bottomrule
       \end{tabular}
       \vspace{2pt}
 
       \tiny \textsuperscript{b} Pesos mais o cache de 2.048 tokens (cerca de 0,3 GB no 4B). Estimativa de cálculo, ainda sem medida no aparelho.
+      \textsuperscript{c} Gerar (21 s), criticar (cerca de 50 s) e gerar de novo nos 31\% descartados. Estimativa feita no PC.
     \end{column}
     \begin{column}{0.33\textwidth}
       \centering
@@ -502,7 +673,8 @@
 
   \begin{caixa}{lightblue}
     \footnotesize
-    \textbf{O que esperar:} correção parecida com a do v7b (65 a 69\%), bem acima do 1.7B, ao custo de cerca de 2,5 vezes mais tempo por questão e 2 vezes mais memória.
+    \textbf{O que esperar:} correção parecida com a do v7b (65 a 69\%), bem acima do 1.7B, ao custo de cerca de 2,7 vezes mais tempo por questão e 2 vezes mais memória.
+    Com a crítica, o núcleo vai a cerca de 85\%, mas cada questão entregue leva cerca de 5 vezes mais no PC. Gerar em segundo plano, antes de o aluno pedir, pode esconder essa espera.
     Pela estimativa, o 4B pede aparelhos com 6 GB de RAM ou mais. Em celulares, a velocidade deve ficar abaixo da do PC.
     Por isso é preciso medir em um aparelho real antes de publicar.
   \end{caixa}
@@ -539,61 +711,24 @@
           bar width=11pt, enlarge x limits=0.45,
           legend style={font=\tiny, at={(0.5,1.02)}, anchor=south, legend columns=3},
         ]
-          \addplot[fill=basegray!50, draw=basegray] coordinates {(Gabarito A,33.7) (Nenhuma das anteriores,14.2)};
-          \addplot[fill=warnorange!60, draw=warnorange] coordinates {(Gabarito A,44.0) (Nenhuma das anteriores,26.9)};
-          \addplot[fill=okgreen!60, draw=okgreen] coordinates {(Gabarito A,41.8) (Nenhuma das anteriores,28.3)};
+          \addplot[fill=basegray!50, draw=basegray] coordinates {(Gabarito A,33.4) (Nenhuma das anteriores,15.2)};
+          \addplot[fill=warnorange!60, draw=warnorange] coordinates {(Gabarito A,44.1) (Nenhuma das anteriores,28.4)};
+          \addplot[fill=okgreen!60, draw=okgreen] coordinates {(Gabarito A,41.7) (Nenhuma das anteriores,28.5)};
           \legend{v7b, v8rft, v8rftb}
         \end{axis}
       \end{tikzpicture}
 
-      {\tiny 800 amostras pareadas por modelo. O equilíbrio seria 20\% por letra.}
+      {\tiny Cerca de 790 questões geradas por modelo, nos mesmos 800 prompts. ``Nenhuma das anteriores'' é a presença da alternativa. O equilíbrio seria 20\% por letra.}
     \end{column}
     \begin{column}{0.48\textwidth}
       \small
       \begin{itemize}
-        \item \warnmark\ \textbf{O viés de letra persiste.} Balancear o treino levou o gabarito A de 44,0\% para só 41,8\%.
+        \item \warnmark\ \textbf{O viés de letra persiste.} Balancear o treino levou o gabarito A de 44,1\% para só 41,7\%.
               O gate passou porque o v7b também deu 40\% nas rodadas dele. Embaralhar as opções no app resolve isso.
-        \item \warnmark\ \textbf{Nenhuma das anteriores} dobrou. O corpus tem cerca de 21\%, então o modelo está copiando o treino.
-              O professor deve dizer se isso prejudica.
-        \item \warnmark\ \textbf{9º ano e Geometria} continuam como os pontos fracos.
+        \item \warnmark\ \textbf{Nenhuma das anteriores} quase dobrou. Ela aparece em cerca de 23\% do corpus, então o modelo está copiando o treino.
+              Para o professor, não prejudicou (59\% contra 68\%, dentro do ruído).
+        \item \warnmark\ \textbf{9º ano} continua como o ponto fraco: 54\% no v7b e 50\% no v8rftb.
       \end{itemize}
-    \end{column}
-  \end{columns}
-\end{frame}
-
-% ------------------------------------------------------------
-\begin{frame}{Resultado do professor e diagnóstico das 27 reprovadas}
-  \begin{columns}[T]
-    \begin{column}{0.5\textwidth}
-      \footnotesize
-      \begin{tabular}{@{}lcc@{}}
-        \toprule
-        Recorte & Núcleo & n \\
-        \midrule
-        Geral & \textbf{65,4\%} & 78 \\
-        2º ano & 83\% & 23 \\
-        5º ano & 59\% & 22 \\
-        9º ano & 50\% & 26 \\
-        Geometria & 46\% & 13 \\
-        Grandezas e medidas & 46\% & 13 \\
-        Números & 58\% & 33 \\
-        Verificador \texttt{ok} & 79\% & 42 \\
-        Verificador não verificável & 50\% & 36 \\
-        \bottomrule
-      \end{tabular}
-    \end{column}
-    \begin{column}{0.48\textwidth}
-      \small
-      Causas das 27 reprovadas, no texto do professor:
-      \begin{itemize}\footnotesize
-        \item cerca de 11 com enunciado contraditório (passageiros, troco, totais),
-        \item cerca de 6 com mais de uma resposta correta,
-        \item cerca de 4 com conta ou resolução errada e
-        \item o restante com situação mal definida.
-      \end{itemize}
-      \footnotesize
-      \textbf{Nenhuma das anteriores} não pesou (59\% contra 68\%, dentro do ruído).
-      O filtro determinístico atual só marca o que não consegue verificar, então não separa bem.
     \end{column}
   \end{columns}
 \end{frame}
@@ -603,9 +738,9 @@
   \centering
   \begin{tikzpicture}[node distance=0.5cm and 0.45cm]
     \node[etapa, fill=lightred, draw=badred] (r) {\textbf{v8rftb}\\65,4\%\\abaixo de 80\%};
-    \node[etapa, right=of r, fill=lightgreen, draw=okgreen, text width=2.6cm] (c) {\textbf{Auditoria dos extras}\\feita: 88,3\% de núcleo};
-    \node[etapa, right=of c, fill=lightorange, draw=warnorange, text width=2.6cm] (j) {\textbf{Gerar e conferir}\\resolver às cegas, no app};
-    \node[etapa, right=of j, text width=2.6cm] (o) {\textbf{ORPO}\\descartado por ora};
+    \node[etapa, right=of r, fill=lightgreen, draw=okgreen, text width=2.4cm] (c) {\textbf{Auditoria dos extras}\\feita: 88,3\%};
+    \node[etapa, right=of c, fill=lightgreen, draw=okgreen, text width=2.4cm] (j) {\textbf{Crítica}\\feita: 85,2\%};
+    \node[etapa, right=of j, fill=lightorange, draw=warnorange, text width=2.4cm] (o) {\textbf{Validar}\\em questões novas};
     \draw[seta] (r) -- (c);
     \draw[seta] (c) -- (j);
     \draw[seta] (j) -- (o);
@@ -617,11 +752,12 @@
     \toprule
     Ação & Motivo \\
     \midrule
-    Manter o v7b como referência & Mesmo núcleo do v8rftb, sem adotar um modelo não confirmado \\
-    Auditoria dos extras do RFT, já feita & Núcleo de 88,3\% (n=60) contra 65,4\% do modelo: os dados são bons e o gargalo é a geração \\
-    Validar a resposta na hora de gerar, dentro do app & Gerar, resolver de novo às cegas e aceitar só se concordar, sem API \\
-    Medir em um celular real e embaralhar as alternativas & Pendências do app, independentes do modelo \\
-    Descartar o ORPO por ora & Os dados já são bons e os pares vêm do mesmo filtro, então não atacam a causa \\
+    Manter o v7b como referência e não publicar o v8rftb & Mesmo núcleo, sem adotar um modelo não confirmado \\
+    Validar gerar e criticar em uma folha nova do professor & A crítica foi desenhada olhando estas 78 questões. O IC ainda começa em 73\% \\
+    Medir gerar e criticar em um celular real & São cerca de 105 s por questão entregue no PC. No celular é que se decide se cabe no app \\
+    Embaralhar as alternativas no app & Resolve o viés de letra para o aluno, independente do modelo \\
+    Próximo ciclo de dados: 9º ano com enunciados coerentes & É onde estão as reprovações, no modelo e na conferência \\
+    ORPO descartado por ora & Os dados já são bons e os pares vêm do mesmo filtro, então não atacam a causa \\
     \bottomrule
   \end{tabularx}
 \end{frame}
@@ -629,13 +765,17 @@
 % ------------------------------------------------------------
 \appendix
 \begin{frame}{Apêndice: arquivos de evidência}
-  \scriptsize
+  \tiny
   \begin{tabularx}{\textwidth}{@{}>{\ttfamily}lX@{}}
     \toprule
     Arquivo & Conteúdo \\
     \midrule
     ciclo\_v8/SPEC.md & Hipótese, decisões, auditoria e resultados do ciclo \\
     outputs/melhoria\_v8/F/ & Folha do professor (222 itens) e apuração \\
+    outputs/melhoria\_v8/folha\_v8rftb/ & Folha do professor (78 itens do v8rftb) e apuração \\
+    outputs/melhoria\_v8/auditoria\_extras\_rft/ & Auditoria cega dos extras (60 extras e 20 controles) \\
+    outputs/melhoria\_v8/auto\_conferencia/ & Respostas e apurações de gerar e conferir \\
+    src/auto\_conferencia.py & Conferência (modos direto, cot e crítica) \\
     outputs/melhoria\_v8/validacao\_jev\_fora\_da\_amostra.json & Calibração do Jev \\
     outputs/melhoria\_v8/calibracao\_maritaca.json & Calibração da Maritaca \\
     data/train\_curado\_v8\_rft\_bal.jsonl & Corpus treinado (3.793 questões) \\
@@ -643,6 +783,7 @@
     outputs/relatorios/VEREDITO\_v8rftb\_vs\_v7b\_multiseed.json & Gate PROMOVIDO \\
     outputs/relatorios/VEREDITO\_v8rftb\_\dots\_G1\_todos\_reprovado.json & Veredito anterior à revisão do G1* \\
     outputs/qwen3\_4b/lora\_4b\_v8rftb\_s44.f16.gguf & Adaptador do candidato (66 MB) \\
+    outputs/qwen3\_4b/Qwen3-4B-Q4\_K\_M.gguf & Modelo base, gerador e resolvedor da conferência (2,5 GB) \\
     \bottomrule
   \end{tabularx}
 \end{frame}

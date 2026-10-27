@@ -140,6 +140,11 @@ MAX_NEW_TOKENS = 512
 N_CTX = 2048
 TEMPERATURE = 0.7
 TOP_P = 0.8
+# None = não enviar: valem os padrões do llama.cpp (top_k 40, min_p 0,05), que são os das baselines
+# já medidas. O card do Qwen3 recomenda, sem pensamento, top_k 20 e min_p 0 (2026-10-26): testar isso
+# muda o texto gerado e passa pelo gate multiseed com --comparar-inferencia (ver amostragem_extra()).
+TOP_K = None
+MIN_P = None
 
 SPEED_PATTERN = re.compile(
     r"Prompt:\s*([\d.]+)\s*t/s\s*\|\s*Generation:\s*([\d.]+)\s*t/s"
@@ -292,6 +297,18 @@ class _Servidor:
 atexit.register(_Servidor.parar)
 
 
+def amostragem_extra():
+    """Só o que difere dos padrões históricos. Vazio = relatórios idênticos aos de antes."""
+    extra = {}
+    if TOP_K is not None:
+        extra["top_k"] = TOP_K
+    if MIN_P is not None:
+        extra["min_p"] = MIN_P
+    if TEMPERATURE != 0.7:
+        extra["temperatura"] = TEMPERATURE
+    return extra
+
+
 def _generate_server(llama_cli, gguf_path, user_prompt, threads, max_new_tokens, seed, grammar):
     url = _Servidor.garantir(llama_cli, gguf_path, threads)
     corpo = {
@@ -300,6 +317,10 @@ def _generate_server(llama_cli, gguf_path, user_prompt, threads, max_new_tokens,
         "temperature": TEMPERATURE, "top_p": TOP_P, "max_tokens": max_new_tokens,
         "cache_prompt": True,
     }
+    if TOP_K is not None:
+        corpo["top_k"] = TOP_K
+    if MIN_P is not None:
+        corpo["min_p"] = MIN_P
     if seed is not None:
         corpo["seed"] = seed
     if grammar is not None:
@@ -357,6 +378,10 @@ def generate(llama_cli, gguf_path, user_prompt, threads, max_new_tokens, seed=No
         "--no-display-prompt", "--simple-io",
         "-t", str(threads),
     ]
+    if TOP_K is not None:
+        cmd += ["--top-k", str(TOP_K)]
+    if MIN_P is not None:
+        cmd += ["--min-p", str(MIN_P)]
     cmd += ["-lv", "3", "--log-timestamps"] if PERFIL_CHAMADAS is not None else ["--log-disable"]
     if grammar is not None:
         cmd += ["--grammar-file", str(grammar)]
@@ -1083,7 +1108,8 @@ def batch(llama_cli, gguf_path, threads, num_samples, grammar=None, retries=1, r
         # Configuração que muda o texto gerado (ver MOTOR): o gate multiseed
         # usa este campo para aceitar mesmo sha256 com --comparar-inferencia.
         "inferencia": {"motor": MOTOR, "threads": threads, "n_ctx": N_CTX,
-                       "cache_prompt": MOTOR == "server", "sufixo": bool(sufixo)},
+                       "cache_prompt": MOTOR == "server", "sufixo": bool(sufixo),
+                       **({"amostragem": amostragem_extra()} if amostragem_extra() else {})},
         "modo": modo,
         "num_amostras": n,
         "seed_rodada": seed_rodada,
@@ -1247,12 +1273,22 @@ def main():
     parser.add_argument("--motor", choices=MOTORES, default=MOTOR,
                         help="server = llama-server persistente com cache do system prompt "
                              "(produção); cli = um llama-cli por chamada (reproduz baselines antigos)")
+    parser.add_argument("--top-k", type=int, default=None,
+                        help="top_k da amostragem (padrão: o do llama.cpp, 40). Card do Qwen3 sem pensamento: 20")
+    parser.add_argument("--min-p", type=float, default=None,
+                        help="min_p da amostragem (padrão: o do llama.cpp, 0,05). Card do Qwen3: 0")
+    parser.add_argument("--temperatura", type=float, default=None,
+                        help="temperatura (padrão 0,7). Muda o texto gerado: passa pelo gate")
     parser.add_argument("--perfil", action="store_true",
                         help="mede carga/prefill/decode de cada chamada ao llama-cli; no --batch "
                              "vai para report['perfil']. Não altera a geração")
     args = parser.parse_args()
 
     MOTOR = args.motor
+    global TOP_K, MIN_P, TEMPERATURE
+    TOP_K, MIN_P = args.top_k, args.min_p
+    if args.temperatura is not None:
+        TEMPERATURE = args.temperatura
     global FLASH_ATTN
     FLASH_ATTN = args.flash_attn
     if args.lora:

@@ -81,7 +81,9 @@ Folha cega com 222 itens do 4B v7b (`outputs/melhoria_v8/F/folha_lote_01_preench
 - Núcleo (correção ∧ resposta única ∧ dados suficientes): **153/222 = 68,9%**, IC95 [62,5; 74,6].
   Com as 30 avaliações antigas do mesmo modelo: 171/252 = 67,9%, IC95 [61,9; 73,3].
 - Por ano: 9º 54% (42/78), 5º 70% (48/69), 2º 82% (55/67). Por dificuldade: Difícil 54%, Moderado 74%, Fácil 78%.
-- Por unidade: Geometria 42%, Álgebra 51%, Prob./Estat. 56%, Números 58%, Grandezas 67%.
+- Por unidade (núcleo): Geometria 54% (26/48), Álgebra 59% (22/37), Prob./Estat. 72% (31/43), Números 76% (34/45),
+  Grandezas 82% (40/49). Correção 2026-10-23: a versão anterior trazia 42/51/56/58/67%, que são `valida_geral`
+  (bloco `por_unidade_e_origem` de `amostra_humana.py`, que só mede validade geral), não núcleo.
 - Verificador × professor: `ok` 83% (81/98) válidos; `nao_verificavel` 58% (72/124).
 - Dimensões: correção 75,7%, resposta única 75,2%, dados suficientes 86,9%.
 
@@ -188,11 +190,12 @@ oficial em `apuracao.json`, com `chave_enriquecida.json` porque a chave desse ge
 
 - Núcleo: **51/78 = 65,4%**, IC95 [54,3; 75,0]. v7b: 68,9% [62,5; 74,6]. Diferença −3,5 pontos, z = −0,57 (ruído).
   Meta de 80% não atingida. `valida_geral` 55,1%.
-- Por ano: 2º 83% (19/23), 5º 59% (13/22), 9º 50% (13/26). Por unidade: Geometria 46%, Grandezas 46%, Números 58%,
-  Álgebra 56%, Prob./Estat. 70%. Dimensões: correção 69,2%, resposta única 73,1%, dados suficientes 80,8%.
+- Por ano: 2º 83% (19/23), 5º 59% (13/22), 9º 50% (13/26). Por unidade (núcleo): Geometria 62% (8/13), Grandezas 69% (9/13),
+  Números 67% (22/33), Álgebra 56% (5/9), Prob./Estat. 70% (7/10). (Corrigido em 2026-10-23: antes 46/46/58%, que eram `valida_geral`.) Dimensões: correção 69,2%, resposta única 73,1%, dados suficientes 80,8%.
 - Verificador × professor: `ok` 33/42 = 79%; `nao_verificavel` 18/36 = 50%. Letra do gabarito, "Nenhuma das anteriores"
   (59% contra 68%) e resolução longa (n=8) não separam com significância.
-- Causas das 27 reprovadas (leitura minha): ~11 enunciado contraditório, ~6 mais de uma correta, ~4 conta errada, resto situação mal definida.
+- Causas das 27 reprovadas (recontadas item a item em 2026-10-23; a estimativa anterior era ~11/~6/~4/resto): 9 situação mal definida ou
+  dado que falta, 7 conta ou resolução errada, 6 mais de uma correta, 5 enunciado contraditório.
 - O filtro determinístico atual (`check_consistency_detalhado` + `avisos_consistencia`) sinaliza 18 das 27 inválidas, mas 17 desses
   18 sinais são `sem_conta` (não verificável) e 18 válidas também são sinalizadas: não é filtro útil. Sinais reais (`resultado_na_cauda`,
   `gabarito_nda`, `sem_correspondencia`) pegam 4 das 27.
@@ -223,3 +226,197 @@ fora do núcleo; a linha de aderência do relatório não vale). O arquivo dele 
 - **Leitura:** o corpus RFT é bom (~88%, perto da base) e o filtro do Jev funcionou como filtro de dados. O v8rftb produz 65%
   mesmo treinado em dados ~90-98% válidos: o gargalo é a capacidade de geração do modelo, não a curadoria. Isso fecha a hipótese de
   melhorar só pelos dados, consistente com a conclusão do ciclo v7 (teto da base ~98%).
+
+## Experimento "gerar e conferir" (2026-10-23, preparado; execução do responsável)
+
+`src/auto_conferencia.py` + `tests/test_auto_conferencia.py` (5 testes). Hipótese: se o modelo resolve a questão às cegas (só enunciado e
+alternativas) e escolhe a letra do gabarito, a questão tende a ser válida; discordância = descartar. Medido sem treino nas 350 questões
+rotuladas pelo professor e únicas de `outputs/melhoria_v8/F/rotulados.jsonl` (229 válidas, 65,4% de núcleo sem filtro). Solver: Qwen3-4B
+Q4_K_M base, sem LoRA, temperatura 0. `--permutar` embaralha as alternativas (a "Nenhuma das ..." fica por último). Modos `direto` (~1 s) e
+`cot` (~30 s). Saída em `outputs/melhoria_v8/auto_conferencia/`. Critério de leitura: núcleo entre as mantidas ≥ 80% com perda de válidas
+≤ 30% justifica custo de ~2× tempo por questão no app; abaixo disso o ganho não compensa. O conjunto mistura saídas de vários modelos e
+itens da base, então o resultado mede o sinal, não o ganho final do v8rftb.
+
+### Resultado "gerar e conferir" (2026-10-23)
+
+350 questões rotuladas pelo professor, resolvedor Qwen3-4B Q4_K_M base, alternativas permutadas ("Nenhuma" fica por último).
+
+| Modo | Mantidas | Núcleo entre mantidas | Válidas perdidas | Inválidas descartadas |
+|---|---|---|---|---|
+| sem filtro | 350 | 65,4% | – | – |
+| direto (só a letra) | 154 (44%) | 74,0% [66,6; 80,3] | 50,2% | 66,9% |
+| **cot (raciocínio curto)** | **260 (74%)** | **82,7% [77,6; 86,8]** | **6,1%** | **62,8%** |
+| verificador `ok` | 158 (45%) | 82,9% | – | – |
+| cot e `ok` | 137 (39%) | 91,2% | – | – |
+
+- O direto falha porque o resolvedor sem conta acerta só 50% das válidas. Com raciocínio, concorda em 215/229 válidas (94%) e em 45/121
+  inválidas (37%).
+- A média de 82,7% é puxada pelos itens da base (96% válidos). Só saídas de modelo: 40,7% -> 64,6% (perde 8% das válidas); Qwen:
+  49,4% -> 68,6%; 4B ft+zs (n=53): 64,2% -> 75,0% (perde 12%); 9º ano: 37,0% -> 61,5%.
+- 21 respostas sem letra são quase todas "Resposta: Nenhuma das alternativas anteriores" por extenso; o leitor passou a mapeá-las para a
+  alternativa "Nenhuma" quando existe. O resultado não mudou (continuam descarte).
+- Custo medido: 350 itens em ~67 min no PC, ~11,5 s por conferência (CPU, 8 threads).
+- Projeção para o v8rftb (65,4% bruto) com as taxas do subconjunto 4B: ~76%; com as taxas globais: ~83%. Falta a medida direta:
+  `--folha outputs/melhoria_v8/folha_v8rftb/folha_preenchida.csv --chave .../chave_oculta.json --rotulo v8rftb`.
+
+### Validação direta no v8rftb (2026-10-23)
+
+`auto_conferencia.py apurar --modo cot --permutar --folha folha_v8rftb/... --rotulo v8rftb` (78 itens do professor, 51 válidos):
+
+| Regra | Mantidas | Núcleo entre mantidas | Válidas perdidas |
+|---|---|---|---|
+| Sem filtro | 78 | 51/78 = 65,4% | – |
+| cot | 66 (84,6%) | 48/66 = 72,7% [61,0; 82,0] | 3/51 = 5,9% |
+| verificador ok | 42 (53,8%) | 33/42 = 78,6% | – |
+| cot ∧ ok | 37 (47,4%) | 31/37 = 83,8% | – |
+
+Abaixo da projeção (~76–83%): a conferência descarta só 33% das inválidas do v8rftb (contra 63% em F/rotulados).
+Das 18 inválidas mantidas, nenhuma é "conta errada com gabarito errado". São erros que um resolvedor que só compara a
+própria letra com o gabarito não vê (mesma classificação das 27 reprovadas acima): situação mal definida ou dado que falta
+(Q1032, Q1040, Q1050, Q1051, Q1055, Q1057, Q1076), mais de uma alternativa correta (Q1003, Q1016, Q1019, Q1049, Q1069),
+dados contraditórios (Q1017, Q1021, Q1043, Q1052) e resolução com justificativa errada ou que vaza a resposta (Q1028, Q1077).
+Por ano: 2º 95%, 5º 67%, 9º 55% entre mantidas. Critério de decisão (≥80%) não atingido pela cot sozinha.
+
+### Modo `critica` (2026-10-23, preparado; execução do responsável)
+
+`auto_conferencia.py --modo critica` (testes em `tests/test_auto_conferencia.py`, 8 no total). O mesmo 4B base, às cegas, julga cada
+alternativa e termina com `CORRETAS: ...`, `CONTRADICAO: SIM|NAO`, `SUFICIENTE: SIM|NAO`. Passa só com exatamente uma correta
+(= gabarito, mapeada de volta da permutação), sem contradição e com dados suficientes; linha faltando ou valor fora de SIM/NAO =
+descarte (`motivo` = formato). `apurar --modo critica` também cruza com a `cot` gravada (`cot_e_critica`, `cot_e_critica_e_ok`).
+Critério de leitura nas 78 do v8rftb: núcleo entre mantidas ≥ 80% com perda de válidas ≤ ~15%.
+- **v1 testada em 5 itens (descartada):** formato ok (0 descartes por formato), mas 4 de 5 respostas trouxeram só as três linhas
+  finais, sem conta (Q1001: "A,D" para 70 − 45 = 25), e a Q1005 inverteu SIM/NAO. Perdeu 2 das 3 válidas. Evidência mantida em
+  `respostas_critica_perm_v8rftb.jsonl`. **v2:** análise obrigatória antes do veredito (resolver, julgar cada alternativa, checar
+  dados) e polaridade única (`CONTRADICAO`/`FALTA_DADO`, SIM = problema), `max_tokens` 1200. Saída em `respostas_criticav2_*`.
+
+### Resultado do modo `critica` v2 no v8rftb (2026-10-23)
+
+`apurar --modo critica --permutar --folha folha_v8rftb/... --rotulo v8rftb` (78 itens, 51 válidos; `apuracao_criticav2_perm_v8rftb.json`):
+
+| Regra | Mantidas | Núcleo entre mantidas | Válidas perdidas | Inválidas descartadas |
+|---|---|---|---|---|
+| Sem filtro | 78 | 65,4% | – | – |
+| cot | 66 (85%) | 72,7% [61,0; 82,0] | 5,9% | 33% |
+| **critica** | **54 (69%)** | **85,2% [73,4; 92,3]** | **9,8% (5/51)** | **70% (19/27)** |
+| critica sem os 5 itens usados no ajuste do prompt | 51/73 | 84,3% [72,0; 91,8] | 10,4% (5/48) | – |
+| cot ∧ critica | 51 (65%) | 88,2% | 11,8% | – |
+| critica ∧ verificador ok | 31 (40%) | 96,8% | – | – |
+
+- Passa o critério combinado (≥ 80% com ≤ ~15% de válidas perdidas), mas o limite inferior do IC (73%) ainda está abaixo de 80% e o
+  método foi desenhado olhando os erros DESTES 78 itens: falta validar em uma amostra nova antes de levar ao app.
+- Pareado com a cot: a crítica descarta 12 inválidas que a cot mantinha, ao custo de 3 válidas; o contrário ocorre em 2 inválidas e 1 válida.
+- 8 inválidas mantidas: ambiguidade que o modelo não percebe (losango, 1,4 = 1,40, variáveis não definidas, planificação, posição inicial
+  não informada: Q1016, Q1049, Q1050, Q1057, Q1076) e **resolução errada com enunciado e gabarito defensáveis** (Q1070, Q1071, Q1077). A
+  crítica não vê a resolução, então esses três tipos não podem ser pegos por ela.
+- 5 válidas perdidas: 2 de classificação de quadriláteros em que o resolvedor exige dado a mais (Q1058, Q1059), 1 resolvida errado (Q1075),
+  1 em que achou "nenhuma correta" (Q1009) e 1 truncada (Q1022).
+- 3 respostas truncadas em 1.200 tokens (`formato`, descarte seguro): Q1022, Q1040, Q1055.
+- Custo: 73 itens em ~1 h no PC (pelo horário do arquivo), ~50 s por crítica. Com geração (~21 s) e 69% mantidas: ~105 s por questão
+  entregue no PC, contra ~21 s hoje. No celular será maior. Este é o obstáculo para o app.
+
+## Validação da conferência em folha nova (2026-10-25, protocolo fixado ANTES de gerar os dados)
+
+**Pergunta:** a crítica v2 (85,2% [73,4; 92,3] nas 78 questões do v8rftb, método desenhado olhando esses erros) mantém o ganho em
+questões que nunca viu?
+
+**Protocolo** (`src/validacao_conferencia.py`, `tests/test_validacao_conferencia.py`):
+- 100 questões do **v7b** (gerador diferente do v8rftb, com o qual o prompt foi ajustado), seed 20261201 (as anteriores foram 20261015,
+  20261101 e as da auditoria), pelo mesmo `gerar_folha_professor.py` que o app usa (só entram as ENTREGUES). Sem repetição de enunciado
+  com as folhas de 78 e de 222 (`validacao_conferencia.py novidade`).
+- **O professor avalia TODAS às cegas**, as que a crítica mantém e as que descarta; a decisão da crítica não aparece na folha.
+- Conferência rodada com `--permutar`, temperatura 0, Qwen3-4B Q4_K_M base. **Prompt congelado:** crítica v2, sha256[:16] `831469ec8262eeed`
+  (system + formato + max_tokens), travado por `test_prompt_critica_congelado`. A cot também roda, só como referência.
+- Apuração exige respostas para as 100 questões e a folha completa (sem apuração parcial).
+
+**Critério (todos precisam valer, sobre as 100 questões da folha nova):**
+1. núcleo entre as mantidas pela crítica ≥ 80%;
+2. limite inferior do IC95 de Wilson ≥ 70%;
+3. válidas perdidas ≤ 15%;
+4. ganho ≥ 10 pontos sobre o núcleo sem filtro da MESMA folha.
+
+**Leitura do resultado:** VALIDADO → medir no celular e seguir para o app. NÃO VALIDADO com núcleo entre 70% e 80% → a crítica ajuda mas
+não basta; avaliar cot ∧ crítica e crítica ∧ verificador `ok` (já com custo de perda maior) e a checagem da resolução. Abaixo de 70% → o
+85,2% era ajuste às 78 questões; descartar. Nenhum ajuste de prompt depois de ver esta folha; mudança de prompt = nova versão e nova folha.
+
+Estimativa de precisão: com ~70 mantidas, o IC95 tem meia-largura de cerca de ±8 pontos. Gerar 100 questões leva ~40 min e a crítica
+~85 min no PC; o professor leva ~4 a 5 h.
+
+**Desvio do protocolo (2026-10-25):** a geração entregou **77** questões, não 100: `gerar_folha_professor.py` sorteia cada par
+(ano, habilidade) uma vez e a taxonomia tem 79 pares, então o teto é 79 menos as falhas (2 não entregues). O critério e o prompt
+não mudaram. Com ~54 mantidas esperadas, o IC95 tem meia-largura de ~±9 pontos, e o limite inferior ≥ 70% só é atingido com
+núcleo observado de cerca de 83% ou mais. Se o veredito ficar na fronteira (núcleo 75–85%), uma segunda folha com outra seed é o
+próximo passo, não mudar o critério. Tempos com 77 questões: crítica ~65 min, cot ~15 min, professor ~3 a 4 h.
+
+**Folha de validação devolvida (2026-10-25), ANTES de rodar a cot e a crítica nela:** 77 de 77 preenchidas, mesmos ids e
+enunciados da folha gerada. Núcleo sem filtro pelo professor: **61/77 = 79,2%** [68,9; 86,8], bem acima dos 68,9% do v7b na
+medição F (n=222). Com esse ponto de partida, o critério 4 (ganho ≥ 10 pp) exige ≥ 89,2% entre as mantidas.
+
+Seis rótulos "válida" parecem errados na leitura técnica (registrado agora, antes do resultado da crítica):
+Q1006 (o primeiro em ordem crescente não é Davi; gabarito errado), Q1007 (alternativas sem sentido: "Cocô", "Quarto"...),
+Q1008 (total 5.600, nenhuma alternativa certa), Q1013 (ponteiro dos minutos no 10 = 8h50, nenhuma alternativa certa),
+Q1014 (8 e 18 são pares; nenhuma alternativa verdadeira) e Q1017 (resolução diz que as faces do dado são hexágonos).
+**Regra fixada agora:** a apuração OFICIAL usa os rótulos do professor como vieram. Os seis vão para o professor rever às cegas,
+misturados a outras questões; se ele mudar algum, roda-se uma apuração de SENSIBILIDADE, reportada ao lado da oficial, sem
+substituí-la. Nenhum rótulo é trocado por leitura técnica (política de decisão humana do projeto).
+
+**Resultado OFICIAL (2026-10-26): NÃO VALIDADO.** `apuracao_val_v7b.json`, prompt `831469ec8262eeed`, 77/77 respostas.
+
+| regra | mantidas | núcleo entre mantidas | válidas perdidas |
+|---|---|---|---|
+| sem filtro | 77 | 79,2% [68,9; 86,8] | 0% |
+| **crítica** | **54 (70%)** | **88,9% [77,8; 94,8]** | **21,3% (13/61)** |
+| cot | 64 (83%) | 85,9% [75,4; 92,4] | 9,8% |
+| cot ∧ crítica | 53 | 90,6% [79,7; 95,9] | 21,3% |
+| crítica ∧ verificador ok | 32 | 90,6% [75,8; 96,8] | 52,5% |
+
+- Critérios 1 e 2 passam (88,9% ≥ 80; 77,8 ≥ 70). Falham o 3 (perdidas 21,3% > 15%) e o 4 (ganho 9,7 pp < 10 pp).
+- A precisão se repetiu fora da amostra de ajuste (88,9% contra 85,2%). O que não passou foi o custo: a crítica descarta válidas demais.
+- Motivos entre as 13 válidas perdidas: 6 `insuficiente`, 4 `nenhuma_correta`, 2 `varias_corretas`, 1 `formato`. A cot mantém 7 delas.
+- 6 inválidas passam: Q1023, Q1027, Q1033, Q1042, Q1050, Q1067.
+- **5 das 13 válidas perdidas são rótulos suspeitos registrados antes da crítica** (Q1006 e Q1007 `insuficiente`; Q1008, Q1013 e Q1014
+  `nenhuma_correta`). Q1017 foi mantida pela crítica.
+- Sem nenhum ajuste de prompt ou de critério. Pela regra fixada, a revisão cega dos seis vai ao professor (`validacao_conferencia.py revisao`:
+  6 suspeitas + 10 controles sorteados, seed 20261026, ids novos; `revisao_cega/`). A sensibilidade usa os rótulos revistos de TODAS as 16,
+  inclusive dos controles, e é reportada ao lado da oficial, sem substituí-la.
+- Cenário hipotético (calculado agora para saber o que está em jogo, não é resultado): se o professor reprovar os 5 descartados, ou os 6,
+  a sensibilidade dá crítica 88,9% (ou 87,0%), perdidas 14,3% (14,5%), ganho 16 pp: passaria, mas com 0,5 pp de folga no critério 3. Uma
+  válida a mais perdida, ou um controle que vire válido entre os descartados, reverte. Fronteira: se a sensibilidade passar e a oficial não,
+  o próximo passo é uma segunda folha com outra seed (regra do desvio), não levar ao app direto.
+
+## Teste de amostragem do card do Qwen3 (pré-registrado em 2026-10-26, antes de medir)
+
+**Hipótese.** O pedido do app envia só `temperature 0,7` e `top_p 0,8`; o llama-server completa com `top_k 40` e `min_p 0,05`. O card do
+Qwen3-4B recomenda, sem pensamento, `top_k 20` e `min_p 0`. Hipótese: alinhar reduz a cauda de tokens improváveis e o erro de conta.
+Não há medição prévia; pode não mudar nada.
+
+**Braços (mesmo .gguf e mesmo LoRA v7b s44, gramática `questao.gbnf`, `--sufixo`, 30 itens do `val_frozen_v1`):**
+baseline = `outputs/hf_4b/avaliacao/eval_4b_ft_suf_r{0,1,2}.json` (já medido, padrão do llama.cpp);
+candidato = `--top-k 20 --min-p 0`, rodadas 0, 1 e 2 (mesmas seeds). `report["inferencia"]["amostragem"]` registra o que mudou.
+
+**Decisão, mecânica:** gate `multiseed --comparar-inferencia`. NÃO PROMOVIDO ou empate = fica o padrão atual, fim. PROMOVIDO pelo gate
+NÃO basta para mudar o app: o gate mede o verificador, não o núcleo. Antes disso, folha cega do professor com o mesmo protocolo da
+`val_v7b` (núcleo, sem rótulos de origem), e só adota se o núcleo do candidato não ficar abaixo do baseline (Fisher unilateral,
+p > 0,10 contra queda). Sem folha, o resultado do gate é informativo.
+
+**Proibido depois do resultado:** trocar os valores (ex.: testar `top_k 10`, outra temperatura) como se fosse o mesmo teste. Cada
+configuração nova é outro teste, com novo registro aqui, e conta como mais um braço para quem lê o resultado.
+
+**Resultado (2026-10-26): gate PROMOVIDO, sem efeito detectável.** `outputs/relatorios/VEREDITO_4b_topk20.json`, 3 rodadas, 90 pares.
+G2* 3/90 -> 3/90 (p=1,0); G3* 93,6% -> 95,9% (piorou 2, melhorou 3, p=1,0); G6* 40,0% -> 40,4%. Os "ganhos" listados pelo gate
+(consistência, verificabilidade, regenerações) são diferenças de 1 a 2 itens, sem significância. "Nenhuma das anteriores" 2,2% -> 4,5%
+(n.s., a acompanhar). Pela regra acima, sem folha do professor o resultado é só informativo: **o padrão do app não muda**. Conclusão:
+a amostragem não é alavanca mensurável com n=90; não justifica gastar uma folha do professor.
+
+**Sensibilidade (2026-10-26): VALIDADO, oficial segue NÃO VALIDADO.** O professor mudou as 6 suspeitas para inválidas e nenhum dos 10 controles.
+Núcleo sem filtro 71,4% (55/77). Crítica: 87,0% [75,6; 93,6], perdidas 14,5% (8/55), ganho 15,6 pp. Folga de 0,5 pp no critério 3.
+Pela regra fixada: segunda folha com outra seed antes de levar ao app.
+
+## Segunda folha de validação da crítica (pré-registrado em 2026-10-26, antes de gerar)
+
+**Por quê:** a oficial deu NÃO VALIDADO (perdidas 21,3%) e a sensibilidade VALIDADO com 0,5 pp de folga; regra fixada: segunda folha, outra seed.
+**Protocolo igual ao da primeira, sem mudança:** v7b s44 (`lora_4b_v7b_s44.f16.gguf`), `gerar_folha_professor.py --n 100`, seed **20261208**
+(nova), rótulo `val_v7b_2`; `novidade` contra a folha de 77 (`--contra`) e as antigas; professor avalia todas às cegas; conferência `--permutar`,
+temperatura 0, prompt crítica v2 `831469ec8262eeed` congelado. Mesmo critério (núcleo mantidas ≥ 80%; IC95 inferior ≥ 70%; perdidas ≤ 15%;
+ganho ≥ 10 pp), aplicado à **segunda folha sozinha**, com rótulos do professor como vierem. Reportado ao lado, só informativo: as duas folhas
+somadas (rótulos oficiais da 1ª com as 6 revisões, marcado como tal). VALIDADO = só então medir no celular. NÃO VALIDADO = a crítica
+sai do plano do app; nada de ajustar prompt ou critério.

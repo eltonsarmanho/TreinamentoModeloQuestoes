@@ -64,6 +64,9 @@ def main():
                         help="model card a subir como README.md")
     parser.add_argument("--eval-report", default=str(EVAL_REPORT),
                         help="relatório de avaliação a subir como eval_report.json")
+    parser.add_argument("--extra-dir", action="append", default=[], metavar="LOCAL:DESTINO",
+                        help="pasta extra a subir em DESTINO/ dentro do repo (repetível), "
+                             "ex: outputs/hf_4b/app:app")
     args = parser.parse_args()
     lora_dir, gguf_dir, data_dir = Path(args.lora_dir), Path(args.gguf_dir), Path(args.data_dir)
     model_card, eval_report = Path(args.model_card), Path(args.eval_report)
@@ -124,6 +127,18 @@ def main():
             folder_path=str(gguf_dir),
             path_in_repo="gguf",
             commit_message="Adiciona modelo quantizado GGUF Q4_K_M para uso mobile",
+        )
+
+    for par in args.extra_dir:
+        local, _, destino = par.rpartition(":")
+        if not local or not Path(local).is_dir():
+            raise SystemExit(f"--extra-dir {par!r}: use LOCAL:DESTINO com LOCAL existente")
+        print(f"Enviando {local} -> {destino}/")
+        api.upload_folder(
+            repo_id=args.repo_id,
+            folder_path=local,
+            path_in_repo=destino,
+            commit_message=f"Adiciona {destino}/",
         )
 
     print(f"\nConcluído: https://huggingface.co/{args.repo_id}")
