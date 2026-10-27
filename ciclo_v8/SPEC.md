@@ -420,3 +420,8 @@ temperatura 0, prompt crítica v2 `831469ec8262eeed` congelado. Mesmo critério 
 ganho ≥ 10 pp), aplicado à **segunda folha sozinha**, com rótulos do professor como vierem. Reportado ao lado, só informativo: as duas folhas
 somadas (rótulos oficiais da 1ª com as 6 revisões, marcado como tal). VALIDADO = só então medir no celular. NÃO VALIDADO = a crítica
 sai do plano do app; nada de ajustar prompt ou critério.
+
+**Resultado da segunda folha (2026-10-26): VALIDADO**, `val_v7b_2`, 74/74, seed 20261208, prompt `831469ec8262eeed`, rótulos do professor como vieram.
+Sem filtro 73,0% [61,9; 81,8]. Crítica: mantém 50 (67,6%), núcleo 94,0% [83,8; 97,9], perdidas 13,0% (7/54), ganho 21,0 pp. Os 4 critérios passam.
+cot: 82,5%, perdidas 3,7%. Informativo (1ª folha com as 6 revisões + 2ª): crítica ~90% de núcleo, ~14% de válidas perdidas, ~18 pp de ganho.
+Próximo passo conforme a leitura fixada: medir latência no celular. Descartes da crítica: ~1/3, logo ~1,5 geração por questão entregue.
